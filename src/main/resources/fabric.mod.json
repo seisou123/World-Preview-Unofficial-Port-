@@ -1,0 +1,35 @@
+{
+	"schemaVersion": 1,
+	"id": "world_preview",
+	"version": "${version}",
+	"name": "World preview",
+	"description": "Allows you to preview a map in the new world screen",
+	"authors": [
+		"Caeruleus Draconis",
+		"Taiterio"
+	],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/world-preview-fork"
+	},
+	"license": "Apache-2.0",
+	"icon": "assets/world_preview/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"caeruleusTait.world.preview.WorldPreview"
+		],
+		"client": [
+			"caeruleusTait.world.preview.client.WorldPreviewClient"
+		]
+	},
+	"mixins": [
+		"world_preview.mixins.json"
+	],
+	"accessWidener": "world_preview.accesswidener",
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": ["~26.1.2"],
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
