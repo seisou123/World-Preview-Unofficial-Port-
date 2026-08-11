@@ -1,0 +1,29 @@
+{
+  "required": true,
+  "package": "caeruleusTait.world.preview.mixin",
+  "minVersion": "0.8",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ChunkGeneratorStructureStateMixin",
+    "MinecraftServerAccessor",
+    "NoiseBasedAquiferMixin",
+    "NoiseBasedChunkGeneratorAccessor",
+    "NoiseChunkAccessor",
+    "StructureTemplatePaletteAccessor",
+    "StructureTemplatePaletteMixin"
+  ],
+  "client": [
+    "client.CheckboxAccessor",
+    "client.CreateWorldScreenAccessor",
+    "client.CreateWorldScreenMixin",
+    "client.PauseScreenMixin",
+    "client.ScreenAccessor",
+    "client.TabManagerAccessor",
+    "client.TabManagerMixin",
+    "client.TabNavigationBarAccessor",
+    "client.WorldTabMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

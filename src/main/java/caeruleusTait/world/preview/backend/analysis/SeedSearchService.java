@@ -1,0 +1,390 @@
+package caeruleusTait.world.preview.backend.analysis;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.Identifier;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
+import java.util.SplittableRandom;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+
+import static caeruleusTait.world.preview.WorldPreview.LOGGER;
+
+/**
+ * Dedicated seed search service.
+ * <p>
+ * Receives an immutable {@link SeedSearchRequest}, creates temporary worldgen context for each candidate seed,
+ * samples within the visible screen area to check for the target biome, and stops on hit.
+ * Only one search task may run at a time.
+ * </p>
+ */
+public class SeedSearchService implements AutoCloseable {
+
+    /** Abort search early if consecutive failures exceed this threshold */
+    private static final int MAX_CONSECUTIVE_FAILURES = 10;
+
+    private final SplittableRandom random = new SplittableRandom();
+    private final ExecutorService executor;
+
+    /** Handle to the currently running search task, used for cancellation */
+    @Nullable private volatile SearchTask currentTask;
+
+    /** Fingerprint of the current search task, used to validate callbacks */
+    @Nullable private volatile String currentFingerprint;
+
+    /** Latch for the current search task, used to wait for background thread exit */
+    @Nullable private volatile CountDownLatch currentLatch;
+
+    /** Executor for switching search result callbacks back to the main thread */
+    @Nullable private final Minecraft minecraft;
+
+    public SeedSearchService(@Nullable Minecraft minecraft, int threadCount) {
+        this.minecraft = minecraft;
+        this.executor = Executors.newFixedThreadPool(Math.max(1, threadCount));
+    }
+
+    /**
+     * Start a search. Returns false if a search is already running.
+     *
+     * @param request         Search request (immutable snapshot)
+     * @param contextFactory  Seed-specific worldgen context factory
+     * @param onHit           Hit callback (main thread, receives the hit seed)
+     * @param onComplete      Completion callback (main thread, receives final result)
+     * @return true if search started, false if a search is already running
+     */
+    public synchronized boolean startSearch(
+            SeedSearchRequest request,
+            SeedContextFactory contextFactory,
+            Consumer<Long> onHit,
+            Consumer<SeedSearchResult> onComplete,
+            Consumer<Integer> onProgress
+    ) {
+        if (currentTask != null && !currentTask.cancelled.get()) {
+            LOGGER.warn("Search already in progress, rejecting new request");
+            return false;
+        }
+
+        var cancelled = new AtomicBoolean(false);
+        var task = new SearchTask(cancelled, request, contextFactory, onHit, onComplete, onProgress);
+        var latch = new CountDownLatch(1);
+        currentTask = task;
+        currentFingerprint = request.contextFingerprint();
+        currentLatch = latch;
+
+        CompletableFuture.runAsync(() -> executeSearch(task), executor)
+                .exceptionally(error -> {
+                    LOGGER.error("Seed search failed unexpectedly", error);
+                    minecraftExecute(() -> {
+                        if (currentTask == task && !cancelled.get()) {
+                            onComplete.accept(new SeedSearchResult.Miss());
+                        }
+                    });
+                    return null;
+                });
+
+        return true;
+    }
+
+    /**
+     * Cancel the current search task.
+     */
+    public void cancel() {
+        var task = currentTask;
+        if (task != null) {
+            task.cancelled.set(true);
+        }
+    }
+
+    /**
+     * Cancel and wait for the background thread to exit.
+     */
+    public void cancelAndAwait() {
+        var latch = currentLatch;
+        cancel();
+        if (latch != null) {
+            try {
+                latch.await(2, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * Whether a search task is currently running.
+     */
+    public boolean isSearching() {
+        var task = currentTask;
+        return task != null && !task.cancelled.get();
+    }
+
+    /**
+     * Number of attempts made in the current search, or -1 if no search is active.
+     */
+    public int attemptCount() {
+        var task = currentTask;
+        return task != null ? task.attempts.get() : -1;
+    }
+
+    /**
+     * Stop the current search and reset state (used when closing the preview tab).
+     */
+    @Override
+    public void close() {
+        cancelAndAwait();
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("SeedSearchService executor did not terminate within 5s");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    // ========== Internal search logic ==========
+
+    private void executeSearch(SearchTask task) {
+        try {
+            var request = task.request;
+            var cancelled = task.cancelled;
+            var attemptedSeeds = new HashSet<Long>();
+
+            // Generate sample point list (consistent with PreviewDisplay's render grid)
+            var samplePoints = generateSamplePoints(request);
+
+            for (int i = 0; i < request.maxAttempts(); i++) {
+                if (cancelled.get()) {
+                    reportResult(task, new SeedSearchResult.Cancelled());
+                    return;
+                }
+
+                // Generate unique random seeds
+                long candidateSeed;
+                do {
+                    candidateSeed = random.nextLong();
+                } while (!attemptedSeeds.add(candidateSeed));
+
+                task.attempts.incrementAndGet();
+
+                // Notify UI of progress (first attempt and every 2nd attempt)
+                int currentAttempts = task.attempts.get();
+                if (task.onProgress != null && (currentAttempts == 1 || currentAttempts % 2 == 0)) {
+                    final int attempts = currentAttempts;
+                    minecraftExecute(() -> task.onProgress.accept(attempts));
+                }
+
+                try {
+                    if (checkSeed(candidateSeed, request, samplePoints, task)) {
+                        // Hit!
+                        reportHit(task, candidateSeed);
+                        return;
+                    }
+                    // Sampled successfully but no hit, reset consecutive failure count
+                    task.consecutiveFailures.set(0);
+                } catch (Exception e) {
+                    LOGGER.warn("Seed {} threw exception during sampling, skipping", candidateSeed, e);
+                    task.consecutiveFailures.incrementAndGet();
+                    if (task.consecutiveFailures.get() >= MAX_CONSECUTIVE_FAILURES) {
+                        LOGGER.error("Too many consecutive failures ({}), aborting search", MAX_CONSECUTIVE_FAILURES);
+                        reportResult(task, new SeedSearchResult.Miss());
+                        return;
+                    }
+                }
+            }
+
+            // Exhausted max attempts without a hit
+            reportResult(task, new SeedSearchResult.Miss());
+        } finally {
+            var latch = currentLatch;
+            if (latch != null) latch.countDown();
+        }
+    }
+
+    private boolean checkSeed(long seed, SeedSearchRequest request,
+                               BlockPos[] samplePoints, SearchTask task) throws Exception {
+        // Check cancellation flag
+        if (task.cancelled.get()) return false;
+
+        // Create seed-specific sampler, use try-with-resources to ensure cleanup
+        try (var sampler = task.contextFactory.createSampler(seed)) {
+            if (task.cancelled.get()) return false;
+
+            int matchCount = 0;
+            double minDistance = Double.MAX_VALUE;
+            BlockPos center = request.center();
+
+            for (int i = 0; i < samplePoints.length; i++) {
+                var pos = samplePoints[i];
+                // Check cancellation flag every 10 sample points
+                if (i % 10 == 0 && task.cancelled.get()) {
+                    return false;
+                }
+                if (sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), request.targetBiome())) {
+                    matchCount++;
+                    // Calculate distance from screen center
+                    double dx = pos.getX() - center.getX();
+                    double dz = pos.getZ() - center.getZ();
+                    double distance = Math.sqrt(dx * dx + dz * dz);
+                    minDistance = Math.min(minDistance, distance);
+                }
+            }
+
+            // Check area percentage
+            double areaPercent = (samplePoints.length > 0) ? (matchCount * 100.0 / samplePoints.length) : 0;
+            if (areaPercent < request.minAreaPercent()) {
+                return false;
+            }
+
+            // Check distance requirement
+            if (request.maxDistance() > 0 && minDistance > request.maxDistance()) {
+                return false;
+            }
+
+            // At least one matching point is required for a hit
+            return matchCount > 0;
+        }
+    }
+
+    /**
+     * Generate sample point list based on the current viewport.
+     * Sampling grid is consistent with PreviewDisplay's quartStride.
+     */
+    private static BlockPos[] generateSamplePoints(SeedSearchRequest request) {
+        int step = request.sampleStep();
+        int xMin = request.viewMinX();
+        int xMax = request.viewMaxX();
+        int zMin = request.viewMinZ();
+        int zMax = request.viewMaxZ();
+        int yLevel = request.yLevel();
+
+        // Calculate sample point count
+        int xCount = ((xMax - xMin) / step) + 1;
+        int zCount = ((zMax - zMin) / step) + 1;
+        var points = new BlockPos[xCount * zCount];
+        int idx = 0;
+        for (int x = xMin; x <= xMax; x += step) {
+            for (int z = zMin; z <= zMax; z += step) {
+                points[idx++] = new BlockPos(x, yLevel, z);
+            }
+        }
+        return points;
+    }
+
+    /**
+     * Report hit result on the main thread and validate fingerprint.
+     */
+    private void reportHit(SearchTask task, long seed) {
+        minecraftExecute(() -> {
+            // Validate: is the task token still valid?
+            if (currentTask != task || task.cancelled.get()) {
+                LOGGER.info("Search result discarded: task no longer current");
+                return;
+            }
+            // Validate: does the config fingerprint match?
+            if (!Objects.equals(currentFingerprint, task.request.contextFingerprint())) {
+                LOGGER.info("Search result discarded: context fingerprint changed");
+                return;
+            }
+            currentTask = null;
+            currentFingerprint = null;
+            task.onHit.accept(seed);
+            task.onComplete.accept(new SeedSearchResult.Hit(seed));
+        });
+    }
+
+    private void reportResult(SearchTask task, SeedSearchResult result) {
+        minecraftExecute(() -> {
+            if (currentTask != task) {
+                return;
+            }
+            currentTask = null;
+            currentFingerprint = null;
+            task.onComplete.accept(result);
+        });
+    }
+
+    /**
+     * Execute on the main thread if Minecraft instance is available, otherwise execute directly.
+     */
+    private void minecraftExecute(Runnable runnable) {
+        if (minecraft != null) {
+            minecraft.execute(runnable);
+        } else {
+            runnable.run();
+        }
+    }
+
+    // ========== Internal types ==========
+
+    /** Search task state */
+    private static class SearchTask {
+        final AtomicBoolean cancelled;
+        final SeedSearchRequest request;
+        final SeedContextFactory contextFactory;
+        final Consumer<Long> onHit;
+        final Consumer<SeedSearchResult> onComplete;
+        final Consumer<Integer> onProgress;
+        final AtomicInteger attempts = new AtomicInteger(0);
+        final AtomicInteger consecutiveFailures = new AtomicInteger(0);
+
+        SearchTask(
+                AtomicBoolean cancelled,
+                SeedSearchRequest request,
+                SeedContextFactory contextFactory,
+                Consumer<Long> onHit,
+                Consumer<SeedSearchResult> onComplete,
+                Consumer<Integer> onProgress
+        ) {
+            this.cancelled = cancelled;
+            this.request = request;
+            this.contextFactory = contextFactory;
+            this.onHit = onHit;
+            this.onComplete = onComplete;
+            this.onProgress = onProgress;
+        }
+    }
+
+    /**
+     * Seed-specific sampler interface for checking if a candidate seed has the target biome at given coordinates.
+     * Implements AutoCloseable for automatic resource cleanup in try-with-resources.
+     */
+    public interface BiomeSampler extends AutoCloseable {
+        /**
+         * Check if the biome at the given coordinates equals the target biome.
+         *
+         * @param x            Block X coordinate
+         * @param y            Block Y coordinate
+         * @param z            Block Z coordinate
+         * @param targetBiome  Target biome Identifier
+         * @return true if the biome at this coordinate equals the target biome
+         * @throws Exception Exceptions that may occur during sampling
+         */
+        boolean sampleContains(int x, int y, int z, Identifier targetBiome) throws Exception;
+
+        @Override
+        default void close() throws Exception {}
+    }
+
+    /**
+     * Seed-specific context factory for creating and closing temporary sampling contexts.
+     * createSampler() is called once per candidate seed; the returned BiomeSampler is closed by the caller.
+     */
+    @FunctionalInterface
+    public interface SeedContextFactory extends AutoCloseable {
+        /**
+         * Create a BiomeSampler for the given seed.
+         * The caller is responsible for closing the returned BiomeSampler.
+         */
+        BiomeSampler createSampler(long seed) throws Exception;
+
+        @Override
+        default void close() throws Exception {}
+    }
+}
