@@ -1,4 +1,4 @@
-﻿build/
+﻿﻿build/
 .gradle/
 run/
 logs/
@@ -20,6 +20,19 @@ bin/
 NUL
 build_output.txt
 compile_262.txt
+build_log*.txt
+compare_*.ps1
+compare_*.txt
+neoforge_diff.txt
+sampleutils_diff.txt
+check_jar*.ps1
+check_size*.ps1
+restore_neoforge.ps1
+port_fabric.ps1
+fix_api*.ps1
+fix_all.ps1
+remove_bom.ps1
+git_push.bat
 tmp_nf/
 -p/
 *.7z
