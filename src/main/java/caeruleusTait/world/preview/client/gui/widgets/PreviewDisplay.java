@@ -476,7 +476,7 @@ resizeImage();
         }
         // === FIX: GLFW mouse button state polling ===
         if (clicked) {
-            long window = GLFW.glfwGetCurrentContext();
+            long window = minecraft.getWindow().handle();
             boolean leftPressed = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
             boolean rightPressed = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
             if (!leftPressed && !rightPressed) {
