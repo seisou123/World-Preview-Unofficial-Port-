@@ -5,6 +5,7 @@ package caeruleusTait.world.preview.backend.storage;
 import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.WorldPreviewConfig;
+import caeruleusTait.world.preview.util.AtomicFiles;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -102,12 +103,7 @@ public interface PreviewStorageCacheManager {
                 dos.flush();
                 zos.closeEntry();
             }
-            try {
-                Files.move(tmp, outFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (IOException atomicFailed) {
-                // Windows/some FS may not support ATOMIC_MOVE
-                Files.move(tmp, outFile, StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.moveReplace(tmp, outFile);
             WorldPreview.LOGGER.debug("Wrote preview disk cache {}", outFile);
         } catch (IOException e) {
             WorldPreview.LOGGER.error("Failed to write preview disk cache {}", outFile, e);
