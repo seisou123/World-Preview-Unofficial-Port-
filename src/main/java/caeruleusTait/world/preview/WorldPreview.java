@@ -8,6 +8,7 @@ import caeruleusTait.world.preview.backend.storage.AnalysisRepository;
 import caeruleusTait.world.preview.backend.storage.FileAnalysisRepository;
 import caeruleusTait.world.preview.compat.KnownModCompat;
 import caeruleusTait.world.preview.compat.ModCompatRegistry;
+import caeruleusTait.world.preview.util.AtomicFiles;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.fabricmc.api.ModInitializer;
@@ -19,10 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -233,45 +232,12 @@ public class WorldPreview implements ModInitializer {
         config.validate();
         render.validate();
         LOGGER.info("Saving config file: {}", configFile);
-        // Create backups before overwriting
-        caeruleusTait.world.preview.config.ConfigBackupManager configBackups =
-                new caeruleusTait.world.preview.config.ConfigBackupManager(configFile);
-        caeruleusTait.world.preview.config.ConfigBackupManager renderBackups =
-                new caeruleusTait.world.preview.config.ConfigBackupManager(renderConfigFile);
-        configBackups.backupBeforeSave(configFile);
-        renderBackups.backupBeforeSave(renderConfigFile);
-        Path configTemp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
-        Path renderTemp = renderConfigFile.resolveSibling(renderConfigFile.getFileName() + ".tmp");
-        Path colorTemp = userColorConfig == null ? null : userColorConfigFile.resolveSibling(userColorConfigFile.getFileName() + ".tmp");
-        try {
-            Files.writeString(configTemp, gson.toJson(config) + "\n");
-            Files.writeString(renderTemp, gson.toJson(render) + "\n");
-            if (userColorConfig != null) {
-                Files.writeString(colorTemp, userColorJson(userColorConfig));
-            }
-            moveReplace(configTemp, configFile);
-            moveReplace(renderTemp, renderConfigFile);
-            if (colorTemp != null) {
-                moveReplace(colorTemp, userColorConfigFile);
-            }
-        } catch (IOException e) {
-            try {
-                Files.deleteIfExists(configTemp);
-                Files.deleteIfExists(renderTemp);
-                if (colorTemp != null) Files.deleteIfExists(colorTemp);
-            } catch (IOException cleanup) {
-                e.addSuppressed(cleanup);
-            }
-            throw new RuntimeException(e);
-        }
-    }
-
-    /** Prefer atomic replace; fall back when the filesystem does not support ATOMIC_MOVE. */
-    private static void moveReplace(Path from, Path to) throws IOException {
-        try {
-            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
+        caeruleusTait.world.preview.config.ConfigLoader configLoader =
+                new caeruleusTait.world.preview.config.ConfigLoader(gson);
+        configLoader.saveConfig(configFile, config);
+        configLoader.saveConfig(renderConfigFile, render);
+        if (userColorConfig != null) {
+            writeUserColorConfig(userColorConfig);
         }
     }
 
@@ -315,17 +281,9 @@ public class WorldPreview implements ModInitializer {
     }
 
     public void writeUserColorConfig(Map<Identifier, PreviewMappingData.ColorEntry> userColorConfig) {
-        final String raw = userColorJson(userColorConfig);
-        Path temp = userColorConfigFile.resolveSibling(userColorConfigFile.getFileName() + ".tmp");
         try {
-            Files.writeString(temp, raw);
-            moveReplace(temp, userColorConfigFile);
+            AtomicFiles.writeStringAtomic(userColorConfigFile, userColorJson(userColorConfig));
         } catch (IOException e) {
-            try {
-                Files.deleteIfExists(temp);
-            } catch (IOException cleanup) {
-                e.addSuppressed(cleanup);
-            }
             throw new RuntimeException(e);
         }
     }

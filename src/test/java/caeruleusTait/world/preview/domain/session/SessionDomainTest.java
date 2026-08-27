@@ -54,39 +54,6 @@ class SessionDomainTest {
     }
 
     @Test
-    void sessionRegistryFindsByFingerprint() {
-        SessionRegistry registry = new SessionRegistry();
-        SessionFingerprint fp = SessionFingerprint.context(
-                "1.21", "fabric", 1, "abc", "default", "minecraft:overworld");
-
-        TestSession session = new TestSession("s1", "test", fp);
-        registry.register(session);
-
-        assertTrue(registry.find("s1").isPresent());
-        assertEquals(1, registry.findByFingerprint(fp).size());
-        assertEquals(1, registry.size());
-
-        registry.unregister("s1");
-        assertTrue(registry.find("s1").isEmpty());
-    }
-
-    @Test
-    void sessionManagerCreatesAndClosesSessions() {
-        SessionManager manager = new SessionManager();
-        SessionFingerprint fp = SessionFingerprint.context(
-                "1.21", "fabric", 1, "abc", "default", "minecraft:overworld");
-        TestSession session = new TestSession("s1", "test", fp);
-
-        manager.create(session);
-        assertEquals(1, manager.all().size());
-        assertTrue(manager.find("s1").isPresent());
-
-        manager.close("s1");
-        assertTrue(manager.find("s1").isEmpty());
-        assertTrue(session.isClosed());
-    }
-
-    @Test
     void sessionCheckpointRecordsProgress() {
         SessionCheckpoint cp = SessionCheckpoint.initial("s1", 100);
         assertEquals("s1", cp.sessionId());

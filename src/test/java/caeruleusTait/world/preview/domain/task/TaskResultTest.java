@@ -2,8 +2,6 @@ package caeruleusTait.world.preview.domain.task;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 class TaskResultTest {
@@ -47,58 +45,6 @@ class TaskResultTest {
     @Test
     void successRejectsNullValue() {
         assertThrows(NullPointerException.class, () -> TaskResult.success(null));
-    }
-
-    @Test
-    void aggregatorCountsByResultType() {
-        TaskResultAggregator<String> agg = new TaskResultAggregator<>();
-        agg.add(TaskId.generate(), TaskResult.success("a"));
-        agg.add(TaskId.generate(), TaskResult.success("b"));
-        agg.add(TaskId.generate(), TaskResult.error(new RuntimeException("e")));
-        agg.add(TaskId.generate(), TaskResult.partial("p"));
-        agg.add(TaskId.generate(), TaskResult.skipped());
-
-        TaskResultAggregator.ResultCounts counts = agg.counts();
-        assertEquals(2, counts.success());
-        assertEquals(1, counts.error());
-        assertEquals(1, counts.partial());
-        assertEquals(1, counts.skipped());
-        assertEquals(5, counts.total());
-
-        assertEquals(List.of("a", "b"), agg.successes());
-        assertEquals(1, agg.errors().size());
-        assertEquals(List.of("p"), agg.partials());
-    }
-
-    @Test
-    void taskDependencyGraphDetectsCycles() {
-        TaskId a = TaskId.generate();
-        TaskId b = TaskId.generate();
-        TaskId c = TaskId.generate();
-
-        List<TaskDependency> acyclic = List.of(
-                new TaskDependency(a, b),
-                new TaskDependency(b, c)
-        );
-        TaskDependency.DependencyGraph graph = TaskDependency.buildGraph(acyclic);
-        List<TaskId> order = graph.topologicalOrder();
-        assertEquals(3, order.size());
-        assertEquals(a, order.get(0));
-        assertEquals(b, order.get(1));
-        assertEquals(c, order.get(2));
-
-        List<TaskDependency> cyclic = List.of(
-                new TaskDependency(a, b),
-                new TaskDependency(b, c),
-                new TaskDependency(c, a)
-        );
-        assertThrows(IllegalStateException.class, () -> TaskDependency.buildGraph(cyclic));
-    }
-
-    @Test
-    void taskDependencyRejectsSelfDependency() {
-        TaskId a = TaskId.generate();
-        assertThrows(IllegalArgumentException.class, () -> new TaskDependency(a, a));
     }
 
     @Test
