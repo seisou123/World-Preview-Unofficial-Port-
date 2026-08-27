@@ -2,6 +2,7 @@ package caeruleusTait.world.preview.config;
 
 import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.WorldPreviewConfig;
+import caeruleusTait.world.preview.util.AtomicFiles;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -234,16 +235,7 @@ public final class ConfigLoader {
         ConfigBackupManager backups = backupFor(configFile);
         backups.backupBeforeSave(configFile);
         try {
-            Path temp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
-            Files.writeString(temp, gson.toJson(config) + "\n");
-            try {
-                Files.move(temp, configFile,
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                Files.move(temp, configFile,
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.writeStringAtomic(configFile, gson.toJson(config) + "\n");
         } catch (Exception e) {
             LOGGER.error("Failed to save config to {}", configFile, e);
             throw new RuntimeException(e);

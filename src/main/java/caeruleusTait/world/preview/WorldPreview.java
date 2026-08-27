@@ -12,6 +12,7 @@ import caeruleusTait.world.preview.backend.storage.AnalysisRepository;
 import caeruleusTait.world.preview.backend.storage.FileAnalysisRepository;
 import caeruleusTait.world.preview.compat.KnownModCompat;
 import caeruleusTait.world.preview.compat.ModCompatRegistry;
+import caeruleusTait.world.preview.util.AtomicFiles;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.neoforged.bus.api.IEventBus;

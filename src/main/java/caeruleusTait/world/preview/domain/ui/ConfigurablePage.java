@@ -5,11 +5,8 @@ import java.util.*;
 /**
  * Base class for configurable settings pages.
  *
- * <p>Implements a template method pattern: subclasses declare their
- * {@link ConfigBinding}s and {@link ControlLayout}, and the base class
- * handles the control creation, validation, and persistence flow.
- *
- * <p>Replaces the ~40% duplicated code across the 6 SettingsPage classes.
+ * <p>Subclasses declare their {@link ConfigBinding}s, and the base class
+ * handles binding validation and reset flows.
  */
 public abstract class ConfigurablePage {
 
@@ -61,24 +58,6 @@ public abstract class ConfigurablePage {
             } catch (Exception ignored) {
             }
         }
-    }
-
-    /**
-     * Template method: creates the layout for this page.
-     * Subclasses can override to describe how controls are arranged.
-     * The default returns a single-column layout.
-     */
-    public ControlLayout layout() {
-        return ControlLayout.column(1, 4);
-    }
-
-    /**
-     * Template method: builds the controls for this page using the given factory.
-     * Subclasses can override to create their specific controls via the factory.
-     * The default is a no-op; platform-specific pages may build controls directly.
-     */
-    public void buildControls(ControlFactory factory) {
-        // no-op by default
     }
 
     /** Validates all bindings on this page. */

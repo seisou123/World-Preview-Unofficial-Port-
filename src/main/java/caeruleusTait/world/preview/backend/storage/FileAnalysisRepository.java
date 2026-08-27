@@ -2,6 +2,7 @@ package caeruleusTait.world.preview.backend.storage;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import caeruleusTait.world.preview.util.AtomicFiles;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -72,7 +73,7 @@ public final class FileAnalysisRepository implements AnalysisRepository {
                 output.writeLong(actual.payloadLength());
                 output.write(payload);
             }
-            moveAtomically(temp, file);
+            AtomicFiles.moveReplace(temp, file);
         } catch (IOException e) {
             deleteQuietly(temp);
             throw new RuntimeException("Failed to write preview cache", e);
@@ -102,18 +103,10 @@ public final class FileAnalysisRepository implements AnalysisRepository {
         try {
             Files.createDirectories(file.toAbsolutePath().getParent());
             Files.writeString(temp, GSON.toJson(value));
-            moveAtomically(temp, file);
+            AtomicFiles.moveReplace(temp, file);
         } catch (IOException e) {
             deleteQuietly(temp);
             throw new RuntimeException("Failed to write analysis JSON", e);
-        }
-    }
-
-    private static void moveAtomically(Path source, Path target) throws IOException {
-        try {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
