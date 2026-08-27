@@ -1,0 +1,37 @@
+﻿
+> Configure project :
+Fabric Loom: 1.17.19
+.\gradlew.bat : RmRegisterResources failed: ϵͳÎ޷¨дÈëָ¶¨, Failed to query processes holding a lock on C:\Users\Administr
+ator\Music\world-preview-1.21.11\.gradle\loom-cache\minecraftMaven\net\minecraft\minecraft-merged-47e7eb7b86\1.21.11-lo
+om.mappings.1_21_11.layered+hash.2198-v2\minecraft-merged-47e7eb7b86-1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2
+.jar
+所在位置 行:1 字符: 167
++ ... ew-1.21.11; .\gradlew.bat clean build --no-build-cache --no-configura ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (RmRegisterResou...ash.2198-v2.jar:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+[Incubating] Problems report is available at: file:///C:/Users/Administrator/Music/world-preview-1.21.11/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+A problem occurred configuring root project 'world-preview-1.21.11'.
+> Failed to setup Minecraft, java.nio.file.FileSystemException: C:\Users\Administrator\Music\world-preview-1.21.11\.gra
+dle\loom-cache\minecraftMaven\net\minecraft\minecraft-merged-47e7eb7b86\1.21.11-loom.mappings.1_21_11.layered+hash.2198
+-v2\minecraft-merged-47e7eb7b86-1.21.11-loom.mappings.1_21_11.layered+hash.2198-v2.jar: 另一个程序正在使用此文件，进程无法访问。
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/9.5.0/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 985ms

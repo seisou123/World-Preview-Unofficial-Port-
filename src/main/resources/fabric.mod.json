@@ -1,4 +1,4 @@
-{
+﻿{
 	"schemaVersion": 1,
 	"id": "world_preview",
 	"version": "${version}",
@@ -22,14 +22,14 @@
 			"caeruleusTait.world.preview.client.WorldPreviewClient"
 		]
 	},
+	"accessWidener": "world_preview.accesswidener",
 	"mixins": [
 		"world_preview.mixins.json"
 	],
-	"accessWidener": "world_preview.accesswidener",
 	"depends": {
 		"fabricloader": ">=0.19.3",
-		"minecraft": ["~26.1.2"],
-		"java": ">=25",
+		"minecraft": ["~1.21.11"],
+		"java": ">=21",
 		"fabric-api": "*"
 	}
 }

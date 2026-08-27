@@ -68,15 +68,6 @@ public class WorldPreviewClient implements ClientModInitializer {
         }
     }
 
-    public static void renderTexture(AbstractTexture texture, double xMin, double yMin, double xMax, double yMax) {
-        // Legacy method - tries to get guiGraphics from current screen
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.screen != null) {
-            // Can't easily get guiGraphics here, so we skip rendering
-            // Callers should use the guiGraphics version instead
-        }
-    }
-
     /**
      * Removes a dynamic texture from the local registry and TextureManager.
      * Call this before or instead of relying solely on {@link AbstractTexture#close()}

@@ -1,0 +1,52 @@
+﻿
+> Configure project :
+Fabric Loom: 1.17.19
+
+Cannot remap modifiers because it does not exist in any of the targets [] or their parents.
+
+> Configure project :
+:remapping sources
+
+> Task :clean
+
+> Task :compileJava
+.\gradlew.bat : 注: 某些输入文件使用或覆盖了已过时的 API。
+所在位置 行:1 字符: 167
++ ... ew-1.21.11; .\gradlew.bat clean build --no-build-cache --no-configura ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (注: 某些输入文件使用或覆盖了已过时的 API。:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+注: 有关详细信息, 请使用 -Xlint:deprecation 重新编译。
+注: 某些输入文件使用了未经检查或不安全的操作。
+注: 有关详细信息, 请使用 -Xlint:unchecked 重新编译。
+
+> Task :processResources
+> Task :classes
+> Task :devJar
+> Task :jar
+> Task :processIncludeJars
+> Task :sourcesJar
+Cannot remap INSTANCE because it does not exist in any of the targets [net/minecraft/world/level/levelgen/DensityFunctions$BeardifierMarker] or their parents.
+> Task :remapJar
+> Task :compileTestJava
+> Task :processTestResources NO-SOURCE
+> Task :testClasses
+> Task :remapSourcesJar
+> Task :test
+> Task :assemble
+> Task :validateAccessWidener
+> Task :check
+> Task :sourcesZip
+> Task :build
+
+[Incubating] Problems report is available at: file:///C:/Users/Administrator/Music/world-preview-1.21.11/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/9.5.0/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 39s
+13 actionable tasks: 13 executed

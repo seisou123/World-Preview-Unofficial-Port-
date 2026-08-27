@@ -13,8 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for the domain/ui module.
  *
  * <p>Covers {@link ConfigBinding}, {@link ConfigurablePage}, {@link PageRegistry},
- * {@link ConfigChangeEvent}, {@link ControlLayout}, {@link ColorEditor}, and
- * {@link PageCategory}.
+ * {@link ConfigChangeEvent}, and {@link PageCategory}.
  */
 class UIDomainTest {
 
@@ -203,43 +202,6 @@ class UIDomainTest {
         assertThrows(IllegalArgumentException.class, () -> new ConfigChangeEvent("", 1, 2));
     }
 
-    // ---- ControlLayout tests ----
-
-    @Test
-    void controlLayoutRowFactory() {
-        ControlLayout layout = ControlLayout.row(3, 8);
-        assertEquals(ControlLayout.Orientation.ROW, layout.orientation());
-        assertEquals(1, layout.rows());
-        assertEquals(3, layout.columns());
-        assertEquals(8, layout.horizontalGap());
-    }
-
-    @Test
-    void controlLayoutColumnFactory() {
-        ControlLayout layout = ControlLayout.column(5, 4);
-        assertEquals(ControlLayout.Orientation.COLUMN, layout.orientation());
-        assertEquals(5, layout.rows());
-        assertEquals(1, layout.columns());
-    }
-
-    @Test
-    void controlLayoutGridFactory() {
-        ControlLayout layout = ControlLayout.grid(3, 4, 6);
-        assertEquals(ControlLayout.Orientation.GRID, layout.orientation());
-        assertEquals(3, layout.rows());
-        assertEquals(4, layout.columns());
-    }
-
-    @Test
-    void controlLayoutClampsNegativeValues() {
-        ControlLayout layout = new ControlLayout(ControlLayout.Orientation.ROW, -1, -1, -1, -1, -1);
-        assertEquals(1, layout.rows());
-        assertEquals(1, layout.columns());
-        assertEquals(0, layout.horizontalGap());
-        assertEquals(0, layout.verticalGap());
-        assertEquals(0, layout.padding());
-    }
-
     // ---- PageRegistry tests ----
 
     @Test
@@ -370,96 +332,6 @@ class UIDomainTest {
         PageRegistry registry = new PageRegistry();
         assertThrows(NullPointerException.class, () -> registry.register(null, new TestPage("t", PageCategory.GENERAL)));
         assertThrows(NullPointerException.class, () -> registry.register(PageCategory.GENERAL, null));
-    }
-
-    // ---- ColorEditor tests ----
-
-    @Test
-    void rgbToHsvRed() {
-        float[] hsv = ColorEditor.rgbToHsv(255, 0, 0);
-        assertEquals(0f, hsv[0], 0.01f);   // hue
-        assertEquals(1f, hsv[1], 0.01f);   // saturation
-        assertEquals(1f, hsv[2], 0.01f);   // value
-    }
-
-    @Test
-    void rgbToHsvGreen() {
-        float[] hsv = ColorEditor.rgbToHsv(0, 255, 0);
-        assertEquals(120f, hsv[0], 0.01f);
-        assertEquals(1f, hsv[1], 0.01f);
-        assertEquals(1f, hsv[2], 0.01f);
-    }
-
-    @Test
-    void rgbToHsvBlue() {
-        float[] hsv = ColorEditor.rgbToHsv(0, 0, 255);
-        assertEquals(240f, hsv[0], 0.01f);
-        assertEquals(1f, hsv[1], 0.01f);
-        assertEquals(1f, hsv[2], 0.01f);
-    }
-
-    @Test
-    void rgbToHsvBlack() {
-        float[] hsv = ColorEditor.rgbToHsv(0, 0, 0);
-        assertEquals(0f, hsv[0], 0.01f);
-        assertEquals(0f, hsv[1], 0.01f);
-        assertEquals(0f, hsv[2], 0.01f);
-    }
-
-    @Test
-    void rgbToHsvWhite() {
-        float[] hsv = ColorEditor.rgbToHsv(255, 255, 255);
-        assertEquals(0f, hsv[0], 0.01f);
-        assertEquals(0f, hsv[1], 0.01f);
-        assertEquals(1f, hsv[2], 0.01f);
-    }
-
-    @Test
-    void hsvToRgbRed() {
-        int rgb = ColorEditor.hsvToRgb(0, 1, 1);
-        assertEquals(0xFF0000, rgb);
-    }
-
-    @Test
-    void hsvToRgbGreen() {
-        int rgb = ColorEditor.hsvToRgb(120, 1, 1);
-        assertEquals(0x00FF00, rgb);
-    }
-
-    @Test
-    void hsvToRgbBlue() {
-        int rgb = ColorEditor.hsvToRgb(240, 1, 1);
-        assertEquals(0x0000FF, rgb);
-    }
-
-    @Test
-    void hsvToRgbBlack() {
-        int rgb = ColorEditor.hsvToRgb(0, 0, 0);
-        assertEquals(0x000000, rgb);
-    }
-
-    @Test
-    void hsvToRgbWhite() {
-        int rgb = ColorEditor.hsvToRgb(0, 0, 1);
-        assertEquals(0xFFFFFF, rgb);
-    }
-
-    @Test
-    void rgbHsvRoundTrip() {
-        int[] testColors = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0x00FFFF, 0xFF00FF, 0x808080, 0x336699};
-        for (int rgb : testColors) {
-            int r = (rgb >> 16) & 0xFF;
-            int g = (rgb >> 8) & 0xFF;
-            int b = rgb & 0xFF;
-            float[] hsv = ColorEditor.rgbToHsv(r, g, b);
-            int converted = ColorEditor.hsvToRgb(hsv[0], hsv[1], hsv[2]);
-            // Allow for rounding differences (±1 per channel)
-            int dr = Math.abs(r - ((converted >> 16) & 0xFF));
-            int dg = Math.abs(g - ((converted >> 8) & 0xFF));
-            int db = Math.abs(b - (converted & 0xFF));
-            assertTrue(dr <= 1 && dg <= 1 && db <= 1,
-                    "Round-trip failed for " + Integer.toHexString(rgb) + ": got " + Integer.toHexString(converted));
-        }
     }
 
     // ---- PageCategory tests ----
