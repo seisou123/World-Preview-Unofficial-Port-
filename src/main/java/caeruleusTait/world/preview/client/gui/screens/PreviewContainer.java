@@ -12,7 +12,6 @@ import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchService;
-import caeruleusTait.world.preview.backend.worker.SampleUtils;
 import caeruleusTait.world.preview.client.gui.widgets.RegionSelector;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.backend.color.ColorMap;
@@ -89,6 +88,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -154,8 +154,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private final RenderSettings renderSettings;
     private final PreviewMappingData previewMappingData;
     private PreviewData previewData;
-    private final SeedSearchService seedSearchService;
-    private final TerrainExportController terrainExportController;
+    private SeedSearchService seedSearchService;
+    private TerrainExportController terrainExportController;
     private volatile TerrainMapExporter.BiomeSampler terrainExportSampler;
     private volatile SeedSearchService.SeedContextFactory seedSearchFactory;
     private final NoiseColorProvider noiseColorProvider = new NoiseColorProvider();
@@ -170,25 +170,25 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private List<Identifier> levelStemKeys;
     private Registry<LevelStem> levelStemRegistry;
 
-    private final EditBox seedEdit;
-    private final Button randomSeedButton;
-    private final Button saveSeed;
-    private final Button openAnalysis;
-    private final Button settings;
-    private final Button resetToZeroZero;
-    private final ToggleButton toggleCaves;
-    private final ToggleButton toggleShowStructures;
-    private final ToggleButton toggleBiomes;
-    private final ToggleButton toggleNoise;
-    private final ToggleButton toggleHeightmap;
-    private final ToggleButton toggleIntersections;
-    private final ToggleButton toggleExpand;
-    private final CycleButton<RenderSettings.RenderMode> noiseCycleButton;
-    private final Button resetDefaultStructureVisibility;
-    private final Button switchBiomes;
-    private final Button switchStructures;
-    private final Button switchSeeds;
-    private final Button toggleSetSpawn;
+    private EditBox seedEdit;
+    private Button randomSeedButton;
+    private Button saveSeed;
+    private Button openAnalysis;
+    private Button settings;
+    private Button resetToZeroZero;
+    private ToggleButton toggleCaves;
+    private ToggleButton toggleShowStructures;
+    private ToggleButton toggleBiomes;
+    private ToggleButton toggleNoise;
+    private ToggleButton toggleHeightmap;
+    private ToggleButton toggleIntersections;
+    private ToggleButton toggleExpand;
+    private CycleButton<RenderSettings.RenderMode> noiseCycleButton;
+    private Button resetDefaultStructureVisibility;
+    private Button switchBiomes;
+    private Button switchStructures;
+    private Button switchSeeds;
+    private Button toggleSetSpawn;
     private boolean spawnPinActive = false;
 
     // === Slide-out rail system ===
@@ -202,10 +202,20 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     // Width of the floating panel when collapsed
     private static final int RAIL_WIDTH = 28;
     private static final int FLOATING_PANEL_WIDTH = 180;
+
+    /** Grid step (px) used to lay out the 20x20 toolbar buttons with 2px gaps. */
+    private static final int BUTTON_GRID_STEP = 22;
+
+    /** Shared daemon scheduler for delayed UI cleanups (replaces per-call Timers). */
+    private static final ScheduledExecutorService SEARCH_UI_CLEANUP = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "world_preview-search-ui-cleanup");
+        t.setDaemon(true);
+        return t;
+    });
     private final PreviewDisplay previewDisplay;
-    private final BiomesList biomesList;
-    private final StructuresList structuresList;
-    private final SeedsList seedsList;
+    private BiomesList biomesList;
+    private StructuresList structuresList;
+    private SeedsList seedsList;
     private PreviewContainerTabManager tabManager;
     private BiomesList.BiomeEntry[] allBiomes;
     private StructuresList.StructureEntry[] allStructures;
@@ -237,14 +247,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         previewMappingData = worldPreview.biomeColorMap();
         renderSettings = worldPreview.renderSettings();
         serverThreadPoolExecutor = worldPreview.serverThreadPoolExecutor();
-        this.seedSearchService = new SeedSearchService(minecraft, workManager.threadCount());
-        this.terrainExportController = new TerrainExportController(workManager.threadCount());
 
-        seedEdit = new EditBox(font, 0, 0, 100, LINE_HEIGHT - 2, SEED_FIELD);
-        seedEdit.setHint(SEED_FIELD);
-        seedEdit.setValue(dataProvider.seed());
-        seedEdit.setResponder(this::setSeed);
-        seedEdit.setTooltip(Tooltip.create(SEED_LABEL));
+        createServices();
+        createSeedBar(font);
         // CRITICAL: previewDisplay must be the FIRST widget in toRender.
         // In MC 1.21.11+/26.x, ContainerEventHandler dispatches mouse events in
         // FORWARD order (first-to-last).  By placing previewDisplay first, every
@@ -256,33 +261,55 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // (behind), and all other widgets render on top.
         previewDisplay = new PreviewDisplay(minecraft, this, TITLE);
         toRender.add(previewDisplay);
-
-        seedEdit.active = dataProvider.seedIsEditable();
+        // Seed bar widgets join right after the map so they keep event priority.
         toRender.add(seedEdit);
-
-        // seedLabel = new WGLabel(font, 0, 0, 100, LINE_HEIGHT, WGLabel.TextAlignment.LEFT, SEED_LABEL, 0xFFFFFF);
-        // toRender.add(seedLabel);
-
-        randomSeedButton = new OldStyleImageButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                0, 20, 20, /* xTexStart, yTexStart, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
-                this::randomizeSeed
-        );
-        randomSeedButton.setTooltip(Tooltip.create(BTN_RANDOM));
-        randomSeedButton.active = dataProvider.seedIsEditable();
         toRender.add(randomSeedButton);
-
-        saveSeed = new OldStyleImageButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                20, 20, 20, /* xTexStart, yTexStart, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
-                this::saveCurrentSeed
-        );
-        saveSeed.setTooltip(Tooltip.create(BTN_SAVE_SEED));
-        saveSeed.active = false;
         toRender.add(saveSeed);
 
+        createTopActionButtons(screen);
+        createRailButtons(font);
+        createListsAndTabs();
+        createViewToggles();
+        createSpawnControls();
+
+        wireCallbacks();
+
+        tabManager.resetTabs();
+        selectViewMode(BIOMES);
+
+        // Initialize settings to trigger data generation
+        // Note: inhibitUpdates is initially true, so we need to set it to false before calling updateSettings
+        // Register the listener AFTER setting inhibitUpdates to false to avoid race conditions
+        inhibitUpdates = false;
+        dataProvider.registerSettingsChangeListener(this::updateSettings);
+        updateSettings();
+    }
+
+    private void createServices() {
+        this.seedSearchService = new SeedSearchService(minecraft, workManager.threadCount());
+        this.terrainExportController = new TerrainExportController(workManager.threadCount());
+    }
+
+    /** Creates the seed edit box plus the randomize/save buttons (not yet added to {@code toRender}). */
+    private void createSeedBar(Font font) {
+        seedEdit = new EditBox(font, 0, 0, 100, LINE_HEIGHT - 2, SEED_FIELD);
+        seedEdit.setHint(SEED_FIELD);
+        seedEdit.setValue(dataProvider.seed());
+        seedEdit.setResponder(this::setSeed);
+        seedEdit.setTooltip(Tooltip.create(SEED_LABEL));
+        seedEdit.active = dataProvider.seedIsEditable();
+
+        randomSeedButton = iconButton(0, 20, this::randomizeSeed);
+        randomSeedButton.setTooltip(Tooltip.create(BTN_RANDOM));
+        randomSeedButton.active = dataProvider.seedIsEditable();
+
+        saveSeed = iconButton(20, 20, this::saveCurrentSeed);
+        saveSeed.setTooltip(Tooltip.create(BTN_SAVE_SEED));
+        saveSeed.active = false;
+    }
+
+    /** Creates the top action buttons (analysis, settings, home, structure reset). */
+    private void createTopActionButtons(Screen screen) {
         openAnalysis = Button.builder(WorldPreviewComponents.ANALYSIS_OPEN, ignored -> openAnalysisScreen())
                 .size(100, LINE_HEIGHT)
                 .build();
@@ -290,25 +317,15 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         openAnalysis.visible = cfg.showAnalysisButton;
         toRender.add(openAnalysis);
 
-        settings = new OldStyleImageButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                60, 20, 20, /* xTexStart, yTexStart, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
-                x -> {
-                    workManager.cancel();
-                    minecraft.setScreen(new caeruleusTait.world.preview.client.gui.screens.settings.SettingsScreen(screen, this));
-                }
-        );
+        settings = iconButton(60, 20, x -> {
+            workManager.cancel();
+            minecraft.setScreen(new caeruleusTait.world.preview.client.gui.screens.settings.SettingsScreen(screen, this));
+        });
         settings.setTooltip(Tooltip.create(BTN_SETTINGS));
         settings.active = false; // Do not allow clicking away until we loaded levelStemKeys
         toRender.add(settings);
 
-        resetToZeroZero = new OldStyleImageButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                120, 20, 20, /* xTexStart, yTexStart, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
-                x -> renderSettings.resetCenter()
-        );
+        resetToZeroZero = iconButton(120, 20, x -> renderSettings.resetCenter());
         resetToZeroZero.setTooltip(Tooltip.create(BTN_HOME));
         toRender.add(resetToZeroZero);
 
@@ -318,48 +335,43 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         resetDefaultStructureVisibility.setTooltip(Tooltip.create(BTN_RESET_STRUCTURES_TOOLTIP));
         resetDefaultStructureVisibility.visible = false;
         toRender.add(resetDefaultStructureVisibility);
+    }
 
-        // TranslucentButton: semi-transparent gray background, 40% opacity text,
-        // gray hover border, auto-adaptive width (min = RAIL_WIDTH - 2),
-        // slightly reduced height (18 instead of 20).
-        switchBiomes = new TranslucentButton(
-                font, 0, 0, RAIL_WIDTH - 2, LINE_HEIGHT - 2,
-                PreviewContainerTabManager.DisplayType.BIOMES.component(),
-                x -> {
-                    if (sidebarCollapsed) {
-                        floatingPanel = (floatingPanel == 0) ? -1 : 0;
-                        doLayout(lastScreenRectangle);
-                    } else {
-                        tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.BIOMES);
-                    }
-                });
-        switchStructures = new TranslucentButton(
-                font, 0, 0, RAIL_WIDTH - 2, LINE_HEIGHT - 2,
-                PreviewContainerTabManager.DisplayType.STRUCTURES.component(),
-                x -> {
-                    if (sidebarCollapsed) {
-                        floatingPanel = (floatingPanel == 1) ? -1 : 1;
-                        doLayout(lastScreenRectangle);
-                    } else {
-                        tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.STRUCTURES);
-                    }
-                });
-        switchSeeds = new TranslucentButton(
-                font, 0, 0, RAIL_WIDTH - 2, LINE_HEIGHT - 2,
-                PreviewContainerTabManager.DisplayType.SEEDS.component(),
-                x -> {
-                    if (sidebarCollapsed) {
-                        floatingPanel = (floatingPanel == 2) ? -1 : 2;
-                        doLayout(lastScreenRectangle);
-                    } else {
-                        tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.SEEDS);
-                    }
-                });
+    /** Creates the three sidebar rail buttons (biomes / structures / seeds). */
+    private void createRailButtons(Font font) {
+        switchBiomes = railButton(font, PreviewContainerTabManager.DisplayType.BIOMES, 0,
+                x -> tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.BIOMES));
+        switchStructures = railButton(font, PreviewContainerTabManager.DisplayType.STRUCTURES, 1,
+                x -> tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.STRUCTURES));
+        switchSeeds = railButton(font, PreviewContainerTabManager.DisplayType.SEEDS, 2,
+                x -> tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.SEEDS));
 
         toRender.add(switchBiomes);
         toRender.add(switchStructures);
         toRender.add(switchSeeds);
+    }
 
+    /**
+     * Rail button behavior shared by all three sidebar tabs: while the sidebar
+     * is collapsed the button toggles the floating panel; otherwise it switches tabs.
+     */
+    private TranslucentButton railButton(Font font, PreviewContainerTabManager.DisplayType type,
+                                         int panelIndex, java.util.function.Consumer<Button> tabSwitch) {
+        return new TranslucentButton(
+                font, 0, 0, RAIL_WIDTH - 2, LINE_HEIGHT - 2,
+                type.component(),
+                x -> {
+                    if (sidebarCollapsed) {
+                        floatingPanel = (floatingPanel == panelIndex) ? -1 : panelIndex;
+                        doLayout(lastScreenRectangle);
+                    } else {
+                        tabSwitch.accept(x);
+                    }
+                });
+    }
+
+    /** Creates the three sidebar lists and the tab manager that drives them. */
+    private void createListsAndTabs() {
         biomesList = new BiomesList(this, minecraft, 200, 300, 4, 100, true);
         biomesList.setRightClickListener(this::onBiomeRightClick);
 
@@ -385,7 +397,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(biomesList);
         toRender.add(structuresList);
         toRender.add(seedsList);
+    }
 
+    /** Creates the view-mode toggles (caves, structures, biomes/noise/heightmap/intersections, expand). */
+    private void createViewToggles() {
         toggleCaves = new ToggleButton(
                 0, 0, 20, 20, /* x, y, width, height */
                 80, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
@@ -400,9 +415,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(toggleCaves);
 
         toggleShowStructures = new ToggleButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                140, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                0, 0, 20, 20,
+                140, 20, 20, 20,
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT,
                 x -> renderSettings.hideAllStructures = !((ToggleButton) x).selected
         );
         toggleShowStructures.selected = !renderSettings.hideAllStructures;
@@ -410,9 +425,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(toggleShowStructures);
 
         toggleBiomes = new ToggleButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                360, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                0, 0, 20, 20,
+                360, 20, 20, 20,
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT,
                 x -> selectViewMode(BIOMES)
         );
         toggleBiomes.visible = false;
@@ -421,9 +436,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(toggleBiomes);
 
         toggleNoise = new ToggleButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                280, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                0, 0, 20, 20,
+                280, 20, 20, 20,
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT,
                 x -> selectViewMode(renderSettings.lastNoise)
         );
         toggleNoise.visible = false;
@@ -432,9 +447,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(toggleNoise);
 
         toggleHeightmap = new ToggleButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                200, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                0, 0, 20, 20,
+                200, 20, 20, 20,
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT,
                 x -> selectViewMode(HEIGHTMAP)
         );
         toggleHeightmap.visible = false;
@@ -442,9 +457,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(toggleHeightmap);
 
         toggleIntersections = new ToggleButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                240, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                0, 0, 20, 20,
+                240, 20, 20, 20,
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT,
                 x -> selectViewMode(INTERSECTIONS)
         );
         toggleIntersections.active = false;
@@ -460,9 +475,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(noiseCycleButton);
 
         toggleExpand = new ToggleButton(
-                0, 0, 20, 20, /* x, y, width, height */
-                320, 20, 20, 20, /* xTexStart, yTexStart, xDiffTex, yDiffTex */
-                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                0, 0, 20, 20,
+                320, 20, 20, 20,
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT,
                 x -> {
                     // Show/hide view toggle buttons.
                     // In collapsed mode, they appear in the rail below this button.
@@ -470,9 +485,12 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                     doLayout(lastScreenRectangle);
                 }
         );
-                toggleExpand.setTooltip(Tooltip.create(BTN_TOGGLE_EXPAND));
+        toggleExpand.setTooltip(Tooltip.create(BTN_TOGGLE_EXPAND));
         toRender.add(toggleExpand);
+    }
 
+    /** Creates the spawn-pin toggle button and wires its config round-trip. */
+    private void createSpawnControls() {
         // Spawn pin text button -- shows spawn text, toggles spawn pin mode.
         toggleSetSpawn = Button.builder(BTN_SET_SPAWN, btn -> {
             spawnPinActive = !spawnPinActive;
@@ -500,7 +518,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 toggleSetSpawn.setMessage(BTN_SET_SPAWN);
             }
         });
+    }
 
+    /** Wires cross-widget callbacks that depend on several groups being built. */
+    private void wireCallbacks() {
         biomesList.setBiomeChangeListener(x -> {
             previewDisplay.setSelectedBiomeId(x == null ? -1 : x.id());
             toggleCaves.selected = x == null && toggleCaves.selected;
@@ -510,16 +531,16 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // Wire up the occluding-widgets supplier so PreviewDisplay yields mouse
         // priority to buttons and panels that overlap the map area.
         previewDisplay.setOccludingWidgetsSupplier(() -> toRender);
+    }
 
-        tabManager.resetTabs();
-        selectViewMode(BIOMES);
-        
-        // Initialize settings to trigger data generation
-        // Note: inhibitUpdates is initially true, so we need to set it to false before calling updateSettings
-        // Register the listener AFTER setting inhibitUpdates to false to avoid race conditions
-        inhibitUpdates = false;
-        dataProvider.registerSettingsChangeListener(this::updateSettings);
-        updateSettings();
+    /** Factory for the standard 20x20 icon button used across the toolbar. */
+    private static OldStyleImageButton iconButton(int texX, int texY, Button.OnPress onPress) {
+        return new OldStyleImageButton(
+                0, 0, 20, 20, /* x, y, width, height */
+                texX, texY, 20, /* xTexStart, yTexStart, yDiffTex */
+                BUTTONS_TEXTURE, BUTTONS_TEX_WIDTH, BUTTONS_TEX_HEIGHT, /* Identifier, textureWidth, textureHeight*/
+                onPress
+        );
     }
 
 
@@ -943,17 +964,14 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                     updateSearchUI(false, Component.translatable(
                         "world_preview.search.stopped"));
                 }
-                // Clear status text after 3 seconds
-                new java.util.Timer(true).schedule(new java.util.TimerTask() {
-                    @Override
-                    public void run() {
-                        minecraft.execute(() -> {
-                            if (!seedSearchService.isSearching()) {
-                                updateSearchUI(false, null);
-                            }
-                        });
+                // Clear status text after 3 seconds. A single shared daemon
+                // scheduler is reused across searches; creating a fresh
+                // java.util.Timer per search leaked one thread each time.
+                SEARCH_UI_CLEANUP.schedule(() -> minecraft.execute(() -> {
+                    if (!seedSearchService.isSearching()) {
+                        updateSearchUI(false, null);
                     }
-                }, 3000);
+                }), 3, TimeUnit.SECONDS);
             },
             attempts -> updateSearchUI(true, Component.translatable(
                 "world_preview.search.progress", attempts, SeedSearchRequest.DEFAULT_MAX_ATTEMPTS))
@@ -1402,8 +1420,8 @@ public void onScreenReentry() {
         // Issue 6: Expand map left boundary to cover rail buttons
         final int mapLeft = left;
         final int top = screenRectangle.top() + 2;
-        // Bug 4: reduced bottom margin from 28 to 22 to use more vertical space
-        final int bottom = screenRectangle.bottom() - 22;
+        // Bug 4: reduced bottom margin from 28 to BUTTON_GRID_STEP to use more vertical space
+        final int bottom = screenRectangle.bottom() - BUTTON_GRID_STEP;
         final int mapWidth = screenRectangle.right() - mapLeft - 4;
         final int mapHeight = bottom - top;
 
@@ -1421,30 +1439,30 @@ public void onScreenReentry() {
 
         // --- Top control buttons (right-aligned over the map) ---
         int ctrlRight = screenRectangle.right() - 4;
-        toggleExpand.setPosition(ctrlRight - 22, top);
-        resetToZeroZero.setPosition(ctrlRight - 22 * 2, top);
-        toggleCaves.setPosition(ctrlRight - 22 * 3, top);
-        toggleShowStructures.setPosition(ctrlRight - 22 * 4, top);
-        settings.setPosition(ctrlRight - 22 * 5, top);
+        toggleExpand.setPosition(ctrlRight - BUTTON_GRID_STEP, top);
+        resetToZeroZero.setPosition(ctrlRight - BUTTON_GRID_STEP * 2, top);
+        toggleCaves.setPosition(ctrlRight - BUTTON_GRID_STEP * 3, top);
+        toggleShowStructures.setPosition(ctrlRight - BUTTON_GRID_STEP * 4, top);
+        settings.setPosition(ctrlRight - BUTTON_GRID_STEP * 5, top);
 
         // View toggle buttons: positioned to the left of the settings button
         // (visible when toggleExpand is selected).  The noiseCycleButton width is
         // reduced by 2x settings-button width (44px) so the entire toggle group
         // fits between the map left edge and the settings button.
-        final int noiseBtnWidth = 200 - 22 * 2;
+        final int noiseBtnWidth = 200 - BUTTON_GRID_STEP * 2;
         noiseCycleButton.setWidth(noiseBtnWidth);
-        final int toggleGroupWidth = 22 * 4 + noiseBtnWidth;
+        final int toggleGroupWidth = BUTTON_GRID_STEP * 4 + noiseBtnWidth;
         int viewBtnX = settings.getX() - toggleGroupWidth - 2;
         if (viewBtnX < mapLeft) {
             viewBtnX = mapLeft;
         }
         if (toggleExpand.selected) {
             int vi = 0;
-            toggleBiomes.setPosition(viewBtnX + 22 * vi++, top);
-            toggleIntersections.setPosition(viewBtnX + 22 * vi++, top);
-            toggleHeightmap.setPosition(viewBtnX + 22 * vi++, top);
-            toggleNoise.setPosition(viewBtnX + 22 * vi++, top);
-            noiseCycleButton.setPosition(viewBtnX + 22 * vi++, top);
+            toggleBiomes.setPosition(viewBtnX + BUTTON_GRID_STEP * vi++, top);
+            toggleIntersections.setPosition(viewBtnX + BUTTON_GRID_STEP * vi++, top);
+            toggleHeightmap.setPosition(viewBtnX + BUTTON_GRID_STEP * vi++, top);
+            toggleNoise.setPosition(viewBtnX + BUTTON_GRID_STEP * vi++, top);
+            noiseCycleButton.setPosition(viewBtnX + BUTTON_GRID_STEP * vi++, top);
             toggleBiomes.visible = true;
             toggleIntersections.visible = true;
             toggleHeightmap.visible = true;
@@ -1488,13 +1506,13 @@ public void onScreenReentry() {
         railY += switchHeight + 4;
 
         // Reset structures visibility (compact, at bottom of rail)
-        resetDefaultStructureVisibility.setPosition(railLeft, bottom - 22);
+        resetDefaultStructureVisibility.setPosition(railLeft, bottom - BUTTON_GRID_STEP);
         resetDefaultStructureVisibility.setWidth(RAIL_WIDTH - 2);
 
         // Bug 5: Seed bar layout restructuring
         // Seed input shortened by 1.5 button widths (~33px), left-aligned
         int seedBarY = bottom + 2;
-        int btnW = 22;
+        int btnW = BUTTON_GRID_STEP;
         int spawnW = (int)(btnW * 2.5);  // 2.5x button width
         int seedEditWidth = (screenRectangle.right() - left - 4) - btnW * 2 - spawnW - 6;
         if (seedEditWidth < 80) seedEditWidth = 80;
@@ -1577,30 +1595,30 @@ public void onScreenReentry() {
         int bottom = screenRectangle.bottom() - 32;
 
         // Preview
-        final int expand = toggleExpand.selected ? 22 + 2 : 0;
+        final int expand = toggleExpand.selected ? BUTTON_GRID_STEP + 2 : 0;
 
         previewDisplay.setPosition(previewLeft, top + expand + 1);
         previewDisplay.setSize(screenRectangle.right() - previewDisplay.getX() - 4, screenRectangle.bottom() - previewDisplay.getY() - 14);
 
         // BOTTOM
 
-        seedEdit.setWidth(leftWidth - 1 - 22 * 2);
+        seedEdit.setWidth(leftWidth - 1 - BUTTON_GRID_STEP * 2);
         seedEdit.setX(left);
         seedEdit.setY(bottom + 1);
 
         randomSeedButton.setX((left + leftWidth) - 20);
         randomSeedButton.setY(bottom);
 
-        saveSeed.setX((left + leftWidth) - 22 - 20);
+        saveSeed.setX((left + leftWidth) - BUTTON_GRID_STEP - 20);
         saveSeed.setY(bottom);
 
         // TOP
-        int cycleWith = leftWidth - 22 * 4;
+        int cycleWith = leftWidth - BUTTON_GRID_STEP * 4;
 
                 int btnStart = left + cycleWith + 2;
         settings.setPosition(left, top);
-        toggleSetSpawn.setPosition(left + 22, top);
-        toggleSetSpawn.setWidth(btnStart - 2 - (left + 22));
+        toggleSetSpawn.setPosition(left + BUTTON_GRID_STEP, top);
+        toggleSetSpawn.setWidth(btnStart - 2 - (left + BUTTON_GRID_STEP));
         toggleSetSpawn.visible = (dataProvider.minecraftServer() == null);
         
         // Toggle analysis button visibility
@@ -1613,21 +1631,21 @@ public void onScreenReentry() {
         }
         
         int i = 0;
-        toggleShowStructures.setPosition(btnStart + 22 * i++, top);
-        toggleCaves.setPosition(btnStart + 22 * i++, top);
-        resetToZeroZero.setPosition(btnStart + 22 * i++, top);
-        toggleExpand.setPosition(btnStart + 22 * i++, top);
+        toggleShowStructures.setPosition(btnStart + BUTTON_GRID_STEP * i++, top);
+        toggleCaves.setPosition(btnStart + BUTTON_GRID_STEP * i++, top);
+        resetToZeroZero.setPosition(btnStart + BUTTON_GRID_STEP * i++, top);
+        toggleExpand.setPosition(btnStart + BUTTON_GRID_STEP * i++, top);
 
         // TOP - hidden buttons
         // Reduce noiseCycleButton width by 2x settings-button width for consistency
         // with the collapsed layout.
-        noiseCycleButton.setWidth(200 - 22 * 2);
+        noiseCycleButton.setWidth(200 - BUTTON_GRID_STEP * 2);
         i = 0;
-        toggleBiomes.setPosition(previewLeft + 22 * i++, top);
-        toggleIntersections.setPosition(previewLeft + 22 * i++, top);
-        toggleHeightmap.setPosition(previewLeft + 22 * i++, top);
-        toggleNoise.setPosition(previewLeft + 22 * i++, top);
-        noiseCycleButton.setPosition(previewLeft + 22 * i++, top);
+        toggleBiomes.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
+        toggleIntersections.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
+        toggleHeightmap.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
+        toggleNoise.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
+        noiseCycleButton.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
 
         //  - new row
         // The TOP section above occupies 1-2 rows depending on analysis button visibility.
@@ -1768,14 +1786,6 @@ public void onScreenReentry() {
 
     public static int analysisYForDimension(int minY, int height) {
         return minY + height;
-    }
-
-    @SuppressWarnings("unused")
-    private LevelStem levelStemForDimension(String dimension) {
-        if (levelStemRegistry == null) throw new IllegalStateException("dimension registry is unavailable");
-        LevelStem stem = levelStemRegistry.getValue(ResourceKey.create(Registries.LEVEL_STEM, Identifier.parse(dimension)));
-        if (stem == null) throw new IllegalArgumentException("dimension is unavailable: " + dimension);
-        return stem;
     }
 
     public void openAnalysisScreen() {
