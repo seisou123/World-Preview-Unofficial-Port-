@@ -96,9 +96,15 @@ public class WorkManager {
     private ExecutorService executorService;
     private ExecutorService queueChunksService;
 
-    private ChunkPos lastQueuedTopLeft;
-    private ChunkPos lastQueuedBotRight;
-    private int lastY;
+    // Guards the queueIsRunning / pending-range handshake between the render
+    // thread (queueRange) and the queue thread (queueRangeWrapper finish path).
+    private final Object queueStateLock = new Object();
+
+    // Volatile: written by the render thread / drain thread and read by both
+    // for dedup; a stale value would silently swallow a range request.
+    private volatile ChunkPos lastQueuedTopLeft;
+    private volatile ChunkPos lastQueuedBotRight;
+    private volatile int lastY;
 
     // BUG FIX: These fields are accessed from both the render thread (queueRange)
     // and the queueChunksService thread (queueRangeWrapper/queueRangeReal).
@@ -321,19 +327,28 @@ shutdownExecutors();
         }
 
         // Only have one in queue; keep the latest requested range for drain-after-finish.
-        if (queueIsRunning) {
-            // Signal the current queue algorithm to hurry up and skip
-            // queueing more work units / batches since they will be canceled
-            // the next run anyway.
-            shouldEarlyAbortQueuing = true;
-            pendingTopLeft = topLeftBlock;
-            pendingBottomRight = bottomRightBlock;
-            return;
-        }
+        // BUG FIX: the queueIsRunning check and the pending write must be atomic
+        // against the finish path in queueRangeWrapper.  Previously the render
+        // thread could observe queueIsRunning==true and then write the pending
+        // range AFTER the queue thread had set queueIsRunning=false and drained
+        // pending — the new range was orphaned with nobody left to run it, and
+        // the display-side dedup guard made the loss sticky (the map never
+        // loads at that drag position until the user pans far away).
+        synchronized (queueStateLock) {
+            if (queueIsRunning) {
+                // Signal the current queue algorithm to hurry up and skip
+                // queueing more work units / batches since they will be canceled
+                // the next run anyway.
+                shouldEarlyAbortQueuing = true;
+                pendingTopLeft = topLeftBlock;
+                pendingBottomRight = bottomRightBlock;
+                return;
+            }
 
-        // Accepting a new queue pass -- clear any stale pending range.
-        pendingTopLeft = null;
-        pendingBottomRight = null;
+            // Accepting a new queue pass -- clear any stale pending range.
+            pendingTopLeft = null;
+            pendingBottomRight = null;
+        }
 
         // Now, that we are definitely queueing, remember the last values
         lastQueuedTopLeft = topLeft;
@@ -345,6 +360,37 @@ shutdownExecutors();
             }
             queueFutures.add(queueChunksService.submit(() -> queueRangeWrapper(topLeftBlock, bottomRightBlock)));
         }
+    }
+
+    /**
+     * Re-issues a range bypassing the last-queued dedup guard.  Used by the
+     * display's viewport safety net when visible chunks are missing completed
+     * sampling (lost pending handoff, failed batch, ...).
+     */
+    public void forceQueueRange(BlockPos topLeftBlock, BlockPos bottomRightBlock) {
+        lastQueuedTopLeft = null;
+        lastQueuedBotRight = null;
+        queueRange(topLeftBlock, bottomRightBlock);
+    }
+
+    /**
+     * True when no queue pass is running and every submitted batch has finished
+     * (successfully, exceptionally or cancelled).  More accurate than
+     * {@link #activeBatchCount()}, which never reaches zero because finished
+     * batches stay in {@code currentBatches} until the next pass clears them.
+     */
+    public boolean isIdle() {
+        if (isQueueRunning()) {
+            return false;
+        }
+        synchronized (futures) {
+            for (Future<?> f : futures) {
+                if (!f.isDone()) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /**
@@ -384,17 +430,27 @@ shutdownExecutors();
             queueRangeReal(topLeftBlock, bottomRightBlock, epochAtStart);
         } catch (Throwable e) {
             e.printStackTrace();
+            // BUG FIX: clear the dedup guard so the failed range can be
+            // re-queued later.  Without this, lastQueuedTopLeft/BotRight keep
+            // pointing at a range whose work never completed, and every
+            // identical request is silently dropped (map never loads there).
+            lastQueuedTopLeft = null;
+            lastQueuedBotRight = null;
         } finally {
-            queueIsRunning = false;
+            // BUG FIX: clearing queueIsRunning and draining pending must be
+            // atomic against queueRange's pending write (see queueStateLock).
+            final BlockPos pMin;
+            final BlockPos pMax;
+            synchronized (queueStateLock) {
+                queueIsRunning = false;
+                pMin = pendingTopLeft;
+                pMax = pendingBottomRight;
+                pendingTopLeft = null;
+                pendingBottomRight = null;
+            }
             // Drain the latest pending viewport if cancel/shutdown did not bump the epoch.
-            if (epochAtStart == sessionEpoch.get()) {
-                BlockPos pMin = pendingTopLeft;
-                BlockPos pMax = pendingBottomRight;
-                if (pMin != null && pMax != null) {
-                    pendingTopLeft = null;
-                    pendingBottomRight = null;
-                    queueRange(pMin, pMax);
-                }
+            if (epochAtStart == sessionEpoch.get() && pMin != null && pMax != null) {
+                queueRange(pMin, pMax);
             }
         }
     }
