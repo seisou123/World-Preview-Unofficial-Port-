@@ -50,6 +50,31 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_STOPPED = Component.translatable("world_preview.search.stopped");
     public static final Component SEARCH_ERROR = Component.translatable("world_preview.search.error");
 
+    // === Advanced seed search screen (v1.5) ===
+    public static final Component SEARCH_TITLE = Component.translatable("world_preview.search.title");
+    public static final Component SEARCH_OPEN = Component.translatable("world_preview.search.open");
+    public static final Component SEARCH_OPEN_TOOLTIP = Component.translatable("world_preview.search.open.tooltip");
+    public static final Component SEARCH_BIOME = Component.translatable("world_preview.search.biome");
+    public static final Component SEARCH_BIOME_NONE = Component.translatable("world_preview.search.biome.none");
+    public static final Component SEARCH_CLEAR_BIOME = Component.translatable("world_preview.search.biome.clear");
+    public static final Component SEARCH_STRUCTURE = Component.translatable("world_preview.search.structure");
+    public static final Component SEARCH_STRUCTURE_NONE = Component.translatable("world_preview.search.structure.none");
+    public static final Component SEARCH_ANCHOR = Component.translatable("world_preview.search.anchor");
+    public static final Component SEARCH_ANCHOR_CENTER = Component.translatable("world_preview.search.anchor.center");
+    public static final Component SEARCH_ANCHOR_ORIGIN = Component.translatable("world_preview.search.anchor.origin");
+    public static final Component SEARCH_MIN_AREA = Component.translatable("world_preview.search.min_area");
+    public static final Component SEARCH_STRUCTURE_DISTANCE = Component.translatable("world_preview.search.structure_distance");
+    public static final Component SEARCH_ATTEMPTS = Component.translatable("world_preview.search.attempts");
+    public static final Component SEARCH_HITS = Component.translatable("world_preview.search.hits");
+    public static final Component SEARCH_START = Component.translatable("world_preview.search.start");
+    public static final Component SEARCH_VIEW = Component.translatable("world_preview.search.view");
+    public static final Component SEARCH_VIEW_RESULTS = Component.translatable("world_preview.search.view.results");
+    public static final Component SEARCH_VIEW_HISTORY = Component.translatable("world_preview.search.view.history");
+    public static final Component SEARCH_VIEW_FAVORITES = Component.translatable("world_preview.search.view.favorites");
+    public static final Component SEARCH_NO_CRITERIA = Component.translatable("world_preview.search.no_criteria");
+    public static final Component SEARCH_APPLIED = Component.translatable("world_preview.search.applied");
+    public static final Component SEARCH_APPLIED_CLIPBOARD = Component.translatable("world_preview.search.applied.clipboard");
+
     // === Terrain map export ===
     public static final Component TERRAIN_EXPORT_TITLE = Component.translatable("world_preview.terrain_export.title");
     public static final Component TERRAIN_EXPORT_OPEN = Component.translatable("world_preview.terrain_export.open");

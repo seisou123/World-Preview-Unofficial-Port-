@@ -5,7 +5,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.resources.Identifier;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.SplittableRandom;
@@ -20,7 +23,8 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
  * Dedicated seed search service.
  * <p>
  * Receives an immutable {@link SeedSearchRequest}, creates temporary worldgen context for each candidate seed,
- * samples within the visible screen area to check for the target biome, and stops on hit.
+ * evaluates every {@link SearchCriterion} against the sampled viewport and keeps the best
+ * {@code maxHits} ranked seeds. Searches with {@code maxHits == 1} stop on the first hit.
  * Only one search task may run at a time.
  * </p>
  */
@@ -54,7 +58,7 @@ public class SeedSearchService implements AutoCloseable {
      *
      * @param request         Search request (immutable snapshot)
      * @param contextFactory  Seed-specific worldgen context factory
-     * @param onHit           Hit callback (main thread, receives the hit seed)
+     * @param onHit           Hit callback (main thread, receives the hit seed; only used for single-hit requests)
      * @param onComplete      Completion callback (main thread, receives final result)
      * @return true if search started, false if a search is already running
      */
@@ -133,6 +137,14 @@ public class SeedSearchService implements AutoCloseable {
     }
 
     /**
+     * Number of hits collected so far in the current search, or -1 if no search is active.
+     */
+    public int hitCount() {
+        var task = currentTask;
+        return task != null ? task.hits.size() : -1;
+    }
+
+    /**
      * Stop the current search and reset state (used when closing the preview tab).
      */
     @Override
@@ -181,75 +193,157 @@ public class SeedSearchService implements AutoCloseable {
                 }
 
                 try {
-                    if (checkSeed(candidateSeed, request, samplePoints, task)) {
-                        // Hit!
-                        reportHit(task, candidateSeed);
-                        return;
+                    SeedEvaluation evaluation = evaluateSeed(candidateSeed, request, samplePoints, task);
+                    if (evaluation != null) {
+                        // Sampled successfully; reset consecutive failure count
+                        task.consecutiveFailures.set(0);
+                        if (request.maxHits() == 1) {
+                            // Hit!
+                            reportHit(task, candidateSeed, evaluation.score());
+                            return;
+                        }
+                        task.hits.add(new SeedSearchResult.Ranked(candidateSeed, evaluation.score()));
+                    } else {
+                        // Sampled successfully but no hit, reset consecutive failure count
+                        task.consecutiveFailures.set(0);
                     }
-                    // Sampled successfully but no hit, reset consecutive failure count
-                    task.consecutiveFailures.set(0);
                 } catch (Exception e) {
                     LOGGER.warn("Seed {} threw exception during sampling, skipping", candidateSeed, e);
                     task.consecutiveFailures.incrementAndGet();
                     if (task.consecutiveFailures.get() >= MAX_CONSECUTIVE_FAILURES) {
                         LOGGER.error("Too many consecutive failures ({}), aborting search", MAX_CONSECUTIVE_FAILURES);
-                        reportResult(task, new SeedSearchResult.Miss());
+                        reportResult(task, finish(task));
                         return;
                     }
                 }
             }
 
-            // Exhausted max attempts without a hit
-            reportResult(task, new SeedSearchResult.Miss());
+            // Exhausted max attempts
+            reportResult(task, finish(task));
         } finally {
             var latch = currentLatch;
             if (latch != null) latch.countDown();
         }
     }
 
-    private boolean checkSeed(long seed, SeedSearchRequest request,
-                               BlockPos[] samplePoints, SearchTask task) throws Exception {
+    /**
+     * Builds the final result for multi-hit searches: the best
+     * {@code maxHits} ranked hits (best first), or a Miss when nothing matched.
+     */
+    private static SeedSearchResult finish(SearchTask task) {
+        List<SeedSearchResult.Ranked> hits = new ArrayList<>(task.hits);
+        if (hits.isEmpty()) {
+            return new SeedSearchResult.Miss();
+        }
+        hits.sort(Comparator.comparingDouble(SeedSearchResult.Ranked::score).reversed());
+        int limit = Math.min(hits.size(), task.request.maxHits());
+        return new SeedSearchResult.Multiple(hits.subList(0, limit));
+    }
+
+    /**
+     * Evaluates every criterion of the request against the candidate seed.
+     *
+     * @return the seed's score when all criteria pass, or {@code null} when any fails
+     */
+    @Nullable
+    private SeedEvaluation evaluateSeed(long seed, SeedSearchRequest request,
+                                        BlockPos[] samplePoints, SearchTask task) throws Exception {
         // Check cancellation flag
-        if (task.cancelled.get()) return false;
+        if (task.cancelled.get()) return null;
 
         // Create seed-specific sampler, use try-with-resources to ensure cleanup
         try (var sampler = task.contextFactory.createSampler(seed)) {
-            if (task.cancelled.get()) return false;
+            if (task.cancelled.get()) return null;
 
-            int matchCount = 0;
-            double minDistance = Double.MAX_VALUE;
-            BlockPos center = request.center();
+            double score = 0.0;
 
-            for (int i = 0; i < samplePoints.length; i++) {
-                var pos = samplePoints[i];
-                // Check cancellation flag every 10 sample points
-                if (i % 10 == 0 && task.cancelled.get()) {
-                    return false;
+            for (SearchCriterion criterion : request.criteria()) {
+                if (task.cancelled.get()) return null;
+                Double criterionScore = switch (criterion) {
+                    case SearchCriterion.Biome biome ->
+                            evaluateBiome(biome, request, samplePoints, sampler);
+                    case SearchCriterion.Structure structure ->
+                            evaluateStructure(structure, request, sampler);
+                };
+                if (criterionScore == null) {
+                    return null;
                 }
-                if (sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), request.targetBiome())) {
-                    matchCount++;
-                    // Calculate distance from screen center
-                    double dx = pos.getX() - center.getX();
-                    double dz = pos.getZ() - center.getZ();
-                    double distance = Math.sqrt(dx * dx + dz * dz);
-                    minDistance = Math.min(minDistance, distance);
-                }
+                score += criterionScore;
             }
 
-            // Check area percentage
-            double areaPercent = (samplePoints.length > 0) ? (matchCount * 100.0 / samplePoints.length) : 0;
-            if (areaPercent < request.minAreaPercent()) {
-                return false;
-            }
-
-            // Check distance requirement
-            if (request.maxDistance() > 0 && minDistance > request.maxDistance()) {
-                return false;
-            }
-
-            // At least one matching point is required for a hit
-            return matchCount > 0;
+            return new SeedEvaluation(seed, score);
         }
+    }
+
+    /**
+     * Checks a biome criterion: area coverage and center distance.
+     *
+     * @return score contribution, or {@code null} when the criterion fails
+     */
+    @Nullable
+    private static Double evaluateBiome(SearchCriterion.Biome criterion, SeedSearchRequest request,
+                                        BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
+        int matchCount = 0;
+        double minDistance = Double.MAX_VALUE;
+        BlockPos center = request.center();
+
+        for (int i = 0; i < samplePoints.length; i++) {
+            var pos = samplePoints[i];
+            if (sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), criterion.biome())) {
+                matchCount++;
+                // Calculate distance from screen center
+                double dx = pos.getX() - center.getX();
+                double dz = pos.getZ() - center.getZ();
+                double distance = Math.sqrt(dx * dx + dz * dz);
+                minDistance = Math.min(minDistance, distance);
+            }
+        }
+
+        // Check area percentage
+        double areaPercent = (samplePoints.length > 0) ? (matchCount * 100.0 / samplePoints.length) : 0;
+        if (areaPercent < criterion.minAreaPercent()) {
+            return null;
+        }
+
+        // Check distance requirement
+        if (criterion.maxDistance() > 0 && minDistance > criterion.maxDistance()) {
+            return null;
+        }
+
+        // At least one matching point is required for a hit
+        if (matchCount == 0) {
+            return null;
+        }
+
+        // Base score: coverage. When a distance cap is set, reward proximity to the center.
+        double score = areaPercent;
+        if (criterion.maxDistance() > 0) {
+            score += 50.0 * (1.0 - Math.min(1.0, minDistance / criterion.maxDistance()));
+        }
+        return score;
+    }
+
+    /**
+     * Checks a structure criterion via the sampler's {@link StructureProbe} capability.
+     *
+     * @return score contribution, or {@code null} when the criterion fails or cannot be probed
+     */
+    @Nullable
+    private static Double evaluateStructure(SearchCriterion.Structure criterion, SeedSearchRequest request,
+                                            BiomeSampler sampler) throws Exception {
+        if (!(sampler instanceof StructureProbe probe)) {
+            LOGGER.warn("Structure criterion {} ignored: sampler does not support structure probing", criterion.structure());
+            return null;
+        }
+        BlockPos found = probe.nearestStructure(Set.of(criterion.structure()), request.center(), criterion.maxDistanceBlocks());
+        if (found == null) {
+            return null;
+        }
+        double dx = found.getX() - request.center().getX();
+        double dz = found.getZ() - request.center().getZ();
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        // Score 50..100: closer structures rank higher
+        return 50.0 + 50.0 * (1.0 - Math.min(1.0, distance / criterion.maxDistanceBlocks()));
     }
 
     /**
@@ -280,7 +374,7 @@ public class SeedSearchService implements AutoCloseable {
     /**
      * Report hit result on the main thread and validate fingerprint.
      */
-    private void reportHit(SearchTask task, long seed) {
+    private void reportHit(SearchTask task, long seed, double score) {
         minecraftExecute(() -> {
             // Validate: is the task token still valid?
             if (currentTask != task || task.cancelled.get()) {
@@ -294,8 +388,10 @@ public class SeedSearchService implements AutoCloseable {
             }
             currentTask = null;
             currentFingerprint = null;
-            task.onHit.accept(seed);
-            task.onComplete.accept(new SeedSearchResult.Hit(seed));
+            if (task.onHit != null) {
+                task.onHit.accept(seed);
+            }
+            task.onComplete.accept(new SeedSearchResult.Hit(seed, score));
         });
     }
 
@@ -323,24 +419,28 @@ public class SeedSearchService implements AutoCloseable {
 
     // ========== Internal types ==========
 
+    /** Seed evaluation outcome: non-null when all criteria passed. */
+    private record SeedEvaluation(long seed, double score) {}
+
     /** Search task state */
     private static class SearchTask {
         final AtomicBoolean cancelled;
         final SeedSearchRequest request;
         final SeedContextFactory contextFactory;
-        final Consumer<Long> onHit;
+        final @Nullable Consumer<Long> onHit;
         final Consumer<SeedSearchResult> onComplete;
-        final Consumer<Integer> onProgress;
+        final @Nullable Consumer<Integer> onProgress;
         final AtomicInteger attempts = new AtomicInteger(0);
         final AtomicInteger consecutiveFailures = new AtomicInteger(0);
+        final List<SeedSearchResult.Ranked> hits = new CopyOnWriteArrayList<>();
 
         SearchTask(
                 AtomicBoolean cancelled,
                 SeedSearchRequest request,
                 SeedContextFactory contextFactory,
-                Consumer<Long> onHit,
+                @Nullable Consumer<Long> onHit,
                 Consumer<SeedSearchResult> onComplete,
-                Consumer<Integer> onProgress
+                @Nullable Consumer<Integer> onProgress
         ) {
             this.cancelled = cancelled;
             this.request = request;
@@ -370,6 +470,21 @@ public class SeedSearchService implements AutoCloseable {
 
         @Override
         default void close() throws Exception {}
+    }
+
+    /**
+     * Optional capability of a {@link BiomeSampler}: locate the nearest valid
+     * generation point of a structure for the candidate seed. Implemented by
+     * the lightweight worldgen probe; plain biome samplers do not support it.
+     */
+    public interface StructureProbe {
+        /**
+         * Find the nearest structure of any of the given types within
+         * {@code maxDistanceBlocks} of {@code anchor} for the probed seed.
+         *
+         * @return the structure's locate position, or {@code null} when none is in range
+         */
+        @Nullable BlockPos nearestStructure(Set<Identifier> structures, BlockPos anchor, int maxDistanceBlocks) throws Exception;
     }
 
     /**

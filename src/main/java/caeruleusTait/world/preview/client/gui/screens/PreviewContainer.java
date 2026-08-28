@@ -174,6 +174,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private Button randomSeedButton;
     private Button saveSeed;
     private Button openAnalysis;
+    private Button seedSearchButton;
     private Button settings;
     private Button resetToZeroZero;
     private ToggleButton toggleCaves;
@@ -317,6 +318,12 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         openAnalysis.visible = cfg.showAnalysisButton;
         toRender.add(openAnalysis);
 
+        seedSearchButton = Button.builder(WorldPreviewComponents.SEARCH_OPEN, ignored -> openSeedSearchScreen(null, false))
+                .size(100, LINE_HEIGHT)
+                .build();
+        seedSearchButton.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_OPEN_TOOLTIP));
+        toRender.add(seedSearchButton);
+
         settings = iconButton(60, 20, x -> {
             workManager.cancel();
             minecraft.setScreen(new caeruleusTait.world.preview.client.gui.screens.settings.SettingsScreen(screen, this));
@@ -376,6 +383,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         biomesList.setRightClickListener(this::onBiomeRightClick);
 
         structuresList = new StructuresList(minecraft, 200, 300, 4, 100);
+        structuresList.setRightClickListener(entry -> openSeedSearchScreen(entry, true));
 
         seedsList = new SeedsList(minecraft, this);
         updateSeedListWidget();
@@ -826,13 +834,37 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private void setupSearchContext() {
         if (workManager.worldgenContext() == null) return;
         var worldgenContext = workManager.worldgenContext();
-        
+
         // Extract shared components to avoid full server infra per seed
         final var biomeSource = worldgenContext.biomeSource();
         final var chunkGenerator = worldgenContext.chunkGenerator();
         // compositeAccess() returns RegistryAccess.Frozen, supports lookupOrThrow
         final var compositeRegistryAccess = worldgenContext.registryAccess().compositeAccess();
-        
+
+        // Structure probing (vanilla /locate core) is optional infrastructure:
+        // when the template manager cannot be built, structure criteria fail cleanly.
+        final var probeRegistries = new caeruleusTait.world.preview.backend.analysis.LightweightSeedSampler.RegistryAccessBundle(
+                compositeRegistryAccess,
+                compositeRegistryAccess.lookupOrThrow(net.minecraft.core.registries.Registries.STRUCTURE),
+                compositeRegistryAccess.lookupOrThrow(net.minecraft.core.registries.Registries.STRUCTURE_SET));
+        net.minecraft.world.level.LevelHeightAccessor probeHeight;
+        net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager probeTemplates;
+        try {
+            // Reuse the WorkManager-owned SampleUtils: it already carries the
+            // template manager and height accessor for this worldgen context.
+            var sampleUtils = worldgenContext.createSampleUtils();
+            probeHeight = sampleUtils.levelHeightAccessor();
+            probeTemplates = sampleUtils.structureTemplateManager();
+        } catch (Exception e) {
+            LOGGER.warn("Structure probing disabled: failed to obtain structure template manager", e);
+            probeHeight = net.minecraft.world.level.LevelHeightAccessor.create(
+                    worldgenContext.dimensionType().minY(), worldgenContext.dimensionType().height());
+            probeTemplates = null;
+        }
+        final var probeRegistriesFinal = probeRegistries;
+        final var probeHeightFinal = probeHeight;
+        final var probeTemplatesFinal = probeTemplates;
+
         seedSearchFactory = seed -> {
             // Create lightweight RandomState per seed, no DummyMinecraftServer needed
             net.minecraft.world.level.levelgen.RandomState randomState;
@@ -849,33 +881,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                     seed
                 );
             }
-            
-            final var finalRandomState = randomState;
-            
-            return new SeedSearchService.BiomeSampler() {
-                @Override
-                public boolean sampleContains(int x, int y, int z, Identifier targetBiome) throws Exception {
-                    // Sample directly from BiomeSource, bypass full SampleUtils
-                    var climateSampler = finalRandomState.sampler();
-                    var biomeHolder = biomeSource.getNoiseBiome(
-                        net.minecraft.core.QuartPos.fromBlock(x),
-                        net.minecraft.core.QuartPos.fromBlock(y),
-                        net.minecraft.core.QuartPos.fromBlock(z),
-                        climateSampler
-                    );
-                    
-                    var biomeId = biomeHolder.unwrapKey()
-                        .map(key -> key.identifier())
-                        .orElse(null);
-                    
-                    return biomeId != null && biomeId.equals(targetBiome);
-                }
-                
-                @Override
-                public void close() throws Exception {
-                    // RandomState does not need explicit closing
-                }
-            };
+
+            return new caeruleusTait.world.preview.backend.analysis.LightweightSeedSampler(
+                    biomeSource, chunkGenerator, probeRegistriesFinal, randomState, seed, probeHeightFinal, probeTemplatesFinal);
         };
 
         // Set up terrain export sampler
@@ -914,39 +922,22 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             return;
         }
 
-        var center = previewDisplay.center();
-        var scaleSpec = renderSettings.toScaleSpec();
-        var blockScale = scaleSpec.blockScale();
-        var texWidth = previewDisplay.getTexWidth();
-        var texHeight = previewDisplay.getTexHeight();
-        var quartStride = renderSettings.quartStride();
-
-        int halfW = (int)(texWidth * blockScale / 2.0);
-        int halfH = (int)(texHeight * blockScale / 2.0);
-
-        int viewMinX = center.getX() - halfW;
-        int viewMaxX = center.getX() + halfW;
-        int viewMinZ = center.getZ() - halfH;
-        int viewMaxZ = center.getZ() + halfH;
-        int yLevel = center.getY();
-
-        var worldgenContext = workManager.worldgenContext();
-        var contextFingerprint = worldgenContext != null ? worldgenContext.fingerprint() : "";
-
+        var viewport = currentSearchViewport();
         var request = new SeedSearchRequest(
             entry.entry().key().identifier(),
-            worldgenContext != null ? worldgenContext.dimension() : "",
-            center, yLevel,
-            viewMinX, viewMaxX, viewMinZ, viewMaxZ,
-            quartStride * 4,
-            contextFingerprint,
+            viewport.dimension(),
+            viewport.center(),
+            viewport.center().getY(),
+            viewport.viewMinX(), viewport.viewMaxX(), viewport.viewMinZ(), viewport.viewMaxZ(),
+            viewport.sampleStep(),
+            viewport.contextFingerprint(),
             SeedSearchRequest.DEFAULT_MAX_ATTEMPTS,
             cfg.searchMinAreaPercent,
             cfg.searchMaxDistance
         );
 
         updateSearchUI(true, Component.translatable(
-            "world_preview.search.progress", 0, SeedSearchRequest.DEFAULT_MAX_ATTEMPTS));
+            "world_preview.search.progress", 0, request.maxAttempts()));
 
         seedSearchService.startSearch(request, seedSearchFactory,
             hitSeed -> {
@@ -959,7 +950,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                         "world_preview.search.found", String.valueOf(hit.seed())));
                 } else if (result instanceof SeedSearchResult.Miss) {
                     updateSearchUI(false, Component.translatable(
-                        "world_preview.search.not_found", SeedSearchRequest.DEFAULT_MAX_ATTEMPTS));
+                        "world_preview.search.not_found", request.maxAttempts()));
                 } else {
                     updateSearchUI(false, Component.translatable(
                         "world_preview.search.stopped"));
@@ -974,8 +965,65 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 }), 3, TimeUnit.SECONDS);
             },
             attempts -> updateSearchUI(true, Component.translatable(
-                "world_preview.search.progress", attempts, SeedSearchRequest.DEFAULT_MAX_ATTEMPTS))
+                "world_preview.search.progress", attempts, request.maxAttempts()))
         );
+    }
+
+    /** Immutable snapshot of the current viewport sampling parameters. */
+    public record SeedSearchViewport(
+            String dimension,
+            BlockPos center,
+            int viewMinX,
+            int viewMaxX,
+            int viewMinZ,
+            int viewMaxZ,
+            int sampleStep,
+            String contextFingerprint
+    ) {}
+
+    /** Captures the current viewport so search requests survive camera moves. */
+    public SeedSearchViewport currentSearchViewport() {
+        var center = previewDisplay.center();
+        var blockScale = renderSettings.toScaleSpec().blockScale();
+        int halfW = (int) (previewDisplay.getTexWidth() * blockScale / 2.0);
+        int halfH = (int) (previewDisplay.getTexHeight() * blockScale / 2.0);
+        var worldgenContext = workManager.worldgenContext();
+        return new SeedSearchViewport(
+                worldgenContext != null ? worldgenContext.dimension() : "",
+                center,
+                center.getX() - halfW, center.getX() + halfW,
+                center.getZ() - halfH, center.getZ() + halfH,
+                renderSettings.quartStride() * 4,
+                worldgenContext != null ? worldgenContext.fingerprint() : ""
+        );
+    }
+
+    /** Whether a seed search is currently running. */
+    public boolean isSeedSearchRunning() {
+        return seedSearchService.isSearching();
+    }
+
+    /** Cancels the running seed search, if any. */
+    public void cancelSeedSearch() {
+        seedSearchService.cancel();
+    }
+
+    /**
+     * Starts an advanced (multi-criteria) seed search.
+     *
+     * @return false when the search context is missing or a search is running
+     */
+    public boolean startSeedSearch(
+            SeedSearchRequest request,
+            java.util.function.Consumer<SeedSearchResult> onComplete,
+            java.util.function.Consumer<Integer> onProgress
+    ) {
+        if (seedSearchFactory == null) {
+            LOGGER.warn("Search context not available");
+            return false;
+        }
+        return seedSearchService.startSearch(request, seedSearchFactory,
+                null, onComplete, onProgress);
     }
 
     private void updateSearchUI(boolean active, @Nullable Component status) {
@@ -1476,7 +1524,7 @@ public void onScreenReentry() {
             noiseCycleButton.visible = false;
         }
 
-        // Analysis button (if enabled)
+        // Analysis button (if enabled); seed search button sits below it.
         if (cfg.showAnalysisButton) {
             openAnalysis.visible = true;
             openAnalysis.setPosition(mapLeft, top);
@@ -1484,6 +1532,9 @@ public void onScreenReentry() {
         } else {
             openAnalysis.visible = false;
         }
+        seedSearchButton.visible = true;
+        seedSearchButton.setPosition(mapLeft, top + (cfg.showAnalysisButton ? LINE_HEIGHT + LINE_VSPACE : 0));
+        seedSearchButton.setWidth(Math.min(120, mapWidth / 3));
 
         // --- Rail icons (vertical stack, rendered ON TOP of the map) ---
         int railY = top + 2;
@@ -1621,7 +1672,7 @@ public void onScreenReentry() {
         toggleSetSpawn.setWidth(btnStart - 2 - (left + BUTTON_GRID_STEP));
         toggleSetSpawn.visible = (dataProvider.minecraftServer() == null);
         
-        // Toggle analysis button visibility
+        // Toggle analysis button visibility; seed search button sits below it.
         if (cfg.showAnalysisButton) {
             openAnalysis.visible = true;
             openAnalysis.setPosition(left, top + LINE_HEIGHT + LINE_VSPACE);
@@ -1629,6 +1680,9 @@ public void onScreenReentry() {
         } else {
             openAnalysis.visible = false;
         }
+        seedSearchButton.visible = true;
+        seedSearchButton.setPosition(left, top + (cfg.showAnalysisButton ? 2 : 1) * (LINE_HEIGHT + LINE_VSPACE));
+        seedSearchButton.setWidth(leftWidth);
         
         int i = 0;
         toggleShowStructures.setPosition(btnStart + BUTTON_GRID_STEP * i++, top);
@@ -1648,9 +1702,10 @@ public void onScreenReentry() {
         noiseCycleButton.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
 
         //  - new row
-        // The TOP section above occupies 1-2 rows depending on analysis button visibility.
-        // Advance top past the buttons so the switch buttons and the list below do not overlap.
-        int topRows = cfg.showAnalysisButton ? 2 : 1;
+        // The TOP section above occupies 1-3 rows depending on the analysis
+        // and seed-search buttons.  Advance top past the buttons so the switch
+        // buttons and the list below do not overlap.
+        int topRows = cfg.showAnalysisButton ? 3 : 2;
         top += topRows * (LINE_HEIGHT + LINE_VSPACE);
         int switchBiomesWidth = 45;
         int switchSeedsWidth = 45;
@@ -1803,6 +1858,19 @@ public void onScreenReentry() {
         }
     }
 
+    /**
+     * Opens the advanced seed search screen.
+     *
+     * @param structure structure pre-selected as search criterion (nullable)
+     * @param autoStart whether to start searching immediately after opening
+     */
+    public void openSeedSearchScreen(@Nullable StructuresList.StructureEntry structure, boolean autoStart) {
+        if (!workManager.isSetup()) return;
+        var biome = biomesList.getSelected();
+        minecraft.setScreen(new caeruleusTait.world.preview.client.gui.screens.SeedSearchScreen(
+                parentScreen, this, biome, structure, autoStart));
+    }
+
     public WorkManager workManager() {
         return workManager;
     }
@@ -1930,6 +1998,16 @@ public void onScreenReentry() {
 
     public PreviewContainerDataProvider dataProvider() {
         return dataProvider;
+    }
+
+    /** All known structure entries (for the seed search criteria UI). */
+    public StructuresList.StructureEntry[] structureEntries() {
+        return allStructures;
+    }
+
+    /** Whether the current screen allows changing the seed. */
+    public boolean seedIsEditable() {
+        return dataProvider.seedIsEditable();
     }
 
     public List<AbstractWidget> widgets() {

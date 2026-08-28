@@ -29,8 +29,34 @@ import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider.Structu
 
 public class StructuresList extends BaseObjectSelectionList<StructuresList.StructureEntry> {
 
+    @Nullable private java.util.function.Consumer<StructureEntry> onRightClick;
+    private boolean searchActive = false;
+    @Nullable private Component searchStatus = null;
+
     public StructuresList(Minecraft minecraft, int width, int height, int x, int y) {
         super(minecraft, width, height, x, y, 24);
+    }
+
+    /** Set right-click callback (used to open the seed search for this structure). */
+    public void setRightClickListener(java.util.function.Consumer<StructureEntry> listener) {
+        this.onRightClick = listener;
+    }
+
+    /** Update search status (called from PreviewContainer). */
+    public void setSearchActive(boolean active, @Nullable Component status) {
+        this.searchActive = active;
+        this.searchStatus = status;
+    }
+
+    @Override
+    public void renderWidget(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
+        super.renderWidget(guiGraphics, mouseX, mouseY, partialTick);
+        // Show search status row at the top of the list
+        if (searchActive && searchStatus != null) {
+            int statusY = getY() + 2;
+            guiGraphics.fill(getX(), statusY - 1, getX() + getWidth(), statusY + minecraft.font.lineHeight + 1, 0xAA000000);
+            guiGraphics.drawString(minecraft.font, searchStatus, getX() + 4, statusY, 0xFFFFFF00);
+        }
     }
 
     public StructureEntry createEntry(short id, Identifier Identifier, NativeImage icon, Item item, String name, boolean show, boolean showByDefault) {
@@ -62,6 +88,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
 
     public class StructureEntry extends BaseObjectSelectionList.Entry<StructuresList.StructureEntry> implements StructureRenderInfo {
         private final short id;
+        private final Identifier structureKey;
         private final NativeImage icon;
         private final Item item;
         private final ItemStack itemStack;
@@ -82,6 +109,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
 
         public StructureEntry(short id, Identifier Identifier, @NotNull NativeImage icon, @Nullable Item item, String name, boolean show, boolean showByDefault) {
             this.id = id;
+            this.structureKey = Identifier;
             this.item = item;
             this.itemStack = this.item == null ? null : new ItemStack(this.item, 1);
             this.icon = icon;
@@ -171,11 +199,21 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
 
         @Override
         public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+            if (event.button() == 1 && onRightClick != null) {
+                // Right-click: open the seed search pre-filled with this structure
+                minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+                onRightClick.accept(this);
+                return true;
+            }
             minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
             if (toggleVisible.isMouseOver(event.x(), event.y())) {
                 toggleVisible.onClick(event, doubleClick);
             }
             return true;
+        }
+
+        public Identifier structureId() {
+            return structureKey;
         }
 
         public String name() {
