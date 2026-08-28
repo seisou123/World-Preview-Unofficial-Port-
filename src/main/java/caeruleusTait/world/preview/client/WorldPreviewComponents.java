@@ -52,6 +52,7 @@ public class WorldPreviewComponents {
     public static final Component ANALYSIS_OPEN = Component.translatable("world_preview.analysis.open");
     public static final Component ANALYSIS_START = Component.translatable("world_preview.analysis.start");
     public static final Component ANALYSIS_CANCEL = Component.translatable("world_preview.analysis.cancel");
+    public static final Component ANALYSIS_EXPORT_REPORT = Component.translatable("world_preview.analysis.export");
 
     // === Seed search ===
     public static final Component SEARCH_FIND_BIOME = Component.translatable("world_preview.search.find_biome");
@@ -99,6 +100,8 @@ public class WorldPreviewComponents {
     public static final Component TERRAIN_EXPORT_IDLE = Component.translatable("world_preview.terrain_export.idle");
     public static final Component TERRAIN_EXPORT_COMPLETE = Component.translatable("world_preview.terrain_export.complete");
     public static final Component TERRAIN_EXPORT_CANCELLED = Component.translatable("world_preview.terrain_export.cancelled");
+    public static final Component TERRAIN_EXPORT_BATCH = Component.translatable("world_preview.terrain_export.batch");
+    public static final Component TERRAIN_EXPORT_BATCH_TOOLTIP = Component.translatable("world_preview.terrain_export.batch.tooltip");
 
     // === Hillshade ===
     public static final Component SETTINGS_HILLSHADE = Component.translatable("world_preview.settings.general.hillshade");

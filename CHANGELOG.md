@@ -34,6 +34,19 @@
 - **Measure tool**: two clicks on the map measure distance and axis deltas,
   drawn as an overlay; right-click clears the measurement.
 
+### Features — Export & analysis reports (1.21.11-fabric)
+
+- **Analysis report export**: the world analysis screen gains an *Export Report*
+  button that writes the biome share table as CSV plus a JSON summary
+  (seed, dimension, region, coverage, height/slope statistics) into
+  `config/world_preview/reports/`.
+- **Multi-dimension terrain export**: the terrain export screen can batch-export
+  a terrain map for every available dimension of the current seed with the same
+  settings, sequentially, with live per-dimension progress and cancel support.
+- **Grid overlay in terrain maps**: exported terrain maps can optionally draw a
+  block-coordinate grid (spec-level option, off by default; not yet exposed in
+  the UI).
+
 ### Notes
 
 - Structures using concentric-ring placement (strongholds) are not supported
