@@ -80,6 +80,13 @@ public class RenderSettings {
                 && normalized.pixelsPerChunk() != 1) {
             normalized.setPixelsPerChunk(4);
         }
+        // Defensive: a dimension Identifier deserialized from a config written
+        // by the other loader can carry null namespace/path (Gson unsafe
+        // allocation).  Treat it as unset rather than crash in hash/equality.
+        if (normalized.dimension != null
+                && (normalized.dimension.getNamespace() == null || normalized.dimension.getPath() == null)) {
+            normalized.dimension = null;
+        }
         return normalized;
     }
 
