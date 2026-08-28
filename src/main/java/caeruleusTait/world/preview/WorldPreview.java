@@ -56,6 +56,7 @@ public class WorldPreview implements ModInitializer {
     private RenderSettings renderSettings;
     private AnalysisRepository analysisRepository;
     private caeruleusTait.world.preview.backend.analysis.SeedSearchHistory seedSearchHistory;
+    private caeruleusTait.world.preview.domain.waypoint.WaypointStore waypointStore;
 
     public static WorldPreview get() {
         return INSTANCE;
@@ -141,6 +142,10 @@ public class WorldPreview implements ModInitializer {
         seedSearchHistory = new caeruleusTait.world.preview.backend.analysis.SeedSearchHistory(
                 configDir.resolve("search-history.json"));
         seedSearchHistory.load();
+
+        waypointStore = new caeruleusTait.world.preview.domain.waypoint.WaypointStore(
+                configDir.resolve("waypoints.json"));
+        waypointStore.load();
 
         workManager = new WorkManager(renderSettings, cfg);
         previewMappingData = new PreviewMappingData();
@@ -252,6 +257,11 @@ public class WorldPreview implements ModInitializer {
     /** Persistent seed search history and favorites. */
     public caeruleusTait.world.preview.backend.analysis.SeedSearchHistory seedSearchHistory() {
         return seedSearchHistory;
+    }
+
+    /** Persistent map waypoints. */
+    public caeruleusTait.world.preview.domain.waypoint.WaypointStore waypointStore() {
+        return waypointStore;
     }
 
     public void clearAnalysisData() {

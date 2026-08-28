@@ -30,6 +30,7 @@ import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider.Structu
 public class StructuresList extends BaseObjectSelectionList<StructuresList.StructureEntry> {
 
     @Nullable private java.util.function.Consumer<StructureEntry> onRightClick;
+    @Nullable private java.util.function.Consumer<StructureEntry> onDoubleClick;
     private boolean searchActive = false;
     @Nullable private Component searchStatus = null;
 
@@ -40,6 +41,11 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
     /** Set right-click callback (used to open the seed search for this structure). */
     public void setRightClickListener(java.util.function.Consumer<StructureEntry> listener) {
         this.onRightClick = listener;
+    }
+
+    /** Set double-click callback (used to locate the structure on the map). */
+    public void setDoubleClickListener(java.util.function.Consumer<StructureEntry> listener) {
+        this.onDoubleClick = listener;
     }
 
     /** Update search status (called from PreviewContainer). */
@@ -208,6 +214,10 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
             if (toggleVisible.isMouseOver(event.x(), event.y())) {
                 toggleVisible.onClick(event, doubleClick);
+                return true;
+            }
+            if (doubleClick && event.button() == 0 && onDoubleClick != null) {
+                onDoubleClick.accept(this);
             }
             return true;
         }

@@ -36,6 +36,18 @@ public class WorldPreviewComponents {
     public static final Component BTN_SET_SPAWN = Component.translatable("world_preview.preview.btn-set-spawn");
     public static final Component BTN_SET_SPAWN_TOOLTIP = Component.translatable("world_preview.preview.btn-set-spawn.tooltip");
     public static final Component BTN_SET_SPAWN_PLACED = Component.translatable("world_preview.preview.btn-set-spawn.placed");
+
+    // === Map tools (waypoints & measure, v1.5) ===
+    public static final Component BTN_WAYPOINTS = Component.translatable("world_preview.preview.btn-waypoints");
+    public static final Component BTN_WAYPOINTS_TOOLTIP = Component.translatable("world_preview.preview.btn-waypoints.tooltip");
+    public static final Component BTN_MEASURE = Component.translatable("world_preview.preview.btn-measure");
+    public static final Component BTN_MEASURE_TOOLTIP = Component.translatable("world_preview.preview.btn-measure.tooltip");
+    public static final Component MSG_LOCATED = Component.translatable("world_preview.preview.located");
+    public static final Component MSG_LOCATE_NOT_VISIBLE = Component.translatable("world_preview.preview.locate_not_visible");
+    public static final Component WAYPOINT_TITLE = Component.translatable("world_preview.waypoint.title");
+    public static final Component WAYPOINT_NAME = Component.translatable("world_preview.waypoint.name");
+    public static final Component WAYPOINT_COLOR = Component.translatable("world_preview.waypoint.color");
+    public static final Component WAYPOINT_DEFAULT_NAME = Component.translatable("world_preview.waypoint.default_name");
     public static final Component ANALYSIS_TITLE = Component.translatable("world_preview.analysis.title");
     public static final Component ANALYSIS_OPEN = Component.translatable("world_preview.analysis.open");
     public static final Component ANALYSIS_START = Component.translatable("world_preview.analysis.start");

@@ -1,6 +1,7 @@
 package caeruleusTait.world.preview.client.gui.widgets;
 
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
+import caeruleusTait.world.preview.domain.waypoint.Waypoint;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -30,6 +31,17 @@ class MapInteractionController {
     private BlockPos spawnPinPos = null;
     private java.util.function.Consumer<BlockPos> spawnPinCallback = null;
 
+    // === Waypoints (v1.5) ===
+    /** One-shot placement mode: the next left click places a waypoint. */
+    private boolean waypointMode = false;
+    private java.util.function.Consumer<BlockPos> waypointPlaceCallback = null;
+    private java.util.function.Consumer<Waypoint> waypointDeleteCallback = null;
+
+    // === Measure tool (v1.5) ===
+    private boolean measureMode = false;
+    private BlockPos measureA = null;
+    private BlockPos measureB = null;
+
     MapInteractionController(PreviewDisplay host) {
         this.host = host;
     }
@@ -54,6 +66,46 @@ class MapInteractionController {
 
     void setSpawnPinCallback(java.util.function.Consumer<BlockPos> callback) {
         this.spawnPinCallback = callback;
+    }
+
+    // === Waypoint API ===
+
+    void setWaypointMode(boolean enabled) {
+        this.waypointMode = enabled;
+    }
+
+    boolean isWaypointMode() {
+        return waypointMode;
+    }
+
+    void setWaypointPlaceCallback(java.util.function.Consumer<BlockPos> callback) {
+        this.waypointPlaceCallback = callback;
+    }
+
+    void setWaypointDeleteCallback(java.util.function.Consumer<Waypoint> callback) {
+        this.waypointDeleteCallback = callback;
+    }
+
+    // === Measure tool API ===
+
+    void setMeasureMode(boolean enabled) {
+        this.measureMode = enabled;
+        if (!enabled) {
+            measureA = null;
+            measureB = null;
+        }
+    }
+
+    boolean isMeasureMode() {
+        return measureMode;
+    }
+
+    BlockPos measurePointA() {
+        return measureA;
+    }
+
+    BlockPos measurePointB() {
+        return measureB;
     }
 
     // === State queries / mutation used by the widget ===
@@ -127,6 +179,48 @@ class MapInteractionController {
             } else if (event.button() == 1) {
                 removeSpawnPin();
                 host.playDownSound();
+                return;
+            }
+        }
+
+        // Waypoint placement (one-shot): left click places and exits the
+        // mode; right click deletes the waypoint under the cursor.
+        if (waypointMode && host.widgetIsMouseOver(event.x(), event.y())) {
+            if (event.button() == 0) {
+                BlockPos pos = host.screenToBlock(event.x(), event.y());
+                if (pos != null && waypointPlaceCallback != null) {
+                    waypointPlaceCallback.accept(pos);
+                }
+                waypointMode = false;
+                host.playDownSound();
+                return;
+            } else if (event.button() == 1) {
+                Waypoint hit = host.waypointAt(event.x(), event.y());
+                if (hit != null && waypointDeleteCallback != null) {
+                    waypointDeleteCallback.accept(hit);
+                }
+                host.playDownSound();
+                return;
+            }
+        }
+
+        // Measure tool: first click sets point A, second click sets point B
+        // (restarting from A on the next click). Right click clears.
+        if (measureMode && host.widgetIsMouseOver(event.x(), event.y())) {
+            if (event.button() == 0) {
+                BlockPos pos = host.screenToBlock(event.x(), event.y());
+                if (pos != null) {
+                    if (measureA == null || measureB != null) {
+                        measureA = pos;
+                        measureB = null;
+                    } else {
+                        measureB = pos;
+                    }
+                }
+                return;
+            } else if (event.button() == 1) {
+                measureA = null;
+                measureB = null;
                 return;
             }
         }

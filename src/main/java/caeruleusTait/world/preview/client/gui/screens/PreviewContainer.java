@@ -191,6 +191,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private Button switchSeeds;
     private Button toggleSetSpawn;
     private boolean spawnPinActive = false;
+    private Button toggleWaypoints;
+    private Button toggleMeasure;
+    private caeruleusTait.world.preview.client.gui.widgets.WaypointOverlayRenderer waypointOverlay;
 
     // === Slide-out rail system ===
     // When true, the sidebar collapses to a narrow 28px icon rail and the map
@@ -262,6 +265,19 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // (behind), and all other widgets render on top.
         previewDisplay = new PreviewDisplay(minecraft, this, TITLE);
         toRender.add(previewDisplay);
+        // Waypoint overlay: draws markers for the current seed+dimension.
+        waypointOverlay = new caeruleusTait.world.preview.client.gui.widgets.WaypointOverlayRenderer(
+                previewDisplay,
+                worldPreview.waypointStore(),
+                () -> {
+                    var ctx = workManager.worldgenContext();
+                    return ctx != null ? ctx.seed() : null;
+                },
+                () -> {
+                    var ctx = workManager.worldgenContext();
+                    return ctx != null ? ctx.dimension() : null;
+                });
+        previewDisplay.setWaypointRenderer(waypointOverlay);
         // Seed bar widgets join right after the map so they keep event priority.
         toRender.add(seedEdit);
         toRender.add(randomSeedButton);
@@ -272,6 +288,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         createListsAndTabs();
         createViewToggles();
         createSpawnControls();
+        createMapToolButtons();
 
         wireCallbacks();
 
@@ -528,9 +545,64 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         });
     }
 
+    /** Creates the waypoint and measure-tool buttons plus their map callbacks. */
+    private void createMapToolButtons() {
+        toggleWaypoints = Button.builder(WorldPreviewComponents.BTN_WAYPOINTS, btn -> {
+            boolean enable = !previewDisplay.isWaypointMode();
+            previewDisplay.setWaypointMode(enable);
+            if (enable) {
+                previewDisplay.setMeasureMode(false);
+            }
+        }).size(44, LINE_HEIGHT).build();
+        toggleWaypoints.setTooltip(Tooltip.create(WorldPreviewComponents.BTN_WAYPOINTS_TOOLTIP));
+        toRender.add(toggleWaypoints);
+
+        toggleMeasure = Button.builder(WorldPreviewComponents.BTN_MEASURE, btn -> {
+            boolean enable = !previewDisplay.isMeasureMode();
+            previewDisplay.setMeasureMode(enable);
+            if (enable) {
+                previewDisplay.setWaypointMode(false);
+            }
+        }).size(44, LINE_HEIGHT).build();
+        toggleMeasure.setTooltip(Tooltip.create(WorldPreviewComponents.BTN_MEASURE_TOOLTIP));
+        toRender.add(toggleMeasure);
+
+        previewDisplay.setWaypointPlaceCallback(pos -> {
+            if (workManager.worldgenContext() == null) {
+                return;
+            }
+            minecraft.setScreen(new WaypointNameScreen(parentScreen, this, pos));
+        });
+        previewDisplay.setWaypointDeleteCallback(waypoint -> {
+            var ctx = workManager.worldgenContext();
+            if (ctx == null) {
+                return;
+            }
+            worldPreview.waypointStore().removeNearest(
+                    ctx.seed(), ctx.dimension(), waypoint.x(), waypoint.z(), 64);
+        });
+
+        // Double-click a structure entry to center the map on its nearest
+        // rendered instance.
+        structuresList.setDoubleClickListener(entry -> {
+            if (!previewDisplay.locateStructure(entry.id())) {
+                previewDisplay.showHud(Component.translatable("world_preview.preview.locate_not_visible"));
+            }
+        });
+    }
+
+    /** Stores a newly placed waypoint for the current seed+dimension. */
+    public void addWaypoint(String name, BlockPos pos, int color) {
+        var ctx = workManager.worldgenContext();
+        if (ctx == null) {
+            return;
+        }
+        worldPreview.waypointStore().add(caeruleusTait.world.preview.domain.waypoint.Waypoint.create(
+                name, pos.getX(), pos.getY(), pos.getZ(), ctx.dimension(), color, ctx.seed()));
+    }
+
     /** Wires cross-widget callbacks that depend on several groups being built. */
-    private void wireCallbacks() {
-        biomesList.setBiomeChangeListener(x -> {
+    private void wireCallbacks() {        biomesList.setBiomeChangeListener(x -> {
             previewDisplay.setSelectedBiomeId(x == null ? -1 : x.id());
             toggleCaves.selected = x == null && toggleCaves.selected;
             previewDisplay.setHighlightCaves(x == null && toggleCaves.selected);
@@ -1565,8 +1637,9 @@ public void onScreenReentry() {
         int seedBarY = bottom + 2;
         int btnW = BUTTON_GRID_STEP;
         int spawnW = (int)(btnW * 2.5);  // 2.5x button width
-        int seedEditWidth = (screenRectangle.right() - left - 4) - btnW * 2 - spawnW - 6;
-        if (seedEditWidth < 80) seedEditWidth = 80;
+        int toolsW = btnW * 4;           // waypoint + measure buttons (2 cells each)
+        int seedEditWidth = (screenRectangle.right() - left - 4) - btnW * 2 - spawnW - toolsW - 8;
+        if (seedEditWidth < 60) seedEditWidth = 60;
         seedEdit.setWidth(seedEditWidth);
         seedEdit.setX(left);
         seedEdit.setY(seedBarY);
@@ -1579,7 +1652,17 @@ public void onScreenReentry() {
         saveSeed.setY(seedBarY);
         btnX += btnW;
 
-        // toggleSetSpawn: 2.5x width, right of saveSeed
+        // Waypoint + measure buttons (2 grid cells each)
+        toggleWaypoints.setWidth(btnW * 2);
+        toggleWaypoints.setX(btnX);
+        toggleWaypoints.setY(seedBarY);
+        btnX += btnW * 2 + 2;
+        toggleMeasure.setWidth(btnW * 2);
+        toggleMeasure.setX(btnX);
+        toggleMeasure.setY(seedBarY);
+        btnX += btnW * 2 + 2;
+
+        // toggleSetSpawn: 2.5x width, right of the tool buttons
         toggleSetSpawn.setWidth(spawnW);
         toggleSetSpawn.setX(btnX);
         toggleSetSpawn.setY(seedBarY);
@@ -1668,8 +1751,14 @@ public void onScreenReentry() {
 
                 int btnStart = left + cycleWith + 2;
         settings.setPosition(left, top);
-        toggleSetSpawn.setPosition(left + BUTTON_GRID_STEP, top);
-        toggleSetSpawn.setWidth(btnStart - 2 - (left + BUTTON_GRID_STEP));
+        int spawnStretch = Math.max(60, btnStart - 2 - (left + BUTTON_GRID_STEP));
+        int thirdWidth = Math.max(20, (spawnStretch - 4) / 3);
+        toggleWaypoints.setPosition(left + BUTTON_GRID_STEP, top);
+        toggleWaypoints.setWidth(thirdWidth);
+        toggleMeasure.setPosition(left + BUTTON_GRID_STEP + thirdWidth + 2, top);
+        toggleMeasure.setWidth(thirdWidth);
+        toggleSetSpawn.setPosition(left + BUTTON_GRID_STEP + thirdWidth * 2 + 4, top);
+        toggleSetSpawn.setWidth(Math.max(20, spawnStretch - thirdWidth * 2 - 4));
         toggleSetSpawn.visible = (dataProvider.minecraftServer() == null);
         
         // Toggle analysis button visibility; seed search button sits below it.

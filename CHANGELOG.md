@@ -23,6 +23,17 @@
   (128–8192 blocks), max attempts and number of results.
 - Search anchor selectable between the current map center and the world origin.
 
+### Features — Map interactions (1.21.11-fabric)
+
+- **Map waypoints**: named, colored pins persisted per seed/dimension in
+  `config/world_preview/waypoints.json`. Toggle the new *Waypoints* button,
+  left-click the map to place a pin via the naming dialog, and right-click an
+  existing pin to delete it.
+- **Structure locate**: double-click a structure in the structures list to
+  center the map on its nearest rendered instance.
+- **Measure tool**: two clicks on the map measure distance and axis deltas,
+  drawn as an overlay; right-click clears the measurement.
+
 ### Notes
 
 - Structures using concentric-ring placement (strongholds) are not supported
