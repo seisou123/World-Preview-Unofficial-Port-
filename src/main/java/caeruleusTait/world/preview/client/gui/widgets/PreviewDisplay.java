@@ -20,6 +20,7 @@ import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.sounds.SoundManager;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.QuartPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import org.jetbrains.annotations.Nullable;
@@ -136,6 +137,16 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     public void setSpawnPinCallback(@Nullable java.util.function.Consumer<BlockPos> callback) { interaction.setSpawnPinCallback(callback); }
 
     private GenerationRange lastQueuedRange = null;
+
+    // --- Viewport force-load safety net ---
+    // When sampling is fully idle but the visible viewport still contains
+    // chunks without completed biome sampling (lost pending handoff in
+    // WorkManager, a batch that failed mid-pass, ...), queueGeneration
+    // re-issues the range via WorkManager.forceQueueRange.  Cooldown-limited
+    // so a permanently failing chunk retries at a bounded rate instead of
+    // hot-looping.
+    private static final long FORCE_QUEUE_COOLDOWN_NANOS = 1_000_000_000L;
+    private long lastForceQueueNanos = 0;
 
     // --- Center coordinate string cache ---
     private String cachedCenterStr = null;
@@ -433,8 +444,20 @@ resizeImage();
             // used preload>0 here, the range would differ from the early queue,
             // causing workManager.queueRange() to NOT dedup, which cancels
             // the early queue's in-flight work and restarts sampling from
-            // scratch �?a major cause of the "black screen until drag" bug.
-            if (config.preloadOnlyWhenIdle && workManager.isSetup() && workManager.activeBatchCount() > 0) {
+            // scratch — a major cause of the "black screen until drag" bug.
+            // BUG FIX: the busy check must also treat a queue pass that is
+            // still CREATING its batches as busy.  queueRangeReal clears
+            // currentBatches before rebuilding them, which for large viewports
+            // takes tens of milliseconds — several frames observe
+            // activeBatchCount()==0 during that window, flip preload from 0 to
+            // the full radius, and the viewport range starts oscillating
+            // between "with preload" and "without".  Each new pass cancels the
+            // previous one's batches mid-flight, workers never finish anything
+            // and the map never loads (log shows alternating
+            // "Queued N {early abort}" / "Queued N+ring" lines several times
+            // per second).  isQueueRunning() spans that whole window.
+            if (config.preloadOnlyWhenIdle && workManager.isSetup()
+                    && (workManager.isQueueRunning() || workManager.activeBatchCount() > 0)) {
                 preload = 0;
             } else {
                 preload = config.preloadRadius;
@@ -455,6 +478,30 @@ resizeImage();
                 new BlockPos(aabb.minX(), aabb.y(), aabb.minZ()),
                 new BlockPos(aabb.maxX(), aabb.y(), aabb.maxZ())
         );
+        // === Safety net: force-load unsampled area visible on screen ===
+        // Backstop for the whole class of "map never loads at this drag
+        // position" bugs.  When sampling is completely idle and part of the
+        // visible viewport has no completed biome sampling, re-issue the
+        // viewport range bypassing all dedup guards (display-side and
+        // WorkManager-side).  Intentionally no isDragging() gate: pausing
+        // mid-drag at an unloaded position must also recover.
+        if (throttle.initialDataReceived()
+                && workManager.isSetup()
+                && workManager.isIdle()
+                && viewportHasUnsampledArea(map)) {
+            final long now = System.nanoTime();
+            if (now - lastForceQueueNanos >= FORCE_QUEUE_COOLDOWN_NANOS) {
+                lastForceQueueNanos = now;
+                lastQueuedRange = range;
+                throttle.clearNeedsInitialQueue();
+                WorldPreview.LOGGER.info(
+                        "Viewport contains unsampled chunks while sampling is idle — forcing re-queue of {} .. {}",
+                        range.min(), range.max()
+                );
+                workManager.forceQueueRange(range.min(), range.max());
+                return;
+            }
+        }
         // The needsInitialQueue flag guarantees at least one queueRange() call
         // after setup, bypassing the dedup check.  Without this, if the computed
         // range happens to match a stale lastQueuedRange (e.g. because
@@ -466,6 +513,36 @@ resizeImage();
         throttle.clearNeedsInitialQueue();
         lastQueuedRange = range;
         workManager.queueRange(range.min(), range.max());
+    }
+
+    /**
+     * True when any of a 3×3 grid of probe points across the visible viewport
+     * falls in a chunk that has no completed biome sampling.  Probe cost is
+     * nine map lookups and is only paid when sampling is idle.
+     *
+     * <p>The probe always checks the biome flag: the main biome layer is queued
+     * for every viewport regardless of the active render mode, and it is the
+     * layer whose completion the work units actually mark (noise sections
+     * never get completion bits).
+     */
+    private boolean viewportHasUnsampledArea(ViewportMapping map) {
+        final PreviewStorage storage = workManager.previewStorage();
+        if (storage == null) {
+            return false;
+        }
+        final int w = map.worldMaxX() - map.worldMinX();
+        final int h = map.worldMaxZ() - map.worldMinZ();
+        final int yQuart = QuartPos.fromBlock(center().getY());
+        for (int ix = 0; ix <= 2; ix++) {
+            for (int iz = 0; iz <= 2; iz++) {
+                final int qx = QuartPos.fromBlock(map.worldMinX() + (w * ix) / 2);
+                final int qz = QuartPos.fromBlock(map.worldMinZ() + (h * iz) / 2);
+                if (!storage.isChunkSampled(qx, yQuart, qz, PreviewStorage.FLAG_BIOME)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
 

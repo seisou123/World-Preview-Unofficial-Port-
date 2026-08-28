@@ -619,7 +619,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                         if (e == null) {
                             setupFailed = false;
                         } else {
-                            e.printStackTrace();
+                            // printStackTrace goes to stderr, which is invisible
+                            // in latest.log — log it properly so init failures
+                            // are diagnosable.
+                            LOGGER.error("[WP-Update] updateSettings failed", e);
                             setupFailed = true;
                         }
                         // Always reset isUpdating when this update completes
@@ -681,6 +684,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
 
         LayeredRegistryAccess<RegistryLayer> layeredRegistryAccess = dataProvider.layeredRegistryAccess(wcContext);
+        LOGGER.info("[WP-Update] registries+mapdata ready, entering setupWorkManager");
         setupWorkManager(levelStem, layeredRegistryAccess, worldDataConfiguration, wcContext);
         setupSearchContext();
         queueEarlyPreviewRange();
@@ -787,7 +791,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // to the server specific logic (`EffectiveSide.get().isClient()`)
         if (serverThreadPoolExecutor != null) {
             try {
+                LOGGER.info("[WP-Update] changeWorldGenState dispatching to server thread pool");
                 CompletableFuture.runAsync(changeWorldGenState, serverThreadPoolExecutor).get();
+                LOGGER.info("[WP-Update] changeWorldGenState completed on server thread pool");
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException(e);

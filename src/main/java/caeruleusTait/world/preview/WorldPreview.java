@@ -15,6 +15,10 @@ import caeruleusTait.world.preview.compat.ModCompatRegistry;
 import caeruleusTait.world.preview.util.AtomicFiles;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.TypeAdapter;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
+import com.google.gson.stream.JsonWriter;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -77,6 +81,59 @@ public class WorldPreview {
         gson = new GsonBuilder()
                 .serializeNulls()
                 .setPrettyPrinting()
+                // Identifier must round-trip as a plain "namespace:path" string.
+                // Without an adapter Gson reflects over the runtime field names,
+                // which differ between the Fabric (obfuscated) and NeoForge
+                // (mapped) mappings — a config written by one loader then reads
+                // back as an Identifier with null namespace/path on the other,
+                // NPE-ing in Identifier.hashCode() during registry lookups.
+                // Reads also accept the legacy object form
+                // {"namespace":…,"path":…} so old config files stay loadable.
+                .registerTypeAdapter(Identifier.class, new TypeAdapter<Identifier>() {
+                    @Override
+                    public void write(JsonWriter out, Identifier value) throws IOException {
+                        out.value(value == null ? null : value.toString());
+                    }
+
+                    @Override
+                    public Identifier read(JsonReader in) throws IOException {
+                        if (in.peek() == JsonToken.NULL) {
+                            in.nextNull();
+                            return null;
+                        }
+                        if (in.peek() == JsonToken.STRING) {
+                            return Identifier.parse(in.nextString());
+                        }
+                        // Legacy object form (some older builds of either loader).
+                        in.beginObject();
+                        String namespace = null;
+                        String path = null;
+                        while (in.hasNext()) {
+                            switch (in.nextName()) {
+                                case "namespace", "field_13353" -> {
+                                    if (in.peek() != JsonToken.NULL) {
+                                        namespace = in.nextString();
+                                    } else {
+                                        in.nextNull();
+                                    }
+                                }
+                                case "path", "field_13355" -> {
+                                    if (in.peek() != JsonToken.NULL) {
+                                        path = in.nextString();
+                                    } else {
+                                        in.nextNull();
+                                    }
+                                }
+                                default -> in.skipValue();
+                            }
+                        }
+                        in.endObject();
+                        // Neither half may be null — a bare object means a
+                        // corrupt/foreign entry; treat it as absent.
+                        return namespace == null || path == null ? null
+                                : Identifier.parse(namespace + ":" + path);
+                    }
+                })
                 .create();
 
         configDir = FMLPaths.CONFIGDIR.get().resolve("world_preview");

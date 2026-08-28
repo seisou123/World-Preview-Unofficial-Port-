@@ -198,6 +198,39 @@ public class PreviewStorage {
     }
 
     /**
+     * Read-only probe: {@code true} when the chunk containing the given quart
+     * position has completed sampling for the given flag layer.  Unlike
+     * {@link #getRawData4} this never creates blocks/sections and can
+     * distinguish "never written" from "written zero" (raw section cells
+     * default to 0, which is a valid biome id).
+     * <p>
+     * Used by the render side to detect visible-but-unloaded areas.
+     */
+    public boolean isChunkSampled(int quartX, int quartY, int quartZ, long flags) {
+        final int indexY = indexYOrNegative(QuartPos.toBlock(quartY));
+        if (indexY < 0) {
+            return false;
+        }
+        final PreviewBlock block;
+        synchronized (blocks[indexY]) {
+            block = blocks[indexY].get(quartPosToSectionLong(quartX, quartZ, flags));
+        }
+        if (block == null) {
+            return false;
+        }
+        // getIfExists (not get) keeps this probe allocation-free; a benign
+        // stale-null read only ever reports "unsampled", which is safe.
+        final PreviewSection section = block.getIfExists(quartX, quartZ);
+        if (section == null) {
+            return false;
+        }
+        return section.isCompleted(new ChunkPos(
+                quartX >> PreviewSection.QUART_TO_SECTION_SHIFT,
+                quartZ >> PreviewSection.QUART_TO_SECTION_SHIFT
+        ));
+    }
+
+    /**
      * Batch query: fetch biome, height, and all 6 noise channels for a single
      * quart position in a single synchronized block, avoiding 8 separate
      * lock acquire/release cycles.
