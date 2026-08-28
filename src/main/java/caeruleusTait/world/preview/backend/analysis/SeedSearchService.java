@@ -262,6 +262,8 @@ public class SeedSearchService implements AutoCloseable {
                 Double criterionScore = switch (criterion) {
                     case SearchCriterion.Biome biome ->
                             evaluateBiome(biome, request, samplePoints, sampler);
+                    case SearchCriterion.BiomeGroup biomeGroup ->
+                            evaluateBiomeGroup(biomeGroup, request, samplePoints, sampler);
                     case SearchCriterion.Structure structure ->
                             evaluateStructure(structure, request, sampler);
                 };
@@ -283,13 +285,52 @@ public class SeedSearchService implements AutoCloseable {
     @Nullable
     private static Double evaluateBiome(SearchCriterion.Biome criterion, SeedSearchRequest request,
                                         BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
+        return evaluateBiomeMatches(Set.of(criterion.biome()), false,
+                criterion.minAreaPercent(), criterion.maxDistance(), request, samplePoints, sampler);
+    }
+
+    /**
+     * Checks a biome group criterion: any-of matching across the group, with
+     * area coverage and center distance computed over group matches.
+     *
+     * @return score contribution, or {@code null} when the criterion fails
+     */
+    @Nullable
+    private static Double evaluateBiomeGroup(SearchCriterion.BiomeGroup criterion, SeedSearchRequest request,
+                                             BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
+        return evaluateBiomeMatches(Set.copyOf(criterion.biomes()), true,
+                criterion.minAreaPercent(), criterion.maxDistance(), request, samplePoints, sampler);
+    }
+
+    /**
+     * Shared biome evaluation for single-biome and biome-group criteria:
+     * counts matching sample points, checks the area percentage and distance
+     * requirement and scores coverage plus a proximity bonus.
+     *
+     * @param matchTargets   biome identifiers considered matching
+     * @param anyOf          true: a point matches when any target matches
+     *                       ({@link BiomeSampler#sampleContainsAny});
+     *                       false: the single target must match exactly
+     * @param minAreaPercent minimum required coverage of the viewport (0-100)
+     * @param maxDistance    distance cap from the anchor for the nearest match (0 = unlimited)
+     * @return score contribution, or {@code null} when the criterion fails
+     */
+    @Nullable
+    private static Double evaluateBiomeMatches(Set<Identifier> matchTargets, boolean anyOf,
+                                               int minAreaPercent, int maxDistance,
+                                               SeedSearchRequest request,
+                                               BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
         int matchCount = 0;
         double minDistance = Double.MAX_VALUE;
         BlockPos center = request.center();
+        Identifier singleTarget = anyOf ? null : matchTargets.iterator().next();
 
         for (int i = 0; i < samplePoints.length; i++) {
             var pos = samplePoints[i];
-            if (sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), criterion.biome())) {
+            boolean matches = anyOf
+                    ? sampler.sampleContainsAny(pos.getX(), pos.getY(), pos.getZ(), matchTargets)
+                    : sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), singleTarget);
+            if (matches) {
                 matchCount++;
                 // Calculate distance from screen center
                 double dx = pos.getX() - center.getX();
@@ -301,12 +342,12 @@ public class SeedSearchService implements AutoCloseable {
 
         // Check area percentage
         double areaPercent = (samplePoints.length > 0) ? (matchCount * 100.0 / samplePoints.length) : 0;
-        if (areaPercent < criterion.minAreaPercent()) {
+        if (areaPercent < minAreaPercent) {
             return null;
         }
 
         // Check distance requirement
-        if (criterion.maxDistance() > 0 && minDistance > criterion.maxDistance()) {
+        if (maxDistance > 0 && minDistance > maxDistance) {
             return null;
         }
 
@@ -317,8 +358,8 @@ public class SeedSearchService implements AutoCloseable {
 
         // Base score: coverage. When a distance cap is set, reward proximity to the center.
         double score = areaPercent;
-        if (criterion.maxDistance() > 0) {
-            score += 50.0 * (1.0 - Math.min(1.0, minDistance / criterion.maxDistance()));
+        if (maxDistance > 0) {
+            score += 50.0 * (1.0 - Math.min(1.0, minDistance / maxDistance));
         }
         return score;
     }
@@ -467,6 +508,28 @@ public class SeedSearchService implements AutoCloseable {
          * @throws Exception Exceptions that may occur during sampling
          */
         boolean sampleContains(int x, int y, int z, Identifier targetBiome) throws Exception;
+
+        /**
+         * Check whether any biome of the given group matches at the given
+         * coordinates (logical OR within the group). Used by
+         * {@link SearchCriterion.BiomeGroup}; backed by {@link #sampleContains}
+         * unless a sampler provides a faster group probe.
+         *
+         * @param x       Block X coordinate
+         * @param y       Block Y coordinate
+         * @param z       Block Z coordinate
+         * @param biomes  Biome identifiers of the group (non-empty)
+         * @return true if the biome at this coordinate is any of the given biomes
+         * @throws Exception Exceptions that may occur during sampling
+         */
+        default boolean sampleContainsAny(int x, int y, int z, Set<Identifier> biomes) throws Exception {
+            for (Identifier id : biomes) {
+                if (sampleContains(x, y, z, id)) {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         /**
          * Return the biome identifier at the given coordinates, or {@code null}

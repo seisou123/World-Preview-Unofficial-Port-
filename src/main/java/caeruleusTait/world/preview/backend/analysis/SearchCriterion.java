@@ -3,6 +3,8 @@ package caeruleusTait.world.preview.backend.analysis;
 import net.minecraft.resources.Identifier;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.List;
+
 /**
  * One condition that a candidate seed must satisfy during a seed search.
  * <p>
@@ -27,6 +29,41 @@ public sealed interface SearchCriterion {
     ) implements SearchCriterion {
         public Biome {
             if (biome == null) throw new IllegalArgumentException("biome must not be null");
+            if (minAreaPercent < 0 || minAreaPercent > 100) {
+                throw new IllegalArgumentException("minAreaPercent must be 0-100");
+            }
+            if (maxDistance < 0) throw new IllegalArgumentException("maxDistance must be >= 0");
+        }
+    }
+
+    /**
+     * Requires any of the grouped biomes (logical OR within the group) to cover
+     * at least {@code minAreaPercent} of the sampled viewport, with at least one
+     * group-matching point within {@code maxDistance} blocks of the viewport
+     * center (0 = unlimited).
+     * <p>
+     * A sample point matches when <b>any</b> biome of the group matches; the
+     * group's area and distance statistics are computed over those group
+     * matches. This enables "any jungle variant" style searches and combines
+     * with other criteria via logical AND at the request level.
+     * </p>
+     */
+    record BiomeGroup(
+            @NotNull List<Identifier> biomes,
+            int minAreaPercent,
+            int maxDistance
+    ) implements SearchCriterion {
+        public BiomeGroup {
+            if (biomes == null || biomes.isEmpty()) {
+                throw new IllegalArgumentException("biomes must not be empty");
+            }
+            if (biomes.size() > 8) {
+                throw new IllegalArgumentException("biomes must contain at most 8 entries");
+            }
+            for (Identifier biome : biomes) {
+                if (biome == null) throw new IllegalArgumentException("biome must not be null");
+            }
+            biomes = List.copyOf(biomes);
             if (minAreaPercent < 0 || minAreaPercent > 100) {
                 throw new IllegalArgumentException("minAreaPercent must be 0-100");
             }

@@ -65,6 +65,22 @@
   progress and cancel support; non-numeric or unsampleable seeds are marked
   unavailable.
 
+### Changes — Biome search rework (1.21.11-fabric)
+
+- **Biome criteria are now chosen in a filterable multi-select picker** inside
+  the Seed Search screen (color chips, a gray `[cave]` tag on cave biomes and a
+  cave filter toggle). Up to 4 biomes can be combined into one ANY-of group
+  criterion ("any jungle variant"), evaluated together for area coverage and
+  proximity.
+- **Biome groups support a per-search max distance**: the nearest matching
+  point of the group must lie within the configured block radius of the search
+  anchor (0 = no distance limit), with a proximity bonus for closer hits.
+- **Right-clicking a biome in the biome list now opens the Seed Search screen
+  pre-filled with that biome and auto-starts the search**, consistent with the
+  structure right-click flow (a running search is cancelled first).
+- Removed the old inline list-status search flow (status rows on the biome
+  list and its cancel/inline-search right-click behavior).
+
 ### Notes
 
 - Structures using concentric-ring placement (strongholds) are not supported

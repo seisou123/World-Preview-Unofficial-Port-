@@ -116,4 +116,12 @@ public record SeedSearchRequest(
                 .map(SearchCriterion.Biome.class::cast)
                 .toList();
     }
+
+    /** All biome group criteria of this request. */
+    public List<SearchCriterion.BiomeGroup> biomeGroupCriteria() {
+        return criteria.stream()
+                .filter(SearchCriterion.BiomeGroup.class::isInstance)
+                .map(SearchCriterion.BiomeGroup.class::cast)
+                .toList();
+    }
 }

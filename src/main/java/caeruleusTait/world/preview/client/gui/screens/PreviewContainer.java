@@ -88,7 +88,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -210,12 +209,6 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     /** Grid step (px) used to lay out the 20x20 toolbar buttons with 2px gaps. */
     private static final int BUTTON_GRID_STEP = 22;
 
-    /** Shared daemon scheduler for delayed UI cleanups (replaces per-call Timers). */
-    private static final ScheduledExecutorService SEARCH_UI_CLEANUP = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "world_preview-search-ui-cleanup");
-        t.setDaemon(true);
-        return t;
-    });
     private final PreviewDisplay previewDisplay;
     private BiomesList biomesList;
     private StructuresList structuresList;
@@ -335,7 +328,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         openAnalysis.visible = cfg.showAnalysisButton;
         toRender.add(openAnalysis);
 
-        seedSearchButton = Button.builder(WorldPreviewComponents.SEARCH_OPEN, ignored -> openSeedSearchScreen(null, false))
+        seedSearchButton = Button.builder(WorldPreviewComponents.SEARCH_OPEN, ignored -> openSeedSearchScreen(null, null, false))
                 .size(100, LINE_HEIGHT)
                 .build();
         seedSearchButton.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_OPEN_TOOLTIP));
@@ -400,7 +393,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         biomesList.setRightClickListener(this::onBiomeRightClick);
 
         structuresList = new StructuresList(minecraft, 200, 300, 4, 100);
-        structuresList.setRightClickListener(entry -> openSeedSearchScreen(entry, true));
+        structuresList.setRightClickListener(entry -> openSeedSearchScreen(null, entry, true));
 
         seedsList = new SeedsList(minecraft, this);
         updateSeedListWidget();
@@ -982,63 +975,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     public void onBiomeRightClick(BiomesList.BiomeEntry entry) {
         if (seedSearchService.isSearching()) {
             seedSearchService.cancel();
-            updateSearchUI(false, null);
-            return;
         }
-        startBiomeSearch(entry);
-    }
-
-    private void startBiomeSearch(BiomesList.BiomeEntry entry) {
-        if (seedSearchFactory == null) {
-            LOGGER.warn("Search context not available");
-            return;
-        }
-
-        var viewport = currentSearchViewport();
-        var request = new SeedSearchRequest(
-            entry.entry().key().identifier(),
-            viewport.dimension(),
-            viewport.center(),
-            viewport.center().getY(),
-            viewport.viewMinX(), viewport.viewMaxX(), viewport.viewMinZ(), viewport.viewMaxZ(),
-            viewport.sampleStep(),
-            viewport.contextFingerprint(),
-            SeedSearchRequest.DEFAULT_MAX_ATTEMPTS,
-            cfg.searchMinAreaPercent,
-            cfg.searchMaxDistance
-        );
-
-        updateSearchUI(true, Component.translatable(
-            "world_preview.search.progress", 0, request.maxAttempts()));
-
-        seedSearchService.startSearch(request, seedSearchFactory,
-            hitSeed -> {
-                LOGGER.info("Found seed {} for biome {}", hitSeed, entry.name());
-                setSeed(String.valueOf(hitSeed));
-            },
-            result -> {
-                if (result instanceof SeedSearchResult.Hit hit) {
-                    updateSearchUI(false, Component.translatable(
-                        "world_preview.search.found", String.valueOf(hit.seed())));
-                } else if (result instanceof SeedSearchResult.Miss) {
-                    updateSearchUI(false, Component.translatable(
-                        "world_preview.search.not_found", request.maxAttempts()));
-                } else {
-                    updateSearchUI(false, Component.translatable(
-                        "world_preview.search.stopped"));
-                }
-                // Clear status text after 3 seconds. A single shared daemon
-                // scheduler is reused across searches; creating a fresh
-                // java.util.Timer per search leaked one thread each time.
-                SEARCH_UI_CLEANUP.schedule(() -> minecraft.execute(() -> {
-                    if (!seedSearchService.isSearching()) {
-                        updateSearchUI(false, null);
-                    }
-                }), 3, TimeUnit.SECONDS);
-            },
-            attempts -> updateSearchUI(true, Component.translatable(
-                "world_preview.search.progress", attempts, request.maxAttempts()))
-        );
+        openSeedSearchScreen(entry, null, true);
     }
 
     /** Immutable snapshot of the current viewport sampling parameters. */
@@ -1096,10 +1034,6 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
         return seedSearchService.startSearch(request, seedSearchFactory,
                 null, onComplete, onProgress);
-    }
-
-    private void updateSearchUI(boolean active, @Nullable Component status) {
-        biomesList.setSearchActive(active, status);
     }
 
     private void queueEarlyPreviewRange() {
@@ -1950,12 +1884,14 @@ public void onScreenReentry() {
     /**
      * Opens the advanced seed search screen.
      *
+     * @param biome biome pre-selected in the search screen's picker (nullable)
      * @param structure structure pre-selected as search criterion (nullable)
      * @param autoStart whether to start searching immediately after opening
      */
-    public void openSeedSearchScreen(@Nullable StructuresList.StructureEntry structure, boolean autoStart) {
+    public void openSeedSearchScreen(@Nullable BiomesList.BiomeEntry biome,
+                                     @Nullable StructuresList.StructureEntry structure,
+                                     boolean autoStart) {
         if (!workManager.isSetup()) return;
-        var biome = biomesList.getSelected();
         minecraft.setScreen(new caeruleusTait.world.preview.client.gui.screens.SeedSearchScreen(
                 parentScreen, this, biome, structure, autoStart));
     }

@@ -7,14 +7,16 @@ import caeruleusTait.world.preview.backend.analysis.SeedSearchHistory;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
+import caeruleusTait.world.preview.client.gui.widgets.lists.BiomePickerList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.SearchResultsList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
-import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.CommonComponents;
@@ -27,26 +29,34 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Advanced seed search screen: combines a biome criterion (pre-selected in the
- * biome list) with a structure criterion, configures search limits and shows
- * ranked results plus the persistent search history and favorites.
+ * Advanced seed search screen: combines biome criteria chosen in a filterable
+ * multi-select picker (any-of biome group) with a structure criterion,
+ * configures search limits and shows ranked results plus the persistent
+ * search history and favorites.
  */
 public final class SeedSearchScreen extends Screen implements SearchResultsList.RowActions {
 
+    /** Maximum number of biomes that may be combined into one group criterion. */
+    private static final int MAX_BIOMES_PER_SEARCH = 4;
+
     private final Screen parent;
     private final PreviewContainer container;
+    /** Only used to prefill the biome picker (right-click entry point); not a criterion itself. */
     @Nullable private final BiomesList.BiomeEntry initialBiome;
     @Nullable private final StructuresList.StructureEntry initialStructure;
     private final boolean autoStart;
 
-    @Nullable private BiomesList.BiomeEntry biome;
     @Nullable private Identifier structureId;
     @Nullable private String structureName;
 
-    private AbstractWidget clearBiomeButton;
+    private BiomePickerList biomePicker;
+    private EditBox filterBox;
+    private Button showCavesButton;
+    private Button clearBiomesButton;
     private CycleButton<StructureOption> structureCycle;
     private CycleButton<Anchor> anchorCycle;
     private IntSlider minAreaSlider;
+    private IntSlider biomeDistanceSlider;
     private IntSlider structureDistanceSlider;
     private IntSlider attemptsSlider;
     private IntSlider hitsSlider;
@@ -56,6 +66,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private CycleButton<View> viewCycle;
     private SearchResultsList resultsList;
 
+    private boolean showCaves = false;
     private final List<SearchResultsList.Row> hitRows = new ArrayList<>();
     private String statusText = "";
     private boolean searching = false;
@@ -78,13 +89,12 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         super(WorldPreviewComponents.SEARCH_TITLE);
         this.parent = parent;
         this.container = container;
-        this.biome = biome;
-        this.structureId = structure != null ? structure.structureId() : null;
-        this.structureName = structure != null ? structure.name() : null;
         this.initialBiome = biome;
         this.initialStructure = structure;
         this.autoStart = autoStart;
         this.applyBestOnComplete = autoStart;
+        this.structureId = structure != null ? structure.structureId() : null;
+        this.structureName = structure != null ? structure.name() : null;
     }
 
     // ===== Screen lifecycle =====
@@ -92,17 +102,34 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     @Override
     protected void init() {
         clearWidgets();
-        biome = initialBiome;
         structureId = initialStructure != null ? initialStructure.structureId() : null;
         structureName = initialStructure != null ? initialStructure.name() : null;
         hitRows.clear();
         statusText = "";
         currentView = View.RESULTS;
 
-        clearBiomeButton = Button.builder(WorldPreviewComponents.SEARCH_CLEAR_BIOME, btn -> {
-            biome = null;
-            btn.visible = false;
-        }).size(70, 20).build();
+        // Biome criteria picker (multi-select, any-of group)
+        biomePicker = new BiomePickerList(minecraft, container.allBiomes());
+        biomePicker.setMaxSelections(MAX_BIOMES_PER_SEARCH);
+        biomePicker.setOnSelectionRejected(id -> statusText = WorldPreviewComponents.SEARCH_BIOME_MAX.getString());
+        biomePicker.setShowCaves(showCaves);
+        if (initialBiome != null) {
+            biomePicker.selectOnly(initialBiome.entry().key().identifier());
+        }
+
+        filterBox = new EditBox(font, 0, 0, 150, 20, WorldPreviewComponents.SEARCH_BIOME_FILTER);
+        filterBox.setHint(WorldPreviewComponents.SEARCH_BIOME_FILTER);
+        filterBox.setMaxLength(64);
+        filterBox.setResponder(biomePicker::setFilter);
+
+        showCavesButton = Button.builder(showCavesLabel(), btn -> {
+            showCaves = !showCaves;
+            btn.setMessage(showCavesLabel());
+            biomePicker.setShowCaves(showCaves);
+        }).size(150, 20).build();
+
+        clearBiomesButton = Button.builder(WorldPreviewComponents.SEARCH_CLEAR_BIOME, btn -> biomePicker.clearSelection())
+                .size(70, 20).build();
 
         List<StructureOption> structureOptions = new ArrayList<>();
         StructureOption noneOption = new StructureOption(
@@ -148,6 +175,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         minAreaSlider = new IntSlider(0, 0, 150, 20,
                 WorldPreviewComponents.SEARCH_MIN_AREA, 0, 100, 1,
                 container.worldPreview().cfg().searchMinAreaPercent);
+        biomeDistanceSlider = new IntSlider(0, 0, 150, 20,
+                WorldPreviewComponents.SEARCH_BIOME_DISTANCE, 0, 4096, 64, 0);
+        biomeDistanceSlider.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_BIOME_DISTANCE_TOOLTIP));
         structureDistanceSlider = new IntSlider(0, 0, 150, 20,
                 WorldPreviewComponents.SEARCH_STRUCTURE_DISTANCE, 128, 8192, 128, 512);
         attemptsSlider = new IntSlider(0, 0, 150, 20,
@@ -165,10 +195,14 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
         resultsList = new SearchResultsList(minecraft, this);
 
-        addRenderableWidget(clearBiomeButton);
+        addRenderableWidget(biomePicker);
+        addRenderableWidget(filterBox);
+        addRenderableWidget(showCavesButton);
+        addRenderableWidget(clearBiomesButton);
         addRenderableWidget(structureCycle);
         addRenderableWidget(anchorCycle);
         addRenderableWidget(minAreaSlider);
+        addRenderableWidget(biomeDistanceSlider);
         addRenderableWidget(structureDistanceSlider);
         addRenderableWidget(attemptsSlider);
         addRenderableWidget(hitsSlider);
@@ -210,22 +244,35 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         int rightX = width / 2 + 4;
         int rightWidth = Math.max(200, width / 2 - 12);
 
-        clearBiomeButton.setPosition(left + leftWidth - 74, top);
-        clearBiomeButton.setWidth(70);
-        structureCycle.setPosition(left, top + 22);
+        // Biome criteria area at the top of the left column; the "Biomes: n"
+        // summary line is drawn by render() right above the filter row.
+        filterBox.setPosition(left, top + 12);
+        filterBox.setWidth(150);
+        clearBiomesButton.setPosition(left + 154, top + 12);
+        showCavesButton.setPosition(left, top + 34);
+        biomePicker.setX(left);
+        biomePicker.setY(top + 56);
+        biomePicker.setWidth(leftWidth);
+        biomePicker.setHeight(96);
+        int criteriaBottom = top + 56 + 96;
+
+        structureCycle.setPosition(left, criteriaBottom + 4);
         structureCycle.setWidth(Math.min(160, leftWidth));
-        anchorCycle.setPosition(left + Math.min(164, leftWidth + 4), top + 22);
+        anchorCycle.setPosition(left + Math.min(164, leftWidth + 4), criteriaBottom + 4);
         anchorCycle.setWidth(Math.min(160, Math.max(100, width - (left + Math.min(164, leftWidth + 4)) - 8)));
 
-        int sliderRow = top + 48;
+        // Two slider columns: min area + biome distance, then structure
+        // distance + attempts, with hits and the action buttons below.
+        int sliderRow = criteriaBottom + 30;
         minAreaSlider.setPosition(left, sliderRow);
-        structureDistanceSlider.setPosition(left + 156, sliderRow);
-        attemptsSlider.setPosition(left, sliderRow + 24);
-        hitsSlider.setPosition(left + 156, sliderRow + 24);
+        biomeDistanceSlider.setPosition(left + 156, sliderRow);
+        structureDistanceSlider.setPosition(left, sliderRow + 24);
+        attemptsSlider.setPosition(left + 156, sliderRow + 24);
+        hitsSlider.setPosition(left, sliderRow + 48);
 
-        startButton.setPosition(left, sliderRow + 52);
-        stopButton.setPosition(left + 74, sliderRow + 52);
-        compareButton.setPosition(left + 150, sliderRow + 52);
+        startButton.setPosition(left, sliderRow + 72);
+        stopButton.setPosition(left + 74, sliderRow + 72);
+        compareButton.setPosition(left + 150, sliderRow + 72);
 
         viewCycle.setPosition(rightX, top);
         resultsList.setX(rightX);
@@ -246,9 +293,12 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 : viewport.center();
 
         List<SearchCriterion> criteria = new ArrayList<>();
-        if (biome != null) {
-            criteria.add(new SearchCriterion.Biome(
-                    biome.entry().key().identifier(), minAreaSlider.currentValue(), 0));
+        List<Identifier> selectedBiomes = biomePicker.getSelectedIds();
+        if (!selectedBiomes.isEmpty()) {
+            // The picker selection becomes a single ANY-of group criterion; a
+            // distance cap of 0 disables the biome proximity requirement.
+            criteria.add(new SearchCriterion.BiomeGroup(
+                    selectedBiomes, minAreaSlider.currentValue(), biomeDistanceSlider.currentValue()));
         }
         if (structureId != null) {
             criteria.add(new SearchCriterion.Structure(
@@ -348,20 +398,25 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         searching = container.isSeedSearchRunning();
         startButton.active = !searching;
         stopButton.active = searching;
-        clearBiomeButton.visible = biome != null;
     }
 
     // ===== Criteria helpers =====
 
     private String criteriaLabel() {
         List<String> parts = new ArrayList<>();
-        if (biome != null) {
-            parts.add(biome.name());
+        for (BiomesList.BiomeEntry entry : biomePicker.getSelectedEntries()) {
+            parts.add(entry.name());
         }
         if (structureName != null) {
             parts.add(structureName);
         }
         return String.join(" + ", parts);
+    }
+
+    /** Label for the cave-biomes toggle with an [x]/[  ] prefix showing the state. */
+    private Component showCavesLabel() {
+        return Component.literal((showCaves ? "[x] " : "[  ]")
+                + WorldPreviewComponents.SEARCH_BIOME_SHOW_CAVES.getString());
     }
 
     // ===== Result list =====
@@ -428,15 +483,13 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         graphics.fill(0, 0, width, height, 0xFF101018);
         graphics.drawCenteredString(font, title, width / 2, 8, 0xFFFFFFFF);
 
-        // Criteria summary (left column)
+        // Criteria summary (left column): number of selected biomes
         int left = 8;
         int top = 24;
-        String biomeText = biome == null
-                ? WorldPreviewComponents.SEARCH_BIOME_NONE.getString()
-                : biome.name();
         graphics.drawString(font,
-                WorldPreviewComponents.SEARCH_BIOME.copy().append(": ").append(biomeText),
-                left, top + 6, 0xFFCCCCCC);
+                Component.translatable("world_preview.search.biome.selected",
+                        biomePicker.getSelectedCount()),
+                left, top + 3, 0xFFCCCCCC);
 
         super.render(graphics, mouseX, mouseY, partialTick);
 
