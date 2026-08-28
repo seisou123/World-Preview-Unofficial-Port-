@@ -64,6 +64,12 @@ public final class PreviewContainerTabManager {
         return currentDisplayType;
     }
 
+    private static void markSelected(Button button, boolean selected) {
+        if (button instanceof caeruleusTait.world.preview.client.gui.widgets.TranslucentButton tb) {
+            tb.setSelected(selected);
+        }
+    }
+
     public void resetTabs() {
         onTabButtonChange(switchBiomes, DisplayType.BIOMES);
     }
@@ -103,6 +109,10 @@ public final class PreviewContainerTabManager {
         }
 
         btn.active = false;
+        // Drive the accent selected-state of the rail buttons (TranslucentButton).
+        markSelected(switchBiomes, type == DisplayType.BIOMES);
+        markSelected(switchStructures, type == DisplayType.STRUCTURES);
+        markSelected(switchSeeds, type == DisplayType.SEEDS);
         switch (type) {
             case BIOMES -> {
                 biomesList.visible = true;
