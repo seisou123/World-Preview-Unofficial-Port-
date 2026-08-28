@@ -2099,6 +2099,16 @@ public void onScreenReentry() {
         return dataProvider.seedIsEditable();
     }
 
+    /**
+     * Factory for lightweight per-seed samplers (biome + structure probing)
+     * built for the current worldgen context, or {@code null} before the
+     * context is set up. Callers must close the created samplers.
+     */
+    @Nullable
+    public SeedSearchService.SeedContextFactory seedSearchFactory() {
+        return seedSearchFactory;
+    }
+
     public List<AbstractWidget> widgets() {
         return toRender;
     }

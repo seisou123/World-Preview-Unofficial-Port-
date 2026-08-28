@@ -52,6 +52,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private IntSlider hitsSlider;
     private Button startButton;
     private Button stopButton;
+    private Button compareButton;
     private CycleButton<View> viewCycle;
     private SearchResultsList resultsList;
 
@@ -159,6 +160,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         stopButton = Button.builder(WorldPreviewComponents.SEARCH_STOP, ignored -> stopSearch())
                 .size(70, 20).build();
         stopButton.active = false;
+        compareButton = Button.builder(WorldPreviewComponents.COMPARISON_OPEN, ignored -> openComparison())
+                .size(70, 20).build();
 
         resultsList = new SearchResultsList(minecraft, this);
 
@@ -171,6 +174,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         addRenderableWidget(hitsSlider);
         addRenderableWidget(startButton);
         addRenderableWidget(stopButton);
+        addRenderableWidget(compareButton);
         addRenderableWidget(viewCycle);
         addRenderableWidget(resultsList);
 
@@ -221,6 +225,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
         startButton.setPosition(left, sliderRow + 52);
         stopButton.setPosition(left + 74, sliderRow + 52);
+        compareButton.setPosition(left + 150, sliderRow + 52);
 
         viewCycle.setPosition(rightX, top);
         resultsList.setX(rightX);
@@ -279,6 +284,13 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void stopSearch() {
         container.cancelSeedSearch();
+    }
+
+    /** Opens the seed comparison screen; back navigation returns to this instance. */
+    private void openComparison() {
+        if (minecraft != null) {
+            minecraft.setScreen(new SeedComparisonScreen(this, container));
+        }
     }
 
     private void onProgress(int attempts) {

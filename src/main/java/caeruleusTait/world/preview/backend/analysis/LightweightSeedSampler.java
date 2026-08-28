@@ -97,6 +97,21 @@ public final class LightweightSeedSampler implements SeedSearchService.BiomeSamp
 
     @Override
     @Nullable
+    public Identifier biomeAt(int x, int y, int z) {
+        // Mirrors sampleContains() but returns the biome identifier instead of
+        // comparing against a target; null when the key cannot be resolved.
+        return biomeSource.getNoiseBiome(
+                QuartPos.fromBlock(x),
+                QuartPos.fromBlock(y),
+                QuartPos.fromBlock(z),
+                randomState.sampler()
+        ).unwrapKey()
+                .map(key -> key.identifier())
+                .orElse(null);
+    }
+
+    @Override
+    @Nullable
     public BlockPos nearestStructure(Set<Identifier> structures, BlockPos anchor, int maxDistanceBlocks) {
         if (templateManager == null) {
             return null;

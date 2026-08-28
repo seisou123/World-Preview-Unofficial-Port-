@@ -468,6 +468,18 @@ public class SeedSearchService implements AutoCloseable {
          */
         boolean sampleContains(int x, int y, int z, Identifier targetBiome) throws Exception;
 
+        /**
+         * Return the biome identifier at the given coordinates, or {@code null}
+         * when the sampler cannot resolve biome identifiers. Only samplers with
+         * real worldgen context (e.g. the lightweight probe) support this; plain
+         * samplers return null and callers (the seed comparison screen) treat
+         * null as "unavailable". The search service itself never calls this.
+         */
+        @Nullable
+        default Identifier biomeAt(int x, int y, int z) throws Exception {
+            return null;
+        }
+
         @Override
         default void close() throws Exception {}
     }

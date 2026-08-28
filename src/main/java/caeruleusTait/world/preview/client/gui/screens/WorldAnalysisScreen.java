@@ -5,10 +5,12 @@ import caeruleusTait.world.preview.backend.analysis.AnalysisDataState;
 import caeruleusTait.world.preview.backend.analysis.AnalysisProgress;
 import caeruleusTait.world.preview.backend.analysis.AnalysisSession;
 import caeruleusTait.world.preview.backend.analysis.AnalysisStatus;
+import caeruleusTait.world.preview.backend.analysis.BiomeRarity;
 import caeruleusTait.world.preview.backend.analysis.ProfileRequest;
 import caeruleusTait.world.preview.backend.analysis.ProfileResult;
 import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.analysis.RegionMetrics;
+import caeruleusTait.world.preview.backend.analysis.SpawnAdvisor;
 import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import caeruleusTait.world.preview.backend.export.AnalysisReportExporter;
 import caeruleusTait.world.preview.backend.export.AnalysisReportExporter.ReportInput;
@@ -25,8 +27,12 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.level.biome.Biome;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -44,6 +50,11 @@ public final class WorldAnalysisScreen extends Screen {
     private static final DateTimeFormatter EXPORT_TIMESTAMP_FORMAT =
             DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     private static final Gson REPORT_GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+
+    /** Vanilla water biome tags used for the spawn score's water share. */
+    private static final TagKey<Biome> IS_OCEAN = TagKey.create(Registries.BIOME, Identifier.parse("minecraft:is_ocean"));
+    private static final TagKey<Biome> IS_RIVER = TagKey.create(Registries.BIOME, Identifier.parse("minecraft:is_river"));
+    private static final TagKey<Biome> IS_DEEP_OCEAN = TagKey.create(Registries.BIOME, Identifier.parse("minecraft:is_deep_ocean"));
 
     private final Screen parent;
     private final AnalysisSession session;
@@ -63,6 +74,8 @@ public final class WorldAnalysisScreen extends Screen {
     private Component exportStatusMessage;
     private int exportStatusColor;
     private long exportStatusUntil;
+    /** Lazily built short-id → biome entry lookup for the spawn score / top biomes. */
+    private Map<Short, BiomesList.BiomeEntry> biomeIdLookup;
 
     public WorldAnalysisScreen(Screen parent, AnalysisSession session,
                                PreviewContainer previewContainer, Region initialRegion) {
@@ -110,6 +123,9 @@ public final class WorldAnalysisScreen extends Screen {
 
     private void startAnalysis() {
         session.start();
+        // A fresh run invalidates the previously computed spawn/top-biome data.
+        analysisPanel.setSpawnAnalysis(null, List.of());
+        analysisPanel.setTopBiomes(List.of());
         ProfileRequest request = new ProfileRequest(region.minX(), region.minZ(), region.maxX(), region.maxZ(),
                 session.request().y(), session.request().y(), Math.max(1, session.request().sampleStep()), false);
         profileChart.setResult(session.profile(request));
@@ -210,6 +226,66 @@ public final class WorldAnalysisScreen extends Screen {
         exportStatusMessage = message;
         exportStatusColor = color;
         exportStatusUntil = System.currentTimeMillis() + EXPORT_STATUS_MILLIS;
+    }
+
+    // ===== Spawn score & top biomes =====
+
+    /**
+     * Computes the spawn score and top-biome rarity for the current metrics and
+     * pushes both to the analysis panel. Called once per metrics refresh (cheap);
+     * clears both sections when there is no sample data yet.
+     */
+    private void refreshSpawnAndBiomePanels(RegionMetrics metrics) {
+        if (metrics == null || metrics.biomeCounts().isEmpty() || metrics.presentSamples() <= 0) {
+            analysisPanel.setSpawnAnalysis(null, List.of());
+            analysisPanel.setTopBiomes(List.of());
+            return;
+        }
+        Map<Short, BiomesList.BiomeEntry> byId = biomeIdLookup();
+        long presentSamples = metrics.presentSamples();
+
+        long waterSamples = 0;
+        for (Map.Entry<Short, Long> entry : metrics.biomeCounts().entrySet()) {
+            BiomesList.BiomeEntry biome = byId.get(entry.getKey());
+            if (biome != null && isWaterBiome(biome)) {
+                waterSamples += entry.getValue();
+            }
+        }
+        double waterShare = waterSamples / (double) presentSamples;
+        Double meanSlope = metrics.meanSlope().isPresent() ? metrics.meanSlope().getAsDouble() : null;
+
+        SpawnAdvisor.SpawnResult spawn = SpawnAdvisor.evaluate(
+                new SpawnAdvisor.SpawnInput(waterShare, metrics.flatRatio(), meanSlope, 0));
+        List<Component> reasons = new ArrayList<>(spawn.reasons().size());
+        for (SpawnAdvisor.Reason reason : spawn.reasons()) {
+            reasons.add(Component.translatable(reason.key(), reason.args()));
+        }
+        analysisPanel.setSpawnAnalysis(spawn.score(), reasons);
+
+        analysisPanel.setTopBiomes(BiomeRarity.topBiomes(metrics.biomeCounts(),
+                id -> {
+                    BiomesList.BiomeEntry biome = byId.get((short) id);
+                    return biome != null ? biome.name() : null;
+                },
+                presentSamples, 5));
+    }
+
+    /** Lazily built (main thread) short-id → biome entry lookup. */
+    private Map<Short, BiomesList.BiomeEntry> biomeIdLookup() {
+        Map<Short, BiomesList.BiomeEntry> lookup = biomeIdLookup;
+        if (lookup == null) {
+            lookup = new HashMap<>();
+            for (BiomesList.BiomeEntry entry : previewContainer.allBiomes()) {
+                lookup.put(entry.id(), entry);
+            }
+            biomeIdLookup = lookup;
+        }
+        return lookup;
+    }
+
+    /** Ocean, deep-ocean or river biomes count as water; unknown biomes as land. */
+    private static boolean isWaterBiome(BiomesList.BiomeEntry biome) {
+        return biome.entry().is(IS_OCEAN) || biome.entry().is(IS_RIVER) || biome.entry().is(IS_DEEP_OCEAN);
     }
 
     @Override
@@ -313,6 +389,7 @@ public final class WorldAnalysisScreen extends Screen {
                 RegionMetrics metrics = session.result();
                 analysisPanel.setMetrics(metrics);
                 analysisPanel.setProgress(progress);
+                refreshSpawnAndBiomePanels(metrics);
                 profileRefreshCooldown = 20;
             }
             return;

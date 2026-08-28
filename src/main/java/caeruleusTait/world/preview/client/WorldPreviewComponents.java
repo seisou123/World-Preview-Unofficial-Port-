@@ -54,6 +54,23 @@ public class WorldPreviewComponents {
     public static final Component ANALYSIS_CANCEL = Component.translatable("world_preview.analysis.cancel");
     public static final Component ANALYSIS_EXPORT_REPORT = Component.translatable("world_preview.analysis.export");
 
+    // === Analysis panel extras: spawn score & biome rarity (v1.5) ===
+    public static final Component ANALYSIS_SPAWN_SCORE = Component.translatable("world_preview.analysis.spawn_score");
+    public static final Component ANALYSIS_SPAWN_SCORE_VALUE = Component.translatable("world_preview.analysis.spawn_score.value");
+    public static final Component ANALYSIS_TOP_BIOMES = Component.translatable("world_preview.analysis.top_biomes");
+
+    // === Seed comparison screen (v1.5) ===
+    public static final Component COMPARISON_TITLE = Component.translatable("world_preview.comparison.title");
+    public static final Component COMPARISON_OPEN = Component.translatable("world_preview.comparison.open");
+    public static final Component COMPARISON_START = Component.translatable("world_preview.comparison.start");
+    public static final Component COMPARISON_STOP = Component.translatable("world_preview.comparison.stop");
+    public static final Component COMPARISON_PROGRESS = Component.translatable("world_preview.comparison.progress");
+    public static final Component COMPARISON_UNAVAILABLE = Component.translatable("world_preview.comparison.unavailable");
+    public static final Component COMPARISON_COL_DIVERSITY = Component.translatable("world_preview.comparison.col.diversity");
+    public static final Component COMPARISON_COL_WATER = Component.translatable("world_preview.comparison.col.water");
+    public static final Component COMPARISON_COL_TOP = Component.translatable("world_preview.comparison.col.top");
+    public static final Component COMPARISON_COL_SCORE = Component.translatable("world_preview.comparison.col.score");
+
     // === Seed search ===
     public static final Component SEARCH_FIND_BIOME = Component.translatable("world_preview.search.find_biome");
     public static final Component SEARCH_STOP = Component.translatable("world_preview.search.stop");

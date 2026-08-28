@@ -47,6 +47,24 @@
   block-coordinate grid (spec-level option, off by default; not yet exposed in
   the UI).
 
+### Features — Spawn point & seed analysis (1.21.11-fabric)
+
+- **Spawn score in the analysis screen**: once a region analysis finishes, the
+  metrics panel shows a spawn quality score (0–100) weighted from flatness,
+  slope and the water share (ocean/river/deep-ocean biome tags), plus up to
+  three translated reasons (much/little water, rough/flat terrain, steep slope,
+  good/poor verdict).
+- **Top-biomes rarity display**: the analysis panel also lists the five most
+  common biomes of the analyzed region with their share percentage and a star
+  rating (3 stars = rare, below 1% share).
+- **Seed comparison screen**: opened from a new *Compare Seeds* button in the
+  seed search screen; compares the current seed plus up to three saved seeds by
+  sampling the biome composition in a square around the world origin
+  (radius 512, step 16, y=64). Per seed it reports biome diversity, water
+  share, the most common biome with its share and a spawn score, with per-row
+  progress and cancel support; non-numeric or unsampleable seeds are marked
+  unavailable.
+
 ### Notes
 
 - Structures using concentric-ring placement (strongholds) are not supported
