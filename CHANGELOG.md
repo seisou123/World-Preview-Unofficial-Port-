@@ -2,124 +2,29 @@
 
 ## 1.5.0
 
-### Features — Seed search rework (1.21.11-fabric)
+### New Features
 
-- **Multi-criteria seed search**: a new Seed Search screen combines a biome
-  criterion (selected in the biome list) with a structure criterion
-  (any random-spread structure such as villages, bastions, ancient cities, …).
-  All criteria must pass for a seed to hit.
-- **Structure-based seed search** with a lightweight vanilla `/locate`-style
-  probe: candidate chunks are computed from structure placement math and
-  verified with `Structure.findValidGenerationPoint` per candidate seed — no
-  dummy server or chunk generation required. Open it via the new *Seed Search*
-  button or by right-clicking a structure in the structures list (auto-starts).
-- **Ranked multi-hit results**: the advanced search collects up to 10 seeds
-  (scored by biome coverage and structure proximity, best first) instead of
-  stopping at the first hit.
-- **Search history & favorites** persisted to
-  `config/world_preview/search-history.json`: click a row to re-apply a seed,
-  shift+right-click to favorite it, right-click to delete it (history entries).
-- Configurable search limits: biome min-area, structure distance
-  (128–8192 blocks), max attempts and number of results.
-- Search anchor selectable between the current map center and the world origin.
+- Added seed search with multiple criteria: combine a biome criterion (up to 4 biomes as an any-of group, chosen in a filterable picker) with a structure criterion (villages, bastions, ancient cities, ...); all criteria must pass for a seed to hit
+- Search results are ranked (best first) and limited by the configurable number of hits; the search anchor can be the map center or the world origin
+- Added search history & favorites: persisted to config, click a row to re-apply a seed, shift+right-click to favorite it, right-click to delete it
+- Right-click a biome in the biome list to open the seed search screen pre-filled with that biome; the search starts automatically
+- Structures are picked in a dedicated structure selection screen with a filter box, item icons and a "None" row
+- Added map waypoints: named, colored pins persisted per seed/dimension; left-click the map to place one via a naming dialog, right-click a pin to remove it
+- Added a measure tool: two clicks on the map measure distance and axis deltas, right-click clears the measurement
+- Double-click a structure in the structures list to center the map on its nearest instance
+- Added analysis report export: the analysis screen can export the biome share table as CSV plus a JSON summary into config/world_preview/reports/
+- Added multi-dimension terrain export: batch-export terrain maps for every dimension of the current seed with per-dimension progress and cancel support, optionally with a block-coordinate grid overlay
+- Added spawn analysis: the analysis panel shows a spawn quality score (0-100) with reasons and lists the region's top 5 biomes with their share and rarity stars
+- Added a seed comparison screen: compares the current seed with up to three saved seeds by biome diversity, water share, most common biome and spawn score
+- Structure criteria support random-spread structures; concentric-ring structures such as strongholds are not supported yet
 
-### Features — Map interactions (1.21.11-fabric)
+### Improvements
 
-- **Map waypoints**: named, colored pins persisted per seed/dimension in
-  `config/world_preview/waypoints.json`. Toggle the new *Waypoints* button,
-  left-click the map to place a pin via the naming dialog, and right-click an
-  existing pin to delete it.
-- **Structure locate**: double-click a structure in the structures list to
-  center the map on its nearest rendered instance.
-- **Measure tool**: two clicks on the map measure distance and axis deltas,
-  drawn as an overlay; right-click clears the measurement.
-
-### Features — Export & analysis reports (1.21.11-fabric)
-
-- **Analysis report export**: the world analysis screen gains an *Export Report*
-  button that writes the biome share table as CSV plus a JSON summary
-  (seed, dimension, region, coverage, height/slope statistics) into
-  `config/world_preview/reports/`.
-- **Multi-dimension terrain export**: the terrain export screen can batch-export
-  a terrain map for every available dimension of the current seed with the same
-  settings, sequentially, with live per-dimension progress and cancel support.
-- **Grid overlay in terrain maps**: exported terrain maps can optionally draw a
-  block-coordinate grid (spec-level option, off by default; not yet exposed in
-  the UI).
-
-### Features — Spawn point & seed analysis (1.21.11-fabric)
-
-- **Spawn score in the analysis screen**: once a region analysis finishes, the
-  metrics panel shows a spawn quality score (0–100) weighted from flatness,
-  slope and the water share (ocean/river/deep-ocean biome tags), plus up to
-  three translated reasons (much/little water, rough/flat terrain, steep slope,
-  good/poor verdict).
-- **Top-biomes rarity display**: the analysis panel also lists the five most
-  common biomes of the analyzed region with their share percentage and a star
-  rating (3 stars = rare, below 1% share).
-- **Seed comparison screen**: opened from a new *Compare Seeds* button in the
-  seed search screen; compares the current seed plus up to three saved seeds by
-  sampling the biome composition in a square around the world origin
-  (radius 512, step 16, y=64). Per seed it reports biome diversity, water
-  share, the most common biome with its share and a spawn score, with per-row
-  progress and cancel support; non-numeric or unsampleable seeds are marked
-  unavailable.
-
-### Changes — Biome search rework (1.21.11-fabric)
-
-- **Biome criteria are now chosen in a filterable multi-select picker** inside
-  the Seed Search screen (color chips, a gray `[cave]` tag on cave biomes and a
-  cave filter toggle). Up to 4 biomes can be combined into one ANY-of group
-  criterion ("any jungle variant"), evaluated together for area coverage and
-  proximity.
-- **Biome groups support a per-search max distance**: the nearest matching
-  point of the group must lie within the configured block radius of the search
-  anchor (0 = no distance limit), with a proximity bonus for closer hits.
-- **Right-clicking a biome in the biome list now opens the Seed Search screen
-  pre-filled with that biome and auto-starts the search**, consistent with the
-  structure right-click flow (a running search is cancelled first).
-- Removed the old inline list-status search flow (status rows on the biome
-  list and its cancel/inline-search right-click behavior).
-
-### UI — Seed search screen & button (1.21.11-fabric)
-
-- Added a Back button to the Seed Search screen (previously only ESC closed it).
-- The Seed Search screen layout is now height-adaptive: Start/Stop/Compare are
-  pinned to a footer row together with the hits slider, and the biome picker
-  absorbs the remaining space, so all controls stay visible on small GUI scales
-  (e.g. 3x/4x) where the Start Search button could previously fall off-screen.
-- The Seed Search screen is now compacted: the six criteria controls are laid
-  out three per row across the full screen width in two rows, the biome picker
-  is narrowed to 1.5 button widths, and the results view moved beside it, so
-  no widget overlaps another at any GUI size.
-- The *Seed Search* button now uses the sidebar's translucent rail style
-  (matching the Biomes/Structures/Seeds buttons) and sits directly below them;
-  it can be hidden via the new General setting *Show seed search button*
-  (default on).
-
-### Changes — Background seed search (1.21.11-fabric)
-
-- **Starting a search now returns to the preview map while the search
-  continues in the background.** Reopening the Seed Search screen re-attaches
-  to the running search (live progress and completion) and, when no search is
-  running, shows the most recent completed result. Going back no longer
-  cancels a running search — the *Stop* button is the explicit cancel.
-- The default number of results (hits) was lowered from 5 to 1.
-- **The structure criterion is now picked in a dedicated structure-selection
-  screen** (opened from the structure button): a filterable single-pick list
-  with a "None" row and one row per structure showing its item icon and name.
-
-### UI — Search screens (1.21.11-fabric)
-
-- Compacted the Seed Search top bar: narrower filter box and show-caves
-  toggle, the clear and view buttons sharing the right half of the top rows,
-  and the results list level with the clear button.
-- Added a back button to the seed comparison screen.
-
-### Notes
-
-- Structures using concentric-ring placement (strongholds) are not supported
-  by the lightweight probe yet; their criteria never match.
+- Searches now run in the background: starting a search returns to the preview map, reopening the seed search screen re-attaches to the running search or shows the last result, and leaving the screen no longer cancels it (Stop cancels explicitly)
+- The default number of search results was lowered from 5 to 1
+- Compacted the seed search screen: criteria controls are laid out three per row across two rows, the biome picker and results list sit side by side, and the layout adapts to the screen height so nothing overlaps or falls off-screen
+- Added a back button to the seed search screen and to the seed comparison screen
+- The seed search button now uses the sidebar rail style below the Biomes/Structures/Seeds buttons and can be hidden via the new "Show seed search button" setting (default on)
 
 ## 1.4.2
 
