@@ -1,8 +1,11 @@
 package caeruleusTait.world.preview.client.gui.screens;
 
+import caeruleusTait.world.preview.WorldPreview;
+import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import caeruleusTait.world.preview.backend.export.TerrainCategory;
 import caeruleusTait.world.preview.backend.export.TerrainExportController;
 import caeruleusTait.world.preview.backend.export.TerrainExportSpec;
+import caeruleusTait.world.preview.backend.export.TerrainMapExporter;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.screens.settings.SettingsTheme;
 import net.minecraft.client.Minecraft;
@@ -10,12 +13,36 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Checkbox;
+import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.StringWidget;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.core.QuartPos;
+import net.minecraft.core.Registry;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.biome.BiomeSource;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.dimension.LevelStem;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
+import net.minecraft.world.level.levelgen.RandomState;
 
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongConsumer;
+
+import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
 /**
  * Terrain map export screen (sub-screen switch mode).
@@ -32,6 +59,7 @@ public final class TerrainExportScreen extends Screen {
     private int blocksPerPixel = TerrainExportSpec.DEFAULT_BLOCKS_PER_PIXEL;
     private boolean exportContours = true;
     private int contourInterval = 10;
+    private boolean batchMode = false;
 
     private Tab currentTab = Tab.EXPORT;
 
@@ -39,11 +67,24 @@ public final class TerrainExportScreen extends Screen {
     private AbstractSliderButton resolutionSlider;
     private AbstractSliderButton contourSlider;
     private Checkbox contourCheckbox;
+    private CycleButton<Boolean> batchCycle;
     private Button exportButton;
     private Button cancelButton;
     private Button tabExportBtn;
     private Button tabSettingsBtn;
     private StringWidget imageSizeLabel;
+
+    // Batch export runs on its own single-thread executor, bypassing the
+    // per-dimension TerrainExportController state machine.
+    private final ExecutorService batchExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "wp-terrain-batch-export");
+        t.setDaemon(true);
+        return t;
+    });
+    private final AtomicBoolean batchCancelled = new AtomicBoolean(false);
+    private volatile boolean batchRunning;
+    private volatile double batchPct;
+    private volatile Component batchStatus;
 
     private static final int MX = 8;
     private static final int TY = 28;
@@ -104,7 +145,7 @@ public final class TerrainExportScreen extends Screen {
         exportButton = Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_START,
                 b -> doExport()).bounds(x, y, w / 2 - 2, SH).build();
         cancelButton = Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_CANCEL,
-                b -> previewContainer.cancelTerrainExport()).bounds(x + w / 2 + 2, y, w / 2 - 2, SH).build();
+                b -> cancelExport()).bounds(x + w / 2 + 2, y, w / 2 - 2, SH).build();
         addRenderableWidget(exportButton);
         addRenderableWidget(cancelButton);
     }
@@ -155,6 +196,12 @@ public final class TerrainExportScreen extends Screen {
         contourSlider = createContourSlider(x, y, w);
         contourSlider.active = exportContours;
         addRenderableWidget(contourSlider);
+        y += SH + GAP;
+
+        batchCycle = CycleButton.booleanBuilder(CommonComponents.OPTION_ON, CommonComponents.OPTION_OFF, batchMode)
+                .create(x, y, w, SH, WorldPreviewComponents.TERRAIN_EXPORT_BATCH, (btn, val) -> batchMode = val);
+        batchCycle.setTooltip(Tooltip.create(WorldPreviewComponents.TERRAIN_EXPORT_BATCH_TOOLTIP));
+        addRenderableWidget(batchCycle);
     }
 
     private int computeImageSize() {
@@ -226,20 +273,155 @@ public final class TerrainExportScreen extends Screen {
         var center = previewContainer.previewDisplay().center();
         var spec = new TerrainExportSpec(coverageRadius, blocksPerPixel, center.getX(), center.getZ(),
                 exportContours, contourInterval);
-        previewContainer.startTerrainExport(spec);
+        if (batchMode && batchAvailable()) {
+            startBatchExport(spec);
+        } else {
+            // Single-dimension path stays owned by the PreviewContainer controller.
+            batchStatus = null;
+            previewContainer.startTerrainExport(spec);
+        }
         if (currentTab != Tab.EXPORT) switchTab(Tab.EXPORT);
+    }
+
+    private void cancelExport() {
+        if (batchRunning) {
+            batchCancelled.set(true);
+        }
+        previewContainer.cancelTerrainExport();
+    }
+
+    private boolean batchAvailable() {
+        return previewContainer.worldPreview().workManager().worldgenContext() != null;
+    }
+
+    /**
+     * Exports every available dimension sequentially with the same spec, one
+     * TerrainMapExporter call per dimension. The current-dimension controller
+     * flow is untouched; this branch reports through its own status fields.
+     */
+    private void startBatchExport(TerrainExportSpec spec) {
+        if (batchRunning) {
+            return;
+        }
+        WorldgenContext context = previewContainer.worldPreview().workManager().worldgenContext();
+        List<Identifier> dimensions = previewContainer.levelStemKeys();
+        if (context == null || dimensions == null || dimensions.isEmpty()
+                || previewContainer.levelStemRegistry() == null) {
+            // Cannot resolve worldgen state: fall back to the current dimension.
+            batchStatus = null;
+            previewContainer.startTerrainExport(spec);
+            return;
+        }
+
+        long totalWork = Math.max(1L, spec.totalWork() * dimensions.size());
+        AtomicLong completedPixels = new AtomicLong();
+        Path outputDir = WorldPreview.get().configDir().resolve("terrain_exports");
+        TerrainMapExporter exporter = new TerrainMapExporter(
+                previewContainer.worldPreview().workManager().threadCount());
+
+        batchCancelled.set(false);
+        batchRunning = true;
+        batchPct = 0.0;
+        batchStatus = Component.translatable("world_preview.terrain_export.batch.progress",
+                1, dimensions.size(), "", String.format("%.1f", 0.0));
+
+        CompletableFuture.runAsync(() -> runBatchExport(spec, exporter, outputDir, context,
+                previewContainer.levelStemRegistry(), dimensions, totalWork, completedPixels), batchExecutor);
+    }
+
+    private void runBatchExport(
+            TerrainExportSpec spec,
+            TerrainMapExporter exporter,
+            Path outputDir,
+            WorldgenContext context,
+            Registry<LevelStem> registry,
+            List<Identifier> dimensions,
+            long totalWork,
+            AtomicLong completedPixels
+    ) {
+        try {
+            long seed = context.seed();
+            RegistryAccess.Frozen registryAccess = context.registryAccess().compositeAccess();
+            for (int i = 0; i < dimensions.size(); i++) {
+                if (batchCancelled.get()) {
+                    throw new CancellationException("Batch terrain export cancelled");
+                }
+                Identifier dimensionId = dimensions.get(i);
+                LevelStem stem = registry.getValue(dimensionId);
+                if (stem == null) {
+                    continue;
+                }
+                TerrainMapExporter.BiomeSampler sampler = createDimensionSampler(stem, seed, registryAccess);
+                LongConsumer progress = trackDimensionProgress(
+                        dimensionId, i + 1, dimensions.size(), totalWork, completedPixels);
+                progress.accept(0L);
+                exporter.export(spec, sampler, outputDir,
+                        sanitizeFileToken(dimensionId.getPath()) + "_", batchCancelled::get, progress);
+            }
+            batchPct = 100.0;
+            batchStatus = WorldPreviewComponents.TERRAIN_EXPORT_COMPLETE;
+        } catch (CancellationException e) {
+            batchStatus = WorldPreviewComponents.TERRAIN_EXPORT_CANCELLED;
+        } catch (Exception e) {
+            LOGGER.error("Batch terrain export failed", e);
+            batchStatus = Component.translatable("world_preview.terrain_export.failed",
+                    e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        } finally {
+            batchRunning = false;
+        }
+    }
+
+    /**
+     * Creates the per-dimension biome sampler. RandomState creation costs a few
+     * milliseconds, so it must happen once per dimension here, never per pixel.
+     */
+    private static TerrainMapExporter.BiomeSampler createDimensionSampler(LevelStem stem, long seed,
+                                                                          RegistryAccess.Frozen registryAccess) {
+        ChunkGenerator generator = stem.generator();
+        RandomState randomState = generator instanceof NoiseBasedChunkGenerator noiseBased
+                ? RandomState.create(noiseBased.generatorSettings().value(),
+                        registryAccess.lookupOrThrow(Registries.NOISE), seed)
+                : RandomState.create(NoiseGeneratorSettings.dummy(),
+                        registryAccess.lookupOrThrow(Registries.NOISE), seed);
+        BiomeSource biomeSource = generator.getBiomeSource();
+        var noiseSampler = randomState.sampler();
+        int quartY = QuartPos.fromBlock(64);
+        return (blockX, blockZ) -> biomeSource.getNoiseBiome(
+                QuartPos.fromBlock(blockX), quartY, QuartPos.fromBlock(blockZ), noiseSampler);
+    }
+
+    private LongConsumer trackDimensionProgress(
+            Identifier dimensionId,
+            int index,
+            int totalDimensions,
+            long totalWork,
+            AtomicLong completedPixels
+    ) {
+        return pixels -> {
+            long completed = Math.min(totalWork, completedPixels.addAndGet(pixels));
+            batchPct = 100.0 * completed / totalWork;
+            batchStatus = Component.translatable("world_preview.terrain_export.batch.progress",
+                    index, totalDimensions, dimensionId.getPath(), String.format("%.1f", batchPct));
+        };
+    }
+
+    /** Replaces ':' and other path-illegal characters so the token is safe as a filename prefix. */
+    private static String sanitizeFileToken(String raw) {
+        String cleaned = raw.replaceAll("[^A-Za-z0-9._-]", "_");
+        return cleaned.isBlank() ? "unknown" : cleaned;
     }
 
     private void updateButtonStates() {
         if (exportButton == null || cancelButton == null) return;
         TerrainExportController.Status status = previewContainer.terrainExportStatus();
-        boolean running = status.state() == TerrainExportController.State.RUNNING;
+        boolean running = status.state() == TerrainExportController.State.RUNNING || batchRunning;
         exportButton.active = !running;
         cancelButton.active = running;
         if (radiusSlider != null) radiusSlider.active = !running;
         if (resolutionSlider != null) resolutionSlider.active = !running;
         if (contourCheckbox != null) contourCheckbox.active = !running;
         if (contourSlider != null) contourSlider.active = !running && exportContours;
+        if (batchCycle != null) batchCycle.active = !running && batchAvailable();
     }
 
     @Override
@@ -272,13 +454,15 @@ public final class TerrainExportScreen extends Screen {
         int w = Math.min(340, width - MX * 2);
 
         TerrainExportController.Status status = previewContainer.terrainExportStatus();
-        double pct = status.percentage();
+        boolean batchActive = batchStatus != null;
+        double pct = batchActive ? batchPct : status.percentage();
 
         graphics.fill(x, y, x + w, y + 12, 0xFF333344);
         int fillW = (int) (w * pct / 100.0);
         if (fillW > 0) {
-            int color = status.state() == TerrainExportController.State.RUNNING
-                    ? SettingsTheme.PRIMARY : SettingsTheme.SUCCESS;
+            boolean inProgress = batchActive ? batchRunning
+                    : status.state() == TerrainExportController.State.RUNNING;
+            int color = inProgress ? SettingsTheme.PRIMARY : SettingsTheme.SUCCESS;
             graphics.fill(x, y, x + fillW, y + 12, color);
         }
     }
@@ -298,6 +482,10 @@ public final class TerrainExportScreen extends Screen {
             case FAILED -> Component.translatable("world_preview.terrain_export.failed",
                     status.errorMessage() != null ? status.errorMessage() : "");
         };
+        // Batch exports bypass the controller and report their own status.
+        if (batchStatus != null) {
+            statusLine = batchStatus;
+        }
         graphics.text(font, statusLine, x, y, SettingsTheme.TEXT);
         y += 14;
 
@@ -403,6 +591,9 @@ public final class TerrainExportScreen extends Screen {
 
     @Override
     public void onClose() {
+        // Interrupt any running batch export before leaving the screen.
+        batchCancelled.set(true);
+        batchExecutor.shutdownNow();
         if (minecraft != null) minecraft.setScreen(parent);
     }
 }

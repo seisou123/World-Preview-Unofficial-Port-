@@ -95,6 +95,9 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
         y = addCheckboxRow(x, y, SETTINGS_GENERAL_ANALYSIS_BUTTON, cfg.showAnalysisButton,
                 SETTINGS_GENERAL_ANALYSIS_BUTTON_TOOLTIP, val -> cfg.showAnalysisButton = val);
         y += rowH;
+        y = addCheckboxRow(x, y, SETTINGS_GENERAL_SEED_SEARCH_BUTTON, cfg.showSeedSearchButton,
+                SETTINGS_GENERAL_SEED_SEARCH_BUTTON_TOOLTIP, val -> cfg.showSeedSearchButton = val);
+        y += rowH;
         y = addSliderRow(x, y, area, SETTINGS_GENERAL_SEARCH_MIN_AREA,
                 cfg.searchMinAreaPercent, 0, 100, SETTINGS_GENERAL_SEARCH_MIN_AREA_TOOLTIP,
                 val -> cfg.searchMinAreaPercent = val);
@@ -264,5 +267,6 @@ Minecraft.getInstance().player.sendSystemMessage(resultMsg);
         cfg.preloadRadius = 128;
         cfg.showInPauseMenu = true;
         cfg.showPlayer = true;
+        cfg.showSeedSearchButton = true;
     }
 }
