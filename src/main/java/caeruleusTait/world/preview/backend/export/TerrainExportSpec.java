@@ -7,11 +7,12 @@ package caeruleusTait.world.preview.backend.export;
  * Unlike TFC's fixed presets (50k/100k), this allows free configuration of coverage and resolution via sliders.
  * </p>
  *
- * @param coverageRadius Coverage radius (blocks). The export area is a square centered at center,
- *                       with side length = coverageRadius x 2
- * @param blocksPerPixel Blocks per pixel, determines export resolution granularity
- * @param centerX        Export center X coordinate (block coords)
- * @param centerZ        Export center Z coordinate (block coords)
+ * @param coverageRadius    Coverage radius (blocks). The export area is a square centered at center,
+ *                          with side length = coverageRadius x 2
+ * @param blocksPerPixel    Blocks per pixel, determines export resolution granularity
+ * @param centerX           Export center X coordinate (block coords)
+ * @param centerZ           Export center Z coordinate (block coords)
+ * @param gridIntervalBlocks Spacing of the coordinate grid overlay (blocks); 0 disables the grid
  */
 public record TerrainExportSpec(
         int coverageRadius,
@@ -19,7 +20,8 @@ public record TerrainExportSpec(
         int centerX,
         int centerZ,
         boolean exportContours,
-        int contourInterval
+        int contourInterval,
+        int gridIntervalBlocks
 ) {
     /** Default coverage radius (blocks), yields ~2048x2048 pixel export at blocksPerPixel=4. */
     public static final int DEFAULT_COVERAGE_RADIUS = 4096;
@@ -39,6 +41,12 @@ public record TerrainExportSpec(
     /** Maximum blocks per pixel. */
     public static final int MAX_BLOCKS_PER_PIXEL = 16;
 
+    /** Minimum grid interval when the grid overlay is enabled. */
+    public static final int MIN_GRID_INTERVAL_BLOCKS = 16;
+
+    /** Maximum grid interval. */
+    public static final int MAX_GRID_INTERVAL_BLOCKS = 4096;
+
     public TerrainExportSpec {
         if (coverageRadius < MIN_COVERAGE_RADIUS || coverageRadius > MAX_COVERAGE_RADIUS) {
             throw new IllegalArgumentException("coverageRadius must be between "
@@ -51,11 +59,22 @@ public record TerrainExportSpec(
         if (contourInterval < 1) {
             throw new IllegalArgumentException("contourInterval must be >= 1");
         }
+        if (gridIntervalBlocks != 0
+                && (gridIntervalBlocks < MIN_GRID_INTERVAL_BLOCKS || gridIntervalBlocks > MAX_GRID_INTERVAL_BLOCKS)) {
+            throw new IllegalArgumentException("gridIntervalBlocks must be 0 or between "
+                    + MIN_GRID_INTERVAL_BLOCKS + " and " + MAX_GRID_INTERVAL_BLOCKS);
+        }
     }
 
     /** Compact constructor for backward compatibility */
     public TerrainExportSpec(int coverageRadius, int blocksPerPixel, int centerX, int centerZ) {
         this(coverageRadius, blocksPerPixel, centerX, centerZ, true, 10);
+    }
+
+    /** Compact constructor for backward compatibility (grid overlay disabled) */
+    public TerrainExportSpec(int coverageRadius, int blocksPerPixel, int centerX, int centerZ,
+                             boolean exportContours, int contourInterval) {
+        this(coverageRadius, blocksPerPixel, centerX, centerZ, exportContours, contourInterval, 0);
     }
 
     /**

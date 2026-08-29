@@ -13,6 +13,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.level.levelgen.NoiseRouterData;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -104,6 +105,36 @@ class HoverInspector {
         lastHoverCenterZ = Integer.MIN_VALUE;
         cachedHoverInfo = null;
         cachedStructInfos = null;
+    }
+
+    /**
+     * Nearest rendered structure of the given type to {@code from}, based on
+     * the structure icons drawn during the last render frame. Returns null
+     * when no matching structure was rendered (cache not built or nothing in
+     * view).
+     */
+    @Nullable
+    BlockPos nearestStructureCenter(short structureId, BlockPos from) {
+        List<StructHoverHelperEntry> infos = cachedStructInfos;
+        if (infos == null || infos.isEmpty()) {
+            return null;
+        }
+        BlockPos best = null;
+        double bestDistSq = Double.MAX_VALUE;
+        for (StructHoverHelperEntry entry : infos) {
+            if (entry.structure().structureId() != structureId) {
+                continue;
+            }
+            BlockPos center = entry.structure().center();
+            long dx = (long) center.getX() - from.getX();
+            long dz = (long) center.getZ() - from.getZ();
+            double distSq = (double) dx * dx + (double) dz * dz;
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                best = center;
+            }
+        }
+        return best;
     }
 
     /**
