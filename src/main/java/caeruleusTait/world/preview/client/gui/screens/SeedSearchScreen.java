@@ -252,13 +252,22 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         int left = 8;
         int top = 24;
         int leftWidth = Math.max(230, width / 2 - 16);
-        int rightX = width / 2 + 4;
-        int rightWidth = Math.max(200, width / 2 - 12);
 
         // Bottom-up layout: the footer (action row + back button) is pinned to
         // the screen bottom so Start/Stop/Compare stay visible even on small
-        // GUI scales; the biome picker absorbs whatever space remains above.
+        // GUI scales; the biome picker and the results list absorb whatever
+        // space remains above.
         actionRowY = height - 32;
+
+        // Three-column grid metrics: three criteria buttons plus 2 gaps fill
+        // the full width [left, width - left] exactly; the biome picker is
+        // 1.5 button widths wide and the strip right of it holds the view
+        // switch and the results list.
+        int gap = 6;
+        int buttonW = (width - 2 * left - 2 * gap) / 3;
+        int pickerWidth = (3 * buttonW) / 2;
+        int rightX = left + pickerWidth + gap;
+        int rightWidth = (width - left) - rightX;
 
         // Filter row + cave toggle at the top of the left column; the
         // "Biomes: n" summary line is drawn by render() right above the
@@ -268,27 +277,42 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         clearBiomesButton.setPosition(left + 154, top + 12);
         showCavesButton.setPosition(left, top + 34);
 
-        // Picker fills the gap between the cave toggle and the cycles row.
-        int pickerTop = top + 56;
-        int pickerBottom = actionRowY - 76;
+        // Picker (1.5 button widths) fills the strip between the cave toggle
+        // and the criteria grid; the results list sits beside it in the right
+        // column with the view switch above. The view switch shares the
+        // show-caves row band (which only spans the left column) and starts
+        // below the clear-biomes button, so it can never overlap either; both
+        // lists end 4px above the upper criteria row so they never touch the
+        // grid.
+        int listTop = top + 56;
+        int listBottom = actionRowY - 52;
         biomePicker.setX(left);
-        biomePicker.setY(pickerTop);
-        biomePicker.setWidth(leftWidth);
-        biomePicker.setHeight(Math.max(40, pickerBottom - pickerTop));
+        biomePicker.setY(listTop);
+        biomePicker.setWidth(pickerWidth);
+        biomePicker.setHeight(Math.max(40, listBottom - listTop));
+        viewCycle.setPosition(rightX, top + 34);
+        resultsList.setX(rightX);
+        resultsList.setY(listTop);
+        resultsList.setWidth(rightWidth);
+        resultsList.setHeight(Math.max(40, listBottom - listTop));
 
-        // Cycles row directly above the two slider rows.
-        int cyclesRowY = actionRowY - 72;
-        structureCycle.setPosition(left, cyclesRowY);
-        structureCycle.setWidth(Math.min(160, leftWidth));
-        anchorCycle.setPosition(left + Math.min(164, leftWidth + 4), cyclesRowY);
-        anchorCycle.setWidth(Math.min(160, Math.max(100, width - (left + Math.min(164, leftWidth + 4)) - 8)));
-
-        // Two slider columns above the action row: min area + biome distance,
-        // then structure distance + attempts.
-        minAreaSlider.setPosition(left, actionRowY - 24);
-        biomeDistanceSlider.setPosition(left + 156, actionRowY - 24);
-        structureDistanceSlider.setPosition(left, actionRowY - 48);
-        attemptsSlider.setPosition(left + 156, actionRowY - 48);
+        // Criteria grid, three widgets per row across the full width: cycles
+        // and structure distance on the upper row, min area + biome distance
+        // and attempts on the lower row.
+        int upperRowY = actionRowY - 48;
+        int lowerRowY = actionRowY - 24;
+        structureCycle.setPosition(left, upperRowY);
+        structureCycle.setWidth(buttonW);
+        anchorCycle.setPosition(left + buttonW + gap, upperRowY);
+        anchorCycle.setWidth(buttonW);
+        structureDistanceSlider.setPosition(left + 2 * (buttonW + gap), upperRowY);
+        structureDistanceSlider.setWidth(buttonW);
+        minAreaSlider.setPosition(left, lowerRowY);
+        minAreaSlider.setWidth(buttonW);
+        biomeDistanceSlider.setPosition(left + buttonW + gap, lowerRowY);
+        biomeDistanceSlider.setWidth(buttonW);
+        attemptsSlider.setPosition(left + 2 * (buttonW + gap), lowerRowY);
+        attemptsSlider.setWidth(buttonW);
 
         // Footer action row; the hits slider shares the row with the buttons.
         startButton.setPosition(left, actionRowY);
@@ -303,13 +327,6 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         backButton.setY(actionRowY);
         backButton.setWidth(90);
         backButton.setHeight(20);
-
-        viewCycle.setPosition(rightX, top);
-        resultsList.setX(rightX);
-        resultsList.setY(top + 24);
-        resultsList.setWidth(rightWidth);
-        // End the results above the footer so they never cover the back button.
-        resultsList.setHeight(Math.max(60, (height - 32) - (top + 24) - 4));
     }
 
     // ===== Search control =====

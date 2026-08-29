@@ -88,6 +88,10 @@
   pinned to a footer row together with the hits slider, and the biome picker
   absorbs the remaining space, so all controls stay visible on small GUI scales
   (e.g. 3x/4x) where the Start Search button could previously fall off-screen.
+- The Seed Search screen is now compacted: the six criteria controls are laid
+  out three per row across the full screen width in two rows, the biome picker
+  is narrowed to 1.5 button widths, and the results view moved beside it, so
+  no widget overlaps another at any GUI size.
 - The *Seed Search* button now uses the sidebar's translucent rail style
   (matching the Biomes/Structures/Seeds buttons) and sits directly below them;
   it can be hidden via the new General setting *Show seed search button*
