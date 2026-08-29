@@ -23,6 +23,7 @@ public class WorldPreviewConfig {
     public boolean showCoordinates = false;
     public boolean showBiomeCounts = false;
     public boolean showAnalysisButton = false;
+    public boolean showSeedSearchButton = true;
     public int searchMinAreaPercent = 0;
     public int searchMaxDistance = 0;
     public boolean scrollWheelZooms = true;
@@ -104,6 +105,7 @@ public class WorldPreviewConfig {
         showCoordinates = source.showCoordinates;
         showBiomeCounts = source.showBiomeCounts;
         showAnalysisButton = source.showAnalysisButton;
+        showSeedSearchButton = source.showSeedSearchButton;
         searchMinAreaPercent = source.searchMinAreaPercent;
         searchMaxDistance = source.searchMaxDistance;
         scrollWheelZooms = source.scrollWheelZooms;
