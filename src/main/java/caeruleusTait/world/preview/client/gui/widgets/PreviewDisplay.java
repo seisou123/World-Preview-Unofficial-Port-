@@ -11,6 +11,7 @@ import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider;
 import caeruleusTait.world.preview.domain.preview.accuracy.QueueAabb;
 import caeruleusTait.world.preview.domain.preview.accuracy.ViewportMapping;
+import caeruleusTait.world.preview.domain.waypoint.Waypoint;
 import org.lwjgl.glfw.GLFW;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
@@ -113,6 +114,11 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
         transientHudMsg = msg;
     }
 
+    /** Shows a transient HUD message on the map (public for collaborators). */
+    public void showHud(Component msg) {
+        showTransientHud(msg);
+    }
+
     /** Mirrors this widget's silent {@link #playDownSound} override. */
     void playDownSound() {
         // intentionally silent
@@ -135,6 +141,59 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     @Nullable public BlockPos spawnPinPos() { return interaction.spawnPinPos(); }
     public void setSpawnPinPos(@Nullable BlockPos pos) { interaction.setSpawnPinPos(pos); }
     public void setSpawnPinCallback(@Nullable java.util.function.Consumer<BlockPos> callback) { interaction.setSpawnPinCallback(callback); }
+
+    // === Waypoints & measure tool (v1.5) ===
+
+    /** Renders overlay content (waypoints) on top of the map inside the scissor. */
+    public interface WaypointRenderer {
+        void render(GuiGraphicsExtractor guiGraphics, int xMin, int yMin, int xMax, int yMax);
+    }
+
+    @Nullable private WaypointRenderer waypointRenderer = null;
+
+    public void setWaypointRenderer(@Nullable WaypointRenderer renderer) {
+        this.waypointRenderer = renderer;
+    }
+
+    /** Whether the map is in one-shot "place waypoint" mode. */
+    public boolean isWaypointMode() { return interaction.isWaypointMode(); }
+
+    public void setWaypointMode(boolean enabled) { interaction.setWaypointMode(enabled); }
+
+    public void setWaypointPlaceCallback(@Nullable java.util.function.Consumer<BlockPos> callback) {
+        interaction.setWaypointPlaceCallback(callback);
+    }
+
+    public void setWaypointDeleteCallback(@Nullable java.util.function.Consumer<Waypoint> callback) {
+        interaction.setWaypointDeleteCallback(callback);
+    }
+
+    /** Delegates hit-testing to the waypoint overlay renderer. */
+    @Nullable
+    Waypoint waypointAt(double mouseX, double mouseY) {
+        return waypointRenderer instanceof WaypointOverlayRenderer overlay
+                ? overlay.waypointAt(mouseX, mouseY)
+                : null;
+    }
+
+    // === Measure tool state (owned by the interaction controller) ===
+
+    public boolean isMeasureMode() { return interaction.isMeasureMode(); }
+
+    public void setMeasureMode(boolean enabled) { interaction.setMeasureMode(enabled); }
+
+    /** Maps a block coordinate to widget-relative screen coords (GUI px), or null when off the map. */
+    @Nullable
+    BlockPos blockToScreen(int blockX, int blockZ) {
+        final BlockPos center = center();
+        final int guiScale = (int) minecraft.getWindow().getGuiScale();
+        final double scale = scaleBlockPos;
+        final double xMin = center.getX() - texWidth * scale / 2.0 - 1;
+        final double zMin = center.getZ() - texHeight * scale / 2.0 - 1;
+        final double sx = getX() + (blockX - xMin) / (guiScale * scale);
+        final double sz = getY() + (blockZ - zMin) / (guiScale * scale);
+        return new BlockPos((int) Math.round(sx), 0, (int) Math.round(sz));
+    }
 
     private GenerationRange lastQueuedRange = null;
 
@@ -313,6 +372,7 @@ resizeImage();
                     engine.renderStructures(cachedRenderData, GuiGraphicsExtractor);
                     engine.renderPlayerAndSpawn(GuiGraphicsExtractor);
                     engine.renderSpawnPin(GuiGraphicsExtractor);
+                    renderOverlays(GuiGraphicsExtractor);
                     GuiGraphicsExtractor.disableScissor();
                 } else {
                     throttle.markRendered(currentCenter, currentWriteCounter);
@@ -337,6 +397,7 @@ resizeImage();
                     engine.renderStructures(renderData, GuiGraphicsExtractor);
                     engine.renderPlayerAndSpawn(GuiGraphicsExtractor);
                     engine.renderSpawnPin(GuiGraphicsExtractor);
+                    renderOverlays(GuiGraphicsExtractor);
                     GuiGraphicsExtractor.disableScissor();
 
                     // Sidebar biome list updates are noisy while dragging; defer.
@@ -422,6 +483,85 @@ resizeImage();
         if (config.showStatistics) {
             dataVisualizer.renderStatistics(GuiGraphicsExtractor, xMin, yMin, xMax, yMax, engine.visibleBiomes(), engine.visibleStructures());
         }
+    }
+
+    /**
+     * Draws the v1.5 map overlays: waypoints (via the renderer) and the
+     * measure tool line/labels. Called inside the preview scissor.
+     */
+    private void renderOverlays(GuiGraphicsExtractor guiGraphics) {
+        if (waypointRenderer != null) {
+            waypointRenderer.render(guiGraphics, getX(), getY(), getX() + width, getY() + height);
+        }
+        renderMeasureOverlay(guiGraphics);
+    }
+
+    private void renderMeasureOverlay(GuiGraphicsExtractor guiGraphics) {
+        BlockPos a = interaction.measurePointA();
+        if (a == null) {
+            return;
+        }
+        BlockPos sa = blockToScreen(a.getX(), a.getZ());
+        if (sa == null) {
+            return;
+        }
+        drawMeasureMarker(guiGraphics, sa, 0xFF29B6F6);
+
+        BlockPos b = interaction.measurePointB();
+        if (b == null) {
+            return;
+        }
+        BlockPos sb = blockToScreen(b.getX(), b.getZ());
+        if (sb == null) {
+            return;
+        }
+
+        // Line between the two markers (Bresenham via 1px fills)
+        int dx = sb.getX() - sa.getX();
+        int dz = sb.getZ() - sa.getZ();
+        int steps = Math.max(1, Math.max(Math.abs(dx), Math.abs(dz)));
+        for (int i = 0; i <= steps; i++) {
+            int px = sa.getX() + dx * i / steps;
+            int pz = sa.getZ() + dz * i / steps;
+            guiGraphics.fill(px, pz, px + 1, pz + 1, 0xFFFFEB3B);
+        }
+        drawMeasureMarker(guiGraphics, sb, 0xFFEF5350);
+
+        // Distance label at the midpoint
+        int ddx = b.getX() - a.getX();
+        int ddz = b.getZ() - a.getZ();
+        int dist = (int) Math.round(Math.sqrt((double) ddx * ddx + (double) ddz * ddz));
+        String text = String.format("%dm §7(Δ %d, %d)§r", dist, ddx, ddz);
+        int lx = (sa.getX() + sb.getX()) / 2;
+        int ly = (sa.getZ() + sb.getZ()) / 2 - 12;
+        guiGraphics.fill(lx - 2, ly - 1, lx + minecraft.font.width(text) + 2, ly + minecraft.font.lineHeight, 0x99000000);
+        guiGraphics.text(minecraft.font, text, lx, ly, 0xFFFFFFFF);
+    }
+
+    private void drawMeasureMarker(GuiGraphicsExtractor guiGraphics, BlockPos screenPos, int color) {
+        guiGraphics.fill(screenPos.getX() - 2, screenPos.getZ() - 2,
+                screenPos.getX() + 3, screenPos.getZ() + 3, 0xFF000000);
+        guiGraphics.fill(screenPos.getX() - 1, screenPos.getZ() - 1,
+                screenPos.getX() + 2, screenPos.getZ() + 2, color);
+    }
+
+    /**
+     * Centers the map on the nearest rendered structure of the given type
+     * (within the currently drawn viewport data). Returns false when none is
+     * on screen.
+     */
+    public boolean locateStructure(short structureId) {
+        BlockPos found = hoverInspector.nearestStructureCenter(structureId, center());
+        if (found == null) {
+            return false;
+        }
+        renderSettings.setCenter(new BlockPos(found.getX(), center().getY(), found.getZ()));
+        invalidateRenderCache();
+        resetQueuedRange();
+        queueGeneration();
+        showTransientHud(Component.translatable(
+                "world_preview.preview.located", found.getX(), found.getZ()));
+        return true;
     }
 
     private record GenerationRange(BlockPos min, BlockPos max) {}
