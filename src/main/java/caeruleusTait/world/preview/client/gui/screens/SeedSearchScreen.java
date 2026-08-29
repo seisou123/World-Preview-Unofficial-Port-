@@ -53,7 +53,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private EditBox filterBox;
     private Button showCavesButton;
     private Button clearBiomesButton;
-    private CycleButton<StructureOption> structureCycle;
+    private Button structureButton;
     private CycleButton<Anchor> anchorCycle;
     private IntSlider minAreaSlider;
     private IntSlider biomeDistanceSlider;
@@ -74,6 +74,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private final List<SearchResultsList.Row> hitRows = new ArrayList<>();
     private String statusText = "";
     private boolean searching = false;
+    /**
+     * Set when a search is started from {@link #init()} (setScreen is unsafe
+     * there); the next tick navigates back to the preview screen.
+     */
+    private boolean pendingReturn;
     /** When the screen was opened with a quick search (right-click), the best hit is applied automatically. */
     private boolean applyBestOnComplete;
     private View currentView = View.RESULTS;
@@ -81,10 +86,6 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private enum View { RESULTS, HISTORY, FAVORITES }
 
     private enum Anchor { CENTER, ORIGIN }
-
-    /** One selectable structure criterion: "no structure" or a concrete structure. */
-    private record StructureOption(@Nullable Identifier id, String label) {
-    }
 
     public SeedSearchScreen(Screen parent, PreviewContainer container,
                             @Nullable BiomesList.BiomeEntry biome,
@@ -106,8 +107,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     @Override
     protected void init() {
         clearWidgets();
-        structureId = initialStructure != null ? initialStructure.structureId() : null;
-        structureName = initialStructure != null ? initialStructure.name() : null;
+        // structureId/structureName are initialized in the constructor and kept
+        // across re-inits so a structure picked in StructureSelectScreen
+        // survives returning to this screen.
         hitRows.clear();
         statusText = "";
         currentView = View.RESULTS;
@@ -135,28 +137,10 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         clearBiomesButton = Button.builder(WorldPreviewComponents.SEARCH_CLEAR_BIOME, btn -> biomePicker.clearSelection())
                 .size(70, 20).build();
 
-        List<StructureOption> structureOptions = new ArrayList<>();
-        StructureOption noneOption = new StructureOption(
-                null, WorldPreviewComponents.SEARCH_STRUCTURE_NONE.getString());
-        structureOptions.add(noneOption);
-        var entries = container.structureEntries();
-        if (entries != null) {
-            for (StructuresList.StructureEntry entry : entries) {
-                structureOptions.add(new StructureOption(entry.structureId(), entry.name()));
-            }
-        }
-        StructureOption initialOption = structureId == null
-                ? noneOption
-                : structureOptions.stream()
-                        .filter(option -> structureId.equals(option.id()))
-                        .findFirst()
-                        .orElse(noneOption);
-        structureCycle = CycleButton.builder(option -> Component.literal(option.label()), initialOption)
-                .withValues(structureOptions)
-                .create(0, 0, 160, 20, WorldPreviewComponents.SEARCH_STRUCTURE, (btn, value) -> {
-                    structureId = value.id();
-                    structureName = value.id() == null ? null : value.label();
-                });
+        // Structure criterion: opens the filterable structure picker screen
+        // (None row + one row per structure with item icons).
+        structureButton = Button.builder(structureButtonLabel(), ignored -> openStructureSelect())
+                .size(160, 20).build();
 
         anchorCycle = CycleButton.builder(anchor -> switch (anchor) {
                 case CENTER -> WorldPreviewComponents.SEARCH_ANCHOR_CENTER;
@@ -187,7 +171,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         attemptsSlider = new IntSlider(0, 0, 150, 20,
                 WorldPreviewComponents.SEARCH_ATTEMPTS, 10, 500, 10, 100);
         hitsSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_HITS, 1, 10, 1, 5);
+                WorldPreviewComponents.SEARCH_HITS, 1, 10, 1, 1);
 
         startButton = Button.builder(WorldPreviewComponents.SEARCH_START, ignored -> startSearch())
                 .size(70, 20).build();
@@ -209,7 +193,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         addRenderableWidget(filterBox);
         addRenderableWidget(showCavesButton);
         addRenderableWidget(clearBiomesButton);
-        addRenderableWidget(structureCycle);
+        addRenderableWidget(structureButton);
         addRenderableWidget(anchorCycle);
         addRenderableWidget(minAreaSlider);
         addRenderableWidget(biomeDistanceSlider);
@@ -227,6 +211,18 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         updateControlState();
         refreshList();
 
+        // Take over a search that is still running in the background, or show
+        // the most recent completed result.
+        if (container.isSeedSearchRunning()) {
+            container.reattachSeedSearchListener(this::onComplete, this::onProgress);
+            statusText = WorldPreviewComponents.SEARCH_RUNNING.getString();
+        } else {
+            SeedSearchResult last = container.lastSeedSearchResult();
+            if (last != null) {
+                applyResult(last, container.lastSeedSearchCriteria(), false);
+            }
+        }
+
         if (autoStart) {
             startSearch();
         }
@@ -240,7 +236,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     @Override
     public void onClose() {
-        container.cancelSeedSearch();
+        // Going back (button/Esc/E) leaves a running search alive in the
+        // background; the Stop button is the explicit cancel.
         if (minecraft != null) {
             minecraft.setScreen(parent);
         }
@@ -261,48 +258,57 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
         // Three-column grid metrics: three criteria buttons plus 2 gaps fill
         // the full width [left, width - left] exactly; the biome picker is
-        // 1.5 button widths wide and the strip right of it holds the view
-        // switch and the results list.
+        // 1.5 button widths wide and the strip right of it holds the results
+        // list.
         int gap = 6;
         int buttonW = (width - 2 * left - 2 * gap) / 3;
         int pickerWidth = (3 * buttonW) / 2;
-        int rightX = left + pickerWidth + gap;
+
+        // Compacted top-left column: the filter box and the show-caves toggle
+        // are narrowed to 112px; the clear button keeps its right edge and its
+        // left edge moves flush to the filter box's right edge, and the view
+        // switch (exactly the clear button's size) sits directly below it, so
+        // the two buttons share the right half of the top rows.
+        int topColW = 112;                            // filter + show-caves width (was 150)
+        int clearRight = left + 224;                  // clear button's right edge is unchanged
+        int clearW = clearRight - (left + topColW);   // == 112
+        int rightX = Math.max(left + pickerWidth + gap, clearRight + gap);
         int rightWidth = (width - left) - rightX;
 
         // Filter row + cave toggle at the top of the left column; the
         // "Biomes: n" summary line is drawn by render() right above the
         // filter row.
         filterBox.setPosition(left, top + 12);
-        filterBox.setWidth(150);
-        clearBiomesButton.setPosition(left + 154, top + 12);
+        filterBox.setWidth(topColW);
+        clearBiomesButton.setPosition(left + topColW, top + 12);
+        clearBiomesButton.setWidth(clearW);
         showCavesButton.setPosition(left, top + 34);
+        showCavesButton.setWidth(topColW);
+        viewCycle.setPosition(left + topColW, top + 34);
+        viewCycle.setWidth(clearW);
 
-        // Picker (1.5 button widths) fills the strip between the cave toggle
-        // and the criteria grid; the results list sits beside it in the right
-        // column with the view switch above. The view switch shares the
-        // show-caves row band (which only spans the left column) and starts
-        // below the clear-biomes button, so it can never overlap either; both
-        // lists end 4px above the upper criteria row so they never touch the
-        // grid.
+        // Picker (1.5 button widths) fills the strip between the compacted
+        // left column and the criteria grid; the results list sits beside it,
+        // its top edge level with the clear button's top edge. Both lists end
+        // 4px above the upper criteria row so they never touch the grid.
         int listTop = top + 56;
         int listBottom = actionRowY - 52;
         biomePicker.setX(left);
         biomePicker.setY(listTop);
         biomePicker.setWidth(pickerWidth);
         biomePicker.setHeight(Math.max(40, listBottom - listTop));
-        viewCycle.setPosition(rightX, top + 34);
         resultsList.setX(rightX);
-        resultsList.setY(listTop);
+        resultsList.setY(top + 12);
         resultsList.setWidth(rightWidth);
-        resultsList.setHeight(Math.max(40, listBottom - listTop));
+        resultsList.setHeight(Math.max(40, listBottom - (top + 12)));
 
-        // Criteria grid, three widgets per row across the full width: cycles
-        // and structure distance on the upper row, min area + biome distance
-        // and attempts on the lower row.
+        // Criteria grid, three widgets per row across the full width: the
+        // structure button, the anchor cycle and structure distance on the
+        // upper row, min area + biome distance and attempts on the lower row.
         int upperRowY = actionRowY - 48;
         int lowerRowY = actionRowY - 24;
-        structureCycle.setPosition(left, upperRowY);
-        structureCycle.setWidth(buttonW);
+        structureButton.setPosition(left, upperRowY);
+        structureButton.setWidth(buttonW);
         anchorCycle.setPosition(left + buttonW + gap, upperRowY);
         anchorCycle.setWidth(buttonW);
         structureDistanceSlider.setPosition(left + 2 * (buttonW + gap), upperRowY);
@@ -333,6 +339,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void startSearch() {
         if (container.isSeedSearchRunning()) {
+            statusText = WorldPreviewComponents.SEARCH_RUNNING.getString();
             return;
         }
         var viewport = container.currentSearchViewport();
@@ -369,14 +376,29 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 hitsSlider.currentValue()
         );
 
-        boolean started = container.startSeedSearch(request, this::onComplete, this::onProgress);
+        boolean started = container.startSeedSearch(request, criteriaLabel(), this::onComplete, this::onProgress);
         if (started) {
             searching = true;
             statusText = Component.translatable(
                     "world_preview.search.progress", 0, request.maxAttempts()).getString();
             updateControlState();
+            // The search keeps running in the background: return to the
+            // preview map immediately after a manual start, and on the next
+            // tick after an auto-start (setScreen is unsafe inside init()).
+            if (autoStart) {
+                pendingReturn = true;
+            } else {
+                returnToPreview();
+            }
         } else {
             statusText = WorldPreviewComponents.SEARCH_ERROR.getString();
+        }
+    }
+
+    /** Returns to the preview screen; deliberately does NOT cancel the search. */
+    private void returnToPreview() {
+        if (minecraft != null) {
+            minecraft.setScreen(parent);
         }
     }
 
@@ -391,25 +413,54 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         }
     }
 
+    /** Label of the structure criterion button showing the picked structure (or None). */
+    private Component structureButtonLabel() {
+        return Component.translatable("world_preview.search.structure.value",
+                structureName != null ? Component.literal(structureName) : WorldPreviewComponents.SEARCH_STRUCTURE_NONE);
+    }
+
+    /** Opens the structure picker screen for the structure criterion. */
+    private void openStructureSelect() {
+        if (minecraft != null) {
+            minecraft.setScreen(new StructureSelectScreen(this, container, structureId));
+        }
+    }
+
+    /** Applies a structure picked in {@link StructureSelectScreen} (null = None). */
+    void structurePicked(@Nullable Identifier id, @Nullable String name) {
+        structureId = id;
+        structureName = name;
+        structureButton.setMessage(structureButtonLabel());
+    }
+
     private void onProgress(int attempts) {
         statusText = Component.translatable(
                 "world_preview.search.progress", attempts, attemptsSlider.currentValue()).getString();
     }
 
     private void onComplete(SeedSearchResult result) {
+        applyResult(result, criteriaLabel(), true);
+    }
+
+    /**
+     * Applies a finished search result to the view. When {@code recordHistory}
+     * is false (re-displaying the latest stored result on reopen) the hits are
+     * not recorded again.
+     */
+    private void applyResult(SeedSearchResult result, String criteria, boolean recordHistory) {
         searching = false;
         hitRows.clear();
 
         switch (result) {
             case SeedSearchResult.Hit hit -> {
                 hitRows.add(resultsList.createRow(
-                        String.valueOf(hit.seed()), criteriaLabel(), hit.score(), false, false));
+                        String.valueOf(hit.seed()), criteria, hit.score(), false, false));
                 statusText = WorldPreviewComponents.SEARCH_FOUND.getString() + hit.seed();
             }
             case SeedSearchResult.Multiple multiple -> {
                 for (SeedSearchResult.Ranked ranked : multiple.hits()) {
                     hitRows.add(resultsList.createRow(
-                            String.valueOf(ranked.seed()), criteriaLabel(), ranked.score(), false, false));
+                            String.valueOf(ranked.seed()), criteria, ranked.score(), false, false));
                 }
                 if (multiple.isEmpty()) {
                     statusText = WorldPreviewComponents.SEARCH_NOT_FOUND.getString();
@@ -433,9 +484,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         }
 
         // Remember the hits so they can be re-applied later.
-        var history = container.worldPreview().seedSearchHistory();
-        for (SearchResultsList.Row row : hitRows) {
-            history.record(row.seed, criteriaLabel());
+        if (recordHistory) {
+            var history = container.worldPreview().seedSearchHistory();
+            for (SearchResultsList.Row row : hitRows) {
+                history.record(row.seed, criteriaLabel());
+            }
         }
 
         updateControlState();
@@ -521,6 +574,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     @Override
     public void tick() {
         super.tick();
+        if (pendingReturn) {
+            pendingReturn = false;
+            returnToPreview();
+            return;
+        }
         if (searching != container.isSeedSearchRunning()) {
             updateControlState();
         }

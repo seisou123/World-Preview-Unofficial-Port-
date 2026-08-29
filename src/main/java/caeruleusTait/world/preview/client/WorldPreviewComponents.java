@@ -110,6 +110,10 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_BIOME_CAVE_TAG = Component.translatable("world_preview.search.biome.cave_tag");
     public static final Component SEARCH_BIOME_DISTANCE = Component.translatable("world_preview.search.biome_distance");
     public static final Component SEARCH_BIOME_DISTANCE_TOOLTIP = Component.translatable("world_preview.search.biome_distance.tooltip");
+    public static final Component SEARCH_RUNNING = Component.translatable("world_preview.search.running");
+    public static final Component SEARCH_STRUCTURE_VALUE = Component.translatable("world_preview.search.structure.value");
+    public static final Component SEARCH_STRUCTURE_PICK = Component.translatable("world_preview.search.structure.pick");
+    public static final Component SEARCH_STRUCTURE_FILTER = Component.translatable("world_preview.search.structure.filter");
 
     // === Terrain map export ===
     public static final Component TERRAIN_EXPORT_TITLE = Component.translatable("world_preview.terrain_export.title");

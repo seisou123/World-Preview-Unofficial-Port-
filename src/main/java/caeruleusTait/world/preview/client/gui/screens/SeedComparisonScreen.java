@@ -10,6 +10,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.tags.TagKey;
@@ -69,6 +70,7 @@ public final class SeedComparisonScreen extends Screen {
 
     private Button compareButton;
     private Button stopButton;
+    private Button backButton;
 
     /** Single-threaded daemon worker; created lazily, shut down in {@link #onClose()}. */
     @Nullable private ExecutorService executor;
@@ -144,8 +146,11 @@ public final class SeedComparisonScreen extends Screen {
         stopButton = Button.builder(WorldPreviewComponents.COMPARISON_STOP, ignored -> stopComparison())
                 .size(70, 20).build();
         stopButton.active = false;
+        backButton = Button.builder(CommonComponents.GUI_BACK, ignored -> onClose())
+                .size(90, 20).build();
         addRenderableWidget(compareButton);
         addRenderableWidget(stopButton);
+        addRenderableWidget(backButton);
         layoutWidgets();
         updateControlState();
     }
@@ -155,6 +160,8 @@ public final class SeedComparisonScreen extends Screen {
         int top = 24;
         compareButton.setPosition(left, top);
         stopButton.setPosition(left + 74, top);
+        // Back button on the same row, right-aligned.
+        backButton.setPosition(width - 96, top);
     }
 
     @Override

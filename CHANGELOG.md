@@ -97,6 +97,25 @@
   it can be hidden via the new General setting *Show seed search button*
   (default on).
 
+### Changes — Background seed search (1.21.11-fabric)
+
+- **Starting a search now returns to the preview map while the search
+  continues in the background.** Reopening the Seed Search screen re-attaches
+  to the running search (live progress and completion) and, when no search is
+  running, shows the most recent completed result. Going back no longer
+  cancels a running search — the *Stop* button is the explicit cancel.
+- The default number of results (hits) was lowered from 5 to 1.
+- **The structure criterion is now picked in a dedicated structure-selection
+  screen** (opened from the structure button): a filterable single-pick list
+  with a "None" row and one row per structure showing its item icon and name.
+
+### UI — Search screens (1.21.11-fabric)
+
+- Compacted the Seed Search top bar: narrower filter box and show-caves
+  toggle, the clear and view buttons sharing the right half of the top rows,
+  and the results list level with the clear button.
+- Added a back button to the seed comparison screen.
+
 ### Notes
 
 - Structures using concentric-ring placement (strongholds) are not supported

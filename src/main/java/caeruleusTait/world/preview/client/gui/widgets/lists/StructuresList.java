@@ -230,6 +230,11 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
         public ItemStack itemStack() {
             return itemStack;
         }
+
+        /** Read-only display item for pick lists (may be null when the structure has no item). */
+        public ItemStack displayItem() {
+            return itemStack;
+        }
     }
 
 }

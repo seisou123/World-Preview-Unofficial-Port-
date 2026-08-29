@@ -157,6 +157,14 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private TerrainExportController terrainExportController;
     private volatile TerrainMapExporter.BiomeSampler terrainExportSampler;
     private volatile SeedSearchService.SeedContextFactory seedSearchFactory;
+    // Seed search listener indirection: a search started on one screen keeps
+    // running in the background, and a reopened screen can take over the
+    // progress/completion callbacks. Callbacks always fire on the main thread
+    // (via minecraftExecute), so reassigning the listeners is race-free.
+    private volatile java.util.function.Consumer<SeedSearchResult> seedSearchCompleteListener = r -> { };
+    private volatile java.util.function.Consumer<Integer> seedSearchProgressListener = a -> { };
+    @Nullable private volatile SeedSearchResult lastSeedSearchResult;
+    @Nullable private volatile String lastSeedSearchCriteria;
     private final NoiseColorProvider noiseColorProvider = new NoiseColorProvider();
 
     /**
@@ -1022,12 +1030,17 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     }
 
     /**
-     * Starts an advanced (multi-criteria) seed search.
+     * Starts an advanced (multi-criteria) seed search. The search runs in the
+     * background; its callbacks can be re-targeted to another screen later via
+     * {@link #reattachSeedSearchListener(Consumer, Consumer)}.
      *
+     * @param criteriaLabel label stored alongside the latest result so a
+     *                      reopened screen can display it
      * @return false when the search context is missing or a search is running
      */
     public boolean startSeedSearch(
             SeedSearchRequest request,
+            String criteriaLabel,
             java.util.function.Consumer<SeedSearchResult> onComplete,
             java.util.function.Consumer<Integer> onProgress
     ) {
@@ -1035,8 +1048,46 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             LOGGER.warn("Search context not available");
             return false;
         }
-        return seedSearchService.startSearch(request, seedSearchFactory,
-                null, onComplete, onProgress);
+        boolean started = seedSearchService.startSearch(request, seedSearchFactory,
+                null, result -> seedSearchCompleteListener.accept(result), attempts -> seedSearchProgressListener.accept(attempts));
+        if (started) {
+            // Only after a successful start: discard the previous result and
+            // route the running search's callbacks through the new listeners,
+            // recording the outcome for later reopens.
+            lastSeedSearchResult = null;
+            lastSeedSearchCriteria = null;
+            seedSearchCompleteListener = result -> {
+                lastSeedSearchResult = result;
+                lastSeedSearchCriteria = criteriaLabel;
+                onComplete.accept(result);
+            };
+            seedSearchProgressListener = onProgress;
+        }
+        return started;
+    }
+
+    /** Makes the given listener the target of the running search's progress/completion callbacks. */
+    public void reattachSeedSearchListener(
+            java.util.function.Consumer<SeedSearchResult> onComplete,
+            java.util.function.Consumer<Integer> onProgress
+    ) {
+        seedSearchCompleteListener = result -> {
+            lastSeedSearchResult = result;
+            onComplete.accept(result);
+        };
+        seedSearchProgressListener = onProgress;
+    }
+
+    /** The most recent completed seed search result, or null before the first completion. */
+    @Nullable
+    public SeedSearchResult lastSeedSearchResult() {
+        return lastSeedSearchResult;
+    }
+
+    /** The criteria label stored alongside {@link #lastSeedSearchResult()}, or null. */
+    @Nullable
+    public String lastSeedSearchCriteria() {
+        return lastSeedSearchCriteria;
     }
 
     private void queueEarlyPreviewRange() {
