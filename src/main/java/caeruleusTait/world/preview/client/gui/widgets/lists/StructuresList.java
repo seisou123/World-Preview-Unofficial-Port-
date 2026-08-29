@@ -29,8 +29,21 @@ import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider.Structu
 
 public class StructuresList extends BaseObjectSelectionList<StructuresList.StructureEntry> {
 
+    @Nullable private java.util.function.Consumer<StructureEntry> onRightClick;
+    @Nullable private java.util.function.Consumer<StructureEntry> onDoubleClick;
+
     public StructuresList(Minecraft minecraft, int width, int height, int x, int y) {
         super(minecraft, width, height, x, y, 24);
+    }
+
+    /** Set right-click callback (used to open the seed search for this structure). */
+    public void setRightClickListener(java.util.function.Consumer<StructureEntry> listener) {
+        this.onRightClick = listener;
+    }
+
+    /** Set double-click callback (used to locate the structure on the map). */
+    public void setDoubleClickListener(java.util.function.Consumer<StructureEntry> listener) {
+        this.onDoubleClick = listener;
     }
 
     public StructureEntry createEntry(short id, Identifier Identifier, NativeImage icon, Item item, String name, boolean show, boolean showByDefault) {
@@ -62,6 +75,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
 
     public class StructureEntry extends BaseObjectSelectionList.Entry<StructuresList.StructureEntry> implements StructureRenderInfo {
         private final short id;
+        private final Identifier structureKey;
         private final NativeImage icon;
         private final Item item;
         private final ItemStack itemStack;
@@ -82,6 +96,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
 
         public StructureEntry(short id, Identifier Identifier, @NotNull NativeImage icon, @Nullable Item item, String name, boolean show, boolean showByDefault) {
             this.id = id;
+            this.structureKey = Identifier;
             this.item = item;
             this.itemStack = this.item == null ? null : new ItemStack(this.item, 1);
             this.icon = icon;
@@ -171,11 +186,25 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
 
         @Override
         public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+            if (event.button() == 1 && onRightClick != null) {
+                // Right-click: open the seed search pre-filled with this structure
+                minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+                onRightClick.accept(this);
+                return true;
+            }
             minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
             if (toggleVisible.isMouseOver(event.x(), event.y())) {
                 toggleVisible.onClick(event, doubleClick);
+                return true;
+            }
+            if (doubleClick && event.button() == 0 && onDoubleClick != null) {
+                onDoubleClick.accept(this);
             }
             return true;
+        }
+
+        public Identifier structureId() {
+            return structureKey;
         }
 
         public String name() {
@@ -199,6 +228,11 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
         }
 
         public ItemStack itemStack() {
+            return itemStack;
+        }
+
+        /** Read-only display item for pick lists (may be null when the structure has no item). */
+        public ItemStack displayItem() {
             return itemStack;
         }
     }

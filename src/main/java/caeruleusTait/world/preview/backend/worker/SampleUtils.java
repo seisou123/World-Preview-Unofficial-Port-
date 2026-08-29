@@ -644,6 +644,16 @@ public class SampleUtils implements AutoCloseable {
         return noiseGeneratorSettings;
     }
 
+    /** Shared template manager (server-provided or dummy-path instance). */
+    public StructureTemplateManager structureTemplateManager() {
+        return structureTemplateManager;
+    }
+
+    /** Height accessor of the dimension being sampled. */
+    public LevelHeightAccessor levelHeightAccessor() {
+        return levelHeightAccessor;
+    }
+
     public short doHeightSlow(BlockPos pos) {
         return (short) chunkGenerator.getBaseHeight(
                 pos.getX(),

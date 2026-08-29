@@ -29,8 +29,6 @@ public class BiomesList extends BaseObjectSelectionList<BiomesList.BiomeEntry> {
     private final PreviewContainer previewContainer;
 
     @Nullable private Consumer<BiomeEntry> onRightClick;
-    private boolean searchActive = false;
-    @Nullable private Component searchStatus = null;
 
     public BiomesList(PreviewContainer previewContainer, Minecraft minecraft, int width, int height, int x, int y, boolean allowDeselecting) {
         super(minecraft, width, height, x, y, 16);
@@ -69,12 +67,6 @@ public class BiomesList extends BaseObjectSelectionList<BiomesList.BiomeEntry> {
         this.onRightClick = listener;
     }
 
-    /** Update search status (called from PreviewContainer) */
-    public void setSearchActive(boolean active, @Nullable Component status) {
-        this.searchActive = active;
-        this.searchStatus = status;
-    }
-
         @Override
     public void replaceEntries(Collection<BiomeEntry> entryList) {
         final BiomeEntry oldEntry = getSelected();
@@ -89,17 +81,6 @@ public class BiomesList extends BaseObjectSelectionList<BiomesList.BiomeEntry> {
         if(super.scrollAmount() > maxScroll) {
             // Make sure that the top entry is visible
             super.setScrollAmount(maxScroll);
-        }
-    }
-
-    @Override
-    public void renderWidget(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        super.renderWidget(guiGraphics, mouseX, mouseY, partialTick);
-        // Show search status row at the top of the list
-        if (searchActive && searchStatus != null) {
-            int statusY = getY() + 2;
-            guiGraphics.fill(getX(), statusY - 1, getX() + getWidth(), statusY + minecraft.font.lineHeight + 1, 0xAA000000);
-            guiGraphics.drawString(minecraft.font, searchStatus, getX() + 4, statusY, 0xFFFFFF00);
         }
     }
 

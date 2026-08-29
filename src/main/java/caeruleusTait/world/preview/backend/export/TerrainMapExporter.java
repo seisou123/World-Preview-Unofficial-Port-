@@ -41,6 +41,8 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 public final class TerrainMapExporter {
 
     private static final int TILE_SIZE = 64;
+    /** Semi-transparent black used by the coordinate grid overlay (ARGB). */
+    private static final int GRID_COLOR = 0x59000000;
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
@@ -67,13 +69,28 @@ public final class TerrainMapExporter {
             BooleanSupplier cancelled,
             LongConsumer progress
     ) throws Exception {
+        return export(spec, sampler, outputDir, "", cancelled, progress);
+    }
+
+    /**
+     * Execute terrain map export with a filename prefix (used by batch exports to
+     * tag each file with its dimension, e.g. {@code terrain_overworld_...}).
+     */
+    public Result export(
+            TerrainExportSpec spec,
+            BiomeSampler sampler,
+            Path outputDir,
+            String filenamePrefix,
+            BooleanSupplier cancelled,
+            LongConsumer progress
+    ) throws Exception {
         Files.createDirectories(outputDir);
 
         int width = spec.imageWidth();
         int height = spec.imageHeight();
 
         String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
-        String filename = "terrain_" + timestamp + "_"
+        String filename = filenamePrefix + "terrain_" + timestamp + "_"
                 + spec.centerX() + "_" + spec.centerZ() + "_"
                 + spec.coverageRadius() + ".png";
         Path pngPath = outputDir.resolve(filename);
@@ -144,6 +161,11 @@ public final class TerrainMapExporter {
                         image.fillRect(px, py, 1, 1, colorBuffer[py * width + px]);
                     }
                 }
+            }
+
+            // Grid overlay post-processing (drawn on top of terrain and contours)
+            if (spec.gridIntervalBlocks() > 0) {
+                drawGridOverlay(image, spec, width, height);
             }
 
             // Write PNG file (write .part first, then atomic move)
@@ -230,6 +252,29 @@ public final class TerrainMapExporter {
     }
 
     /**
+     * Draws the block-coordinate grid overlay. A pixel lies on a grid line when
+     * its block coordinate modulo the grid interval falls within one pixel step;
+     * floorMod keeps negative world coordinates aligned to the same grid.
+     */
+    private static void drawGridOverlay(NativeImage image, TerrainExportSpec spec, int width, int height) {
+        int bpp = spec.blocksPerPixel();
+        int interval = spec.gridIntervalBlocks();
+        int minBlockX = spec.minBlockX();
+        int minBlockZ = spec.minBlockZ();
+
+        for (int py = 0; py < height; py++) {
+            int blockZ = minBlockZ + py * bpp;
+            boolean onHorizontalLine = Math.floorMod(blockZ, interval) < bpp;
+            for (int px = 0; px < width; px++) {
+                int blockX = minBlockX + px * bpp;
+                if (onHorizontalLine || Math.floorMod(blockX, interval) < bpp) {
+                    image.fillRect(px, py, 1, 1, GRID_COLOR);
+                }
+            }
+        }
+    }
+
+    /**
      * Roughly estimate terrain height from biome.
      */
     private static byte estimateHeight(Holder<Biome> biomeHolder) {
@@ -293,6 +338,7 @@ public final class TerrainMapExporter {
         sb.append("  \"centerZ\": ").append(spec.centerZ()).append(",\n");
         sb.append("  \"coverageRadius\": ").append(spec.coverageRadius()).append(",\n");
         sb.append("  \"blocksPerPixel\": ").append(spec.blocksPerPixel()).append(",\n");
+        sb.append("  \"gridIntervalBlocks\": ").append(spec.gridIntervalBlocks()).append(",\n");
         sb.append("  \"imageWidth\": ").append(width).append(",\n");
         sb.append("  \"imageHeight\": ").append(height).append(",\n");
         sb.append("  \"bounds\": {\n");

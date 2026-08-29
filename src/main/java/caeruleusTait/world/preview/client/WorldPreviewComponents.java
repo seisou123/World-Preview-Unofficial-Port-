@@ -36,10 +36,40 @@ public class WorldPreviewComponents {
     public static final Component BTN_SET_SPAWN = Component.translatable("world_preview.preview.btn-set-spawn");
     public static final Component BTN_SET_SPAWN_TOOLTIP = Component.translatable("world_preview.preview.btn-set-spawn.tooltip");
     public static final Component BTN_SET_SPAWN_PLACED = Component.translatable("world_preview.preview.btn-set-spawn.placed");
+
+    // === Map tools (waypoints & measure, v1.5) ===
+    public static final Component BTN_WAYPOINTS = Component.translatable("world_preview.preview.btn-waypoints");
+    public static final Component BTN_WAYPOINTS_TOOLTIP = Component.translatable("world_preview.preview.btn-waypoints.tooltip");
+    public static final Component BTN_MEASURE = Component.translatable("world_preview.preview.btn-measure");
+    public static final Component BTN_MEASURE_TOOLTIP = Component.translatable("world_preview.preview.btn-measure.tooltip");
+    public static final Component MSG_LOCATED = Component.translatable("world_preview.preview.located");
+    public static final Component MSG_LOCATE_NOT_VISIBLE = Component.translatable("world_preview.preview.locate_not_visible");
+    public static final Component WAYPOINT_TITLE = Component.translatable("world_preview.waypoint.title");
+    public static final Component WAYPOINT_NAME = Component.translatable("world_preview.waypoint.name");
+    public static final Component WAYPOINT_COLOR = Component.translatable("world_preview.waypoint.color");
+    public static final Component WAYPOINT_DEFAULT_NAME = Component.translatable("world_preview.waypoint.default_name");
     public static final Component ANALYSIS_TITLE = Component.translatable("world_preview.analysis.title");
     public static final Component ANALYSIS_OPEN = Component.translatable("world_preview.analysis.open");
     public static final Component ANALYSIS_START = Component.translatable("world_preview.analysis.start");
     public static final Component ANALYSIS_CANCEL = Component.translatable("world_preview.analysis.cancel");
+    public static final Component ANALYSIS_EXPORT_REPORT = Component.translatable("world_preview.analysis.export");
+
+    // === Analysis panel extras: spawn score & biome rarity (v1.5) ===
+    public static final Component ANALYSIS_SPAWN_SCORE = Component.translatable("world_preview.analysis.spawn_score");
+    public static final Component ANALYSIS_SPAWN_SCORE_VALUE = Component.translatable("world_preview.analysis.spawn_score.value");
+    public static final Component ANALYSIS_TOP_BIOMES = Component.translatable("world_preview.analysis.top_biomes");
+
+    // === Seed comparison screen (v1.5) ===
+    public static final Component COMPARISON_TITLE = Component.translatable("world_preview.comparison.title");
+    public static final Component COMPARISON_OPEN = Component.translatable("world_preview.comparison.open");
+    public static final Component COMPARISON_START = Component.translatable("world_preview.comparison.start");
+    public static final Component COMPARISON_STOP = Component.translatable("world_preview.comparison.stop");
+    public static final Component COMPARISON_PROGRESS = Component.translatable("world_preview.comparison.progress");
+    public static final Component COMPARISON_UNAVAILABLE = Component.translatable("world_preview.comparison.unavailable");
+    public static final Component COMPARISON_COL_DIVERSITY = Component.translatable("world_preview.comparison.col.diversity");
+    public static final Component COMPARISON_COL_WATER = Component.translatable("world_preview.comparison.col.water");
+    public static final Component COMPARISON_COL_TOP = Component.translatable("world_preview.comparison.col.top");
+    public static final Component COMPARISON_COL_SCORE = Component.translatable("world_preview.comparison.col.score");
 
     // === Seed search ===
     public static final Component SEARCH_FIND_BIOME = Component.translatable("world_preview.search.find_biome");
@@ -49,6 +79,41 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_NOT_FOUND = Component.translatable("world_preview.search.not_found");
     public static final Component SEARCH_STOPPED = Component.translatable("world_preview.search.stopped");
     public static final Component SEARCH_ERROR = Component.translatable("world_preview.search.error");
+
+    // === Advanced seed search screen (v1.5) ===
+    public static final Component SEARCH_TITLE = Component.translatable("world_preview.search.title");
+    public static final Component SEARCH_OPEN = Component.translatable("world_preview.search.open");
+    public static final Component SEARCH_OPEN_TOOLTIP = Component.translatable("world_preview.search.open.tooltip");
+    public static final Component SEARCH_BIOME = Component.translatable("world_preview.search.biome");
+    public static final Component SEARCH_BIOME_NONE = Component.translatable("world_preview.search.biome.none");
+    public static final Component SEARCH_CLEAR_BIOME = Component.translatable("world_preview.search.biome.clear");
+    public static final Component SEARCH_STRUCTURE = Component.translatable("world_preview.search.structure");
+    public static final Component SEARCH_STRUCTURE_NONE = Component.translatable("world_preview.search.structure.none");
+    public static final Component SEARCH_ANCHOR = Component.translatable("world_preview.search.anchor");
+    public static final Component SEARCH_ANCHOR_CENTER = Component.translatable("world_preview.search.anchor.center");
+    public static final Component SEARCH_ANCHOR_ORIGIN = Component.translatable("world_preview.search.anchor.origin");
+    public static final Component SEARCH_MIN_AREA = Component.translatable("world_preview.search.min_area");
+    public static final Component SEARCH_STRUCTURE_DISTANCE = Component.translatable("world_preview.search.structure_distance");
+    public static final Component SEARCH_ATTEMPTS = Component.translatable("world_preview.search.attempts");
+    public static final Component SEARCH_HITS = Component.translatable("world_preview.search.hits");
+    public static final Component SEARCH_START = Component.translatable("world_preview.search.start");
+    public static final Component SEARCH_VIEW = Component.translatable("world_preview.search.view");
+    public static final Component SEARCH_VIEW_RESULTS = Component.translatable("world_preview.search.view.results");
+    public static final Component SEARCH_VIEW_HISTORY = Component.translatable("world_preview.search.view.history");
+    public static final Component SEARCH_VIEW_FAVORITES = Component.translatable("world_preview.search.view.favorites");
+    public static final Component SEARCH_NO_CRITERIA = Component.translatable("world_preview.search.no_criteria");
+    public static final Component SEARCH_APPLIED = Component.translatable("world_preview.search.applied");
+    public static final Component SEARCH_APPLIED_CLIPBOARD = Component.translatable("world_preview.search.applied.clipboard");
+    public static final Component SEARCH_BIOME_FILTER = Component.translatable("world_preview.search.biome_filter");
+    public static final Component SEARCH_BIOME_SHOW_CAVES = Component.translatable("world_preview.search.biome.show_caves");
+    public static final Component SEARCH_BIOME_MAX = Component.translatable("world_preview.search.biome.max");
+    public static final Component SEARCH_BIOME_CAVE_TAG = Component.translatable("world_preview.search.biome.cave_tag");
+    public static final Component SEARCH_BIOME_DISTANCE = Component.translatable("world_preview.search.biome_distance");
+    public static final Component SEARCH_BIOME_DISTANCE_TOOLTIP = Component.translatable("world_preview.search.biome_distance.tooltip");
+    public static final Component SEARCH_RUNNING = Component.translatable("world_preview.search.running");
+    public static final Component SEARCH_STRUCTURE_VALUE = Component.translatable("world_preview.search.structure.value");
+    public static final Component SEARCH_STRUCTURE_PICK = Component.translatable("world_preview.search.structure.pick");
+    public static final Component SEARCH_STRUCTURE_FILTER = Component.translatable("world_preview.search.structure.filter");
 
     // === Terrain map export ===
     public static final Component TERRAIN_EXPORT_TITLE = Component.translatable("world_preview.terrain_export.title");
@@ -62,6 +127,8 @@ public class WorldPreviewComponents {
     public static final Component TERRAIN_EXPORT_IDLE = Component.translatable("world_preview.terrain_export.idle");
     public static final Component TERRAIN_EXPORT_COMPLETE = Component.translatable("world_preview.terrain_export.complete");
     public static final Component TERRAIN_EXPORT_CANCELLED = Component.translatable("world_preview.terrain_export.cancelled");
+    public static final Component TERRAIN_EXPORT_BATCH = Component.translatable("world_preview.terrain_export.batch");
+    public static final Component TERRAIN_EXPORT_BATCH_TOOLTIP = Component.translatable("world_preview.terrain_export.batch.tooltip");
 
     // === Hillshade ===
     public static final Component SETTINGS_HILLSHADE = Component.translatable("world_preview.settings.general.hillshade");
@@ -135,6 +202,8 @@ public class WorldPreviewComponents {
     public static final Component SETTINGS_GENERAL_BIOME_COUNTS_TOOLTIP = Component.translatable("world_preview.settings.general.biome_counts.tooltip");
     public static final Component SETTINGS_GENERAL_ANALYSIS_BUTTON = Component.translatable("world_preview.settings.general.analysis_button");
     public static final Component SETTINGS_GENERAL_ANALYSIS_BUTTON_TOOLTIP = Component.translatable("world_preview.settings.general.analysis_button.tooltip");
+    public static final Component SETTINGS_GENERAL_SEED_SEARCH_BUTTON = Component.translatable("world_preview.settings.general.seed_search_button");
+    public static final Component SETTINGS_GENERAL_SEED_SEARCH_BUTTON_TOOLTIP = Component.translatable("world_preview.settings.general.seed_search_button.tooltip");
     public static final Component SETTINGS_GENERAL_SEARCH_MIN_AREA = Component.translatable("world_preview.settings.general.search_min_area");
     public static final Component SETTINGS_GENERAL_SEARCH_MIN_AREA_TOOLTIP = Component.translatable("world_preview.settings.general.search_min_area.tooltip");
     public static final Component SETTINGS_GENERAL_SEARCH_MAX_DISTANCE = Component.translatable("world_preview.settings.general.search_max_distance");
