@@ -81,6 +81,18 @@
 - Removed the old inline list-status search flow (status rows on the biome
   list and its cancel/inline-search right-click behavior).
 
+### UI — Seed search screen & button (1.21.11-fabric)
+
+- Added a Back button to the Seed Search screen (previously only ESC closed it).
+- The Seed Search screen layout is now height-adaptive: Start/Stop/Compare are
+  pinned to a footer row together with the hits slider, and the biome picker
+  absorbs the remaining space, so all controls stay visible on small GUI scales
+  (e.g. 3x/4x) where the Start Search button could previously fall off-screen.
+- The *Seed Search* button now uses the sidebar's translucent rail style
+  (matching the Biomes/Structures/Seeds buttons) and sits directly below them;
+  it can be hidden via the new General setting *Show seed search button*
+  (default on).
+
 ### Notes
 
 - Structures using concentric-ring placement (strongholds) are not supported

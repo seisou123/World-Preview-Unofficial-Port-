@@ -173,7 +173,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private Button randomSeedButton;
     private Button saveSeed;
     private Button openAnalysis;
-    private Button seedSearchButton;
+    private TranslucentButton seedSearchButton;
     private Button settings;
     private Button resetToZeroZero;
     private ToggleButton toggleCaves;
@@ -328,10 +328,13 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         openAnalysis.visible = cfg.showAnalysisButton;
         toRender.add(openAnalysis);
 
-        seedSearchButton = Button.builder(WorldPreviewComponents.SEARCH_OPEN, ignored -> openSeedSearchScreen(null, null, false))
-                .size(100, LINE_HEIGHT)
-                .build();
+        // Seed search button: built like the sidebar rail buttons (same
+        // translucent style) so it matches Biomes/Structures/Seeds.
+        seedSearchButton = new TranslucentButton(
+                ((ScreenAccessor) screen).getFont(), 0, 0, RAIL_WIDTH - 2, LINE_HEIGHT - 2,
+                WorldPreviewComponents.SEARCH_OPEN, x -> openSeedSearchScreen(null, null, false));
         seedSearchButton.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_OPEN_TOOLTIP));
+        seedSearchButton.visible = cfg.showSeedSearchButton;
         toRender.add(seedSearchButton);
 
         settings = iconButton(60, 20, x -> {
@@ -1530,7 +1533,8 @@ public void onScreenReentry() {
             noiseCycleButton.visible = false;
         }
 
-        // Analysis button (if enabled); seed search button sits below it.
+        // Analysis button (if enabled). The seed search button lives in the
+        // rail stack below the Biomes/Structures/Seeds buttons.
         if (cfg.showAnalysisButton) {
             openAnalysis.visible = true;
             openAnalysis.setPosition(mapLeft, top);
@@ -1538,14 +1542,15 @@ public void onScreenReentry() {
         } else {
             openAnalysis.visible = false;
         }
-        seedSearchButton.visible = true;
-        seedSearchButton.setPosition(mapLeft, top + (cfg.showAnalysisButton ? LINE_HEIGHT + LINE_VSPACE : 0));
-        seedSearchButton.setWidth(Math.min(120, mapWidth / 3));
 
         // --- Rail icons (vertical stack, rendered ON TOP of the map) ---
         int railY = top + 2;
         int switchHeight = LINE_HEIGHT - 2;
         int maxSwitchWidth = RAIL_WIDTH - 2;
+        // The seed search button shares the rail, so its label counts toward
+        // the shared auto width (computed before the three setWidth calls).
+        seedSearchButton.updateAutoWidth();
+        maxSwitchWidth = Math.max(maxSwitchWidth, seedSearchButton.getWidth());
         if (switchBiomes instanceof TranslucentButton tb) { tb.updateAutoWidth(); maxSwitchWidth = Math.max(maxSwitchWidth, tb.getWidth()); }
         if (switchStructures instanceof TranslucentButton ts) { ts.updateAutoWidth(); maxSwitchWidth = Math.max(maxSwitchWidth, ts.getWidth()); }
         if (switchSeeds instanceof TranslucentButton tsp) { tsp.updateAutoWidth(); maxSwitchWidth = Math.max(maxSwitchWidth, tsp.getWidth()); }
@@ -1560,6 +1565,11 @@ public void onScreenReentry() {
         railY += switchHeight + 4;
         switchSeeds.setPosition(railLeft, railY);
         switchSeeds.active = true;
+        railY += switchHeight + 4;
+        // Seed search button directly below the three rail buttons.
+        seedSearchButton.setPosition(railLeft, railY);
+        seedSearchButton.setWidth(maxSwitchWidth);
+        seedSearchButton.visible = cfg.showSeedSearchButton;
         railY += switchHeight + 4;
 
         // Reset structures visibility (compact, at bottom of rail)
@@ -1606,7 +1616,7 @@ public void onScreenReentry() {
         boolean showStructuresList = (floatingPanel == 1);
         boolean showSeedsList = (floatingPanel == 2);
 
-        int panelTop = top + (cfg.showAnalysisButton ? 2 * (LINE_HEIGHT + LINE_VSPACE) : LINE_HEIGHT + LINE_VSPACE);
+        int panelTop = top + (cfg.showAnalysisButton ? 2 : 1) * (LINE_HEIGHT + LINE_VSPACE);
         int panelBottom = bottom - 4;
         int panelHeight = panelBottom - panelTop;
         int panelX = mapLeft + 4;
@@ -1695,7 +1705,8 @@ public void onScreenReentry() {
         toggleSetSpawn.setWidth(Math.max(20, spawnStretch - thirdWidth * 2 - 4));
         toggleSetSpawn.visible = (dataProvider.minecraftServer() == null);
         
-        // Toggle analysis button visibility; seed search button sits below it.
+        // Toggle analysis button visibility. The seed search button sits in
+        // the row below the Biomes/Structures/Seeds switch row.
         if (cfg.showAnalysisButton) {
             openAnalysis.visible = true;
             openAnalysis.setPosition(left, top + LINE_HEIGHT + LINE_VSPACE);
@@ -1703,9 +1714,6 @@ public void onScreenReentry() {
         } else {
             openAnalysis.visible = false;
         }
-        seedSearchButton.visible = true;
-        seedSearchButton.setPosition(left, top + (cfg.showAnalysisButton ? 2 : 1) * (LINE_HEIGHT + LINE_VSPACE));
-        seedSearchButton.setWidth(leftWidth);
         
         int i = 0;
         toggleShowStructures.setPosition(btnStart + BUTTON_GRID_STEP * i++, top);
@@ -1725,10 +1733,11 @@ public void onScreenReentry() {
         noiseCycleButton.setPosition(previewLeft + BUTTON_GRID_STEP * i++, top);
 
         //  - new row
-        // The TOP section above occupies 1-3 rows depending on the analysis
-        // and seed-search buttons.  Advance top past the buttons so the switch
-        // buttons and the list below do not overlap.
-        int topRows = cfg.showAnalysisButton ? 3 : 2;
+        // The TOP section above occupies 1-2 rows depending on the analysis
+        // button (the seed search button now sits BELOW the switch row).
+        // Advance top past those buttons so the switch buttons and the list
+        // below do not overlap.
+        int topRows = cfg.showAnalysisButton ? 2 : 1;
         top += topRows * (LINE_HEIGHT + LINE_VSPACE);
         int switchBiomesWidth = 45;
         int switchSeedsWidth = 45;
@@ -1741,8 +1750,14 @@ public void onScreenReentry() {
         switchStructures.setWidth(switchStructuresWidth);
         switchSeeds.setWidth(switchSeedsWidth);
 
+        // Seed search button directly below the switch row; the lists start
+        // one row further down when it is shown.
+        seedSearchButton.setPosition(left, top + LINE_HEIGHT + LINE_VSPACE);
+        seedSearchButton.setWidth(leftWidth);
+        seedSearchButton.visible = cfg.showSeedSearchButton;
+
         //  - new row
-        top += LINE_HEIGHT + LINE_VSPACE;
+        top += (cfg.showSeedSearchButton ? 2 : 1) * (LINE_HEIGHT + LINE_VSPACE);
 
         biomesList.setPosition(left, top);
         biomesList.setSize(leftWidth, bottom - top - LINE_VSPACE);

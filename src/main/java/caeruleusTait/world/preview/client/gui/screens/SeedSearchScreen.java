@@ -63,8 +63,12 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private Button startButton;
     private Button stopButton;
     private Button compareButton;
+    private Button backButton;
     private CycleButton<View> viewCycle;
     private SearchResultsList resultsList;
+
+    /** Y of the footer action row (Start/Stop/Compare + hits), pinned to the screen bottom. */
+    private int actionRowY;
 
     private boolean showCaves = false;
     private final List<SearchResultsList.Row> hitRows = new ArrayList<>();
@@ -195,6 +199,12 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
         resultsList = new SearchResultsList(minecraft, this);
 
+        // Back button (same footer spot as WorldAnalysisScreen); added last so
+        // it sits at the end of the click order.
+        backButton = Button.builder(CommonComponents.GUI_BACK, ignored -> onClose())
+                .size(90, 20)
+                .build();
+
         addRenderableWidget(biomePicker);
         addRenderableWidget(filterBox);
         addRenderableWidget(showCavesButton);
@@ -211,6 +221,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         addRenderableWidget(compareButton);
         addRenderableWidget(viewCycle);
         addRenderableWidget(resultsList);
+        addRenderableWidget(backButton);
 
         layoutWidgets();
         updateControlState();
@@ -244,41 +255,61 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         int rightX = width / 2 + 4;
         int rightWidth = Math.max(200, width / 2 - 12);
 
-        // Biome criteria area at the top of the left column; the "Biomes: n"
-        // summary line is drawn by render() right above the filter row.
+        // Bottom-up layout: the footer (action row + back button) is pinned to
+        // the screen bottom so Start/Stop/Compare stay visible even on small
+        // GUI scales; the biome picker absorbs whatever space remains above.
+        actionRowY = height - 32;
+
+        // Filter row + cave toggle at the top of the left column; the
+        // "Biomes: n" summary line is drawn by render() right above the
+        // filter row.
         filterBox.setPosition(left, top + 12);
         filterBox.setWidth(150);
         clearBiomesButton.setPosition(left + 154, top + 12);
         showCavesButton.setPosition(left, top + 34);
-        biomePicker.setX(left);
-        biomePicker.setY(top + 56);
-        biomePicker.setWidth(leftWidth);
-        biomePicker.setHeight(96);
-        int criteriaBottom = top + 56 + 96;
 
-        structureCycle.setPosition(left, criteriaBottom + 4);
+        // Picker fills the gap between the cave toggle and the cycles row.
+        int pickerTop = top + 56;
+        int pickerBottom = actionRowY - 76;
+        biomePicker.setX(left);
+        biomePicker.setY(pickerTop);
+        biomePicker.setWidth(leftWidth);
+        biomePicker.setHeight(Math.max(40, pickerBottom - pickerTop));
+
+        // Cycles row directly above the two slider rows.
+        int cyclesRowY = actionRowY - 72;
+        structureCycle.setPosition(left, cyclesRowY);
         structureCycle.setWidth(Math.min(160, leftWidth));
-        anchorCycle.setPosition(left + Math.min(164, leftWidth + 4), criteriaBottom + 4);
+        anchorCycle.setPosition(left + Math.min(164, leftWidth + 4), cyclesRowY);
         anchorCycle.setWidth(Math.min(160, Math.max(100, width - (left + Math.min(164, leftWidth + 4)) - 8)));
 
-        // Two slider columns: min area + biome distance, then structure
-        // distance + attempts, with hits and the action buttons below.
-        int sliderRow = criteriaBottom + 30;
-        minAreaSlider.setPosition(left, sliderRow);
-        biomeDistanceSlider.setPosition(left + 156, sliderRow);
-        structureDistanceSlider.setPosition(left, sliderRow + 24);
-        attemptsSlider.setPosition(left + 156, sliderRow + 24);
-        hitsSlider.setPosition(left, sliderRow + 48);
+        // Two slider columns above the action row: min area + biome distance,
+        // then structure distance + attempts.
+        minAreaSlider.setPosition(left, actionRowY - 24);
+        biomeDistanceSlider.setPosition(left + 156, actionRowY - 24);
+        structureDistanceSlider.setPosition(left, actionRowY - 48);
+        attemptsSlider.setPosition(left + 156, actionRowY - 48);
 
-        startButton.setPosition(left, sliderRow + 72);
-        stopButton.setPosition(left + 74, sliderRow + 72);
-        compareButton.setPosition(left + 150, sliderRow + 72);
+        // Footer action row; the hits slider shares the row with the buttons.
+        startButton.setPosition(left, actionRowY);
+        stopButton.setPosition(left + 74, actionRowY);
+        compareButton.setPosition(left + 150, actionRowY);
+        hitsSlider.setPosition(left + 224, actionRowY);
+        hitsSlider.setWidth(Math.max(90, leftWidth - 224));
+
+        // Back button in the footer, right-aligned (same spot as
+        // WorldAnalysisScreen's close button).
+        backButton.setX(width - 96);
+        backButton.setY(actionRowY);
+        backButton.setWidth(90);
+        backButton.setHeight(20);
 
         viewCycle.setPosition(rightX, top);
         resultsList.setX(rightX);
         resultsList.setY(top + 24);
         resultsList.setWidth(rightWidth);
-        resultsList.setHeight(Math.max(60, height - (top + 24) - 28));
+        // End the results above the footer so they never cover the back button.
+        resultsList.setHeight(Math.max(60, (height - 32) - (top + 24) - 4));
     }
 
     // ===== Search control =====
@@ -494,8 +525,10 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         super.render(graphics, mouseX, mouseY, partialTick);
 
         if (statusText != null && !statusText.isEmpty()) {
-            int statusY = height - 20;
-            graphics.fill(0, statusY - 4, width, statusY + font.lineHeight + 4, 0xAA000000);
+            // Draw in the strip below the footer action row so the status can
+            // never cover the Start/Stop/Compare buttons or the back button.
+            int statusY = height - 11;
+            graphics.fill(0, actionRowY + 20, width, height, 0xAA000000);
             graphics.drawString(font, statusText, 8, statusY, 0xFFFFFF55);
         }
     }

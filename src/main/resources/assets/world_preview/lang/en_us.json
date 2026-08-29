@@ -90,6 +90,8 @@
   "world_preview.settings.general.biome_counts.tooltip": "Display the number of visible blocks for each biome in the biome list",
   "world_preview.settings.general.analysis_button": "Enable analysis area",
   "world_preview.settings.general.analysis_button.tooltip": "Enable analysis area, display the analysis button above the biome list",
+  "world_preview.settings.general.seed_search_button": "Show seed search button",
+  "world_preview.settings.general.seed_search_button.tooltip": "Show the Seed Search button in the preview sidebar",
   "world_preview.settings.general.search_min_area": "Search min area",
   "world_preview.settings.general.search_min_area.tooltip": "The minimum percentage of biome area that must appear on screen for seed search (0-100%)",
   "world_preview.settings.general.search_max_distance": "Search max distance",

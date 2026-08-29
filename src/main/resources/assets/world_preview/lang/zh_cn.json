@@ -86,6 +86,8 @@
   "world_preview.settings.general.biome_counts.tooltip": "在生物群系列表中显示每个群系的可见方块数量",
   "world_preview.settings.general.analysis_button": "启用分析区域",
   "world_preview.settings.general.analysis_button.tooltip": "启用分析区域功能，可在生物群系列表上方显示分析按钮",
+  "world_preview.settings.general.seed_search_button": "显示种子搜索按钮",
+  "world_preview.settings.general.seed_search_button.tooltip": "在预览侧边栏显示种子搜索按钮",
   "world_preview.settings.general.search_min_area": "搜索最小面积",
   "world_preview.settings.general.search_min_area.tooltip": "搜索种子时，生物群系在屏幕上必须出现的最小面积百分比（0-100%）",
   "world_preview.settings.general.search_max_distance": "搜索最大距离",

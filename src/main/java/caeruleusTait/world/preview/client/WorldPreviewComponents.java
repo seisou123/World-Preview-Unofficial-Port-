@@ -198,6 +198,8 @@ public class WorldPreviewComponents {
     public static final Component SETTINGS_GENERAL_BIOME_COUNTS_TOOLTIP = Component.translatable("world_preview.settings.general.biome_counts.tooltip");
     public static final Component SETTINGS_GENERAL_ANALYSIS_BUTTON = Component.translatable("world_preview.settings.general.analysis_button");
     public static final Component SETTINGS_GENERAL_ANALYSIS_BUTTON_TOOLTIP = Component.translatable("world_preview.settings.general.analysis_button.tooltip");
+    public static final Component SETTINGS_GENERAL_SEED_SEARCH_BUTTON = Component.translatable("world_preview.settings.general.seed_search_button");
+    public static final Component SETTINGS_GENERAL_SEED_SEARCH_BUTTON_TOOLTIP = Component.translatable("world_preview.settings.general.seed_search_button.tooltip");
     public static final Component SETTINGS_GENERAL_SEARCH_MIN_AREA = Component.translatable("world_preview.settings.general.search_min_area");
     public static final Component SETTINGS_GENERAL_SEARCH_MIN_AREA_TOOLTIP = Component.translatable("world_preview.settings.general.search_min_area.tooltip");
     public static final Component SETTINGS_GENERAL_SEARCH_MAX_DISTANCE = Component.translatable("world_preview.settings.general.search_max_distance");
