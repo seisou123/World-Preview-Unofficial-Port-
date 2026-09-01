@@ -1,5 +1,6 @@
 package caeruleusTait.world.preview.compat;
 
+import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import org.slf4j.Logger;
@@ -19,7 +20,7 @@ import java.util.stream.Collectors;
  * and maintains thread-safe access via ConcurrentHashMap.
  *
  * <p>Adapters are selected based on:
- * 1. Installed mod detection (NeoForge ModContainer enumeration)
+ * 1. Installed mod detection (NeoForge ModList enumeration)
  * 2. ChunkGenerator class matching
  * 3. User configuration (disabled mods list)
  *
@@ -169,13 +170,35 @@ public final class ModCompatRegistry {
     }
 
     /**
+     * Resolves the active compatibility profile from config.
+     *
+     * <p>"auto" keeps default detection behaviour, "vanilla" forces the vanilla
+     * adapter, and any other value restricts selection to the compat registered
+     * for that exact mod id. Falls back to "auto" when the mod or config is not
+     * yet available (e.g. during early init or in unit tests).
+     */
+    private String activeCompatProfile() {
+        WorldPreview wp = WorldPreview.get();
+        if (wp != null && wp.cfg() != null) {
+            String profile = wp.cfg().activeCompatProfile;
+            if (profile != null && !profile.isBlank()) {
+                return profile;
+            }
+        }
+        return "auto";
+    }
+
+    /**
      * Selects the appropriate ChunkGeneratorAdapter for a given ChunkGenerator.
      *
      * <p>Selection strategy (in order of priority):
      * 1. If ChunkGenerator is null, return VanillaChunkGeneratorAdapter
-     * 2. Iterate through registered adapters for enabled mods
-     * 3. Return the first adapter where isApplicable() returns true
-     * 4. Fallback to VanillaChunkGeneratorAdapter
+     * 2. Honour {@code activeCompatProfile}: "vanilla" short-circuits to the
+     *    vanilla adapter; a specific mod id restricts selection to that mod's
+     *    compat; "auto" (the default) keeps previous behaviour
+     * 3. Iterate through registered adapters for enabled mods
+     * 4. Return the first adapter where isApplicable() returns true
+     * 5. Fallback to VanillaChunkGeneratorAdapter
      *
      * <p>This method is called during sampling initialization and should
      * complete quickly to avoid blocking the main thread.
@@ -193,9 +216,21 @@ public final class ModCompatRegistry {
         String genClass = chunkGenerator.getClass().getSimpleName();
         LOGGER.debug("Selecting adapter for {} class", genClass);
 
+        String profile = activeCompatProfile();
+        if ("vanilla".equalsIgnoreCase(profile)) {
+            LOGGER.info("activeCompatProfile=vanilla, forcing VanillaChunkGeneratorAdapter for {}", genClass);
+            return VanillaChunkGeneratorAdapter.FACTORY.create(ctx, null);
+        }
+
+        boolean profileIsAuto = "auto".equalsIgnoreCase(profile);
+
         // Try to find a mod-specific adapter for the ChunkGenerator class
         for (ModCompat compat : compatMap.values()) {
             if (!isModEnabled(compat.modId())) {
+                continue;
+            }
+            // A specific profile only allows the compat of that mod id.
+            if (!profileIsAuto && !profile.equalsIgnoreCase(compat.modId())) {
                 continue;
             }
             for (ChunkGeneratorAdapter.Factory factory : compat.adapters()) {

@@ -40,6 +40,7 @@ public class WorldPreviewComponents {
     // === Map tools (waypoints & measure, v1.5) ===
     public static final Component BTN_WAYPOINTS = Component.translatable("world_preview.preview.btn-waypoints");
     public static final Component BTN_WAYPOINTS_TOOLTIP = Component.translatable("world_preview.preview.btn-waypoints.tooltip");
+    public static final Component BTN_WAYPOINT_DELETE = Component.translatable("world_preview.waypoint.delete");
     public static final Component BTN_MEASURE = Component.translatable("world_preview.preview.btn-measure");
     public static final Component BTN_MEASURE_TOOLTIP = Component.translatable("world_preview.preview.btn-measure.tooltip");
     public static final Component MSG_LOCATED = Component.translatable("world_preview.preview.located");
@@ -104,6 +105,8 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_NO_CRITERIA = Component.translatable("world_preview.search.no_criteria");
     public static final Component SEARCH_APPLIED = Component.translatable("world_preview.search.applied");
     public static final Component SEARCH_APPLIED_CLIPBOARD = Component.translatable("world_preview.search.applied.clipboard");
+    /** Search result rejected because its worldgen context fingerprint no longer matches. */
+    public static final Component SEARCH_STALE = Component.translatable("world_preview.search.stale");
     public static final Component SEARCH_BIOME_FILTER = Component.translatable("world_preview.search.biome_filter");
     public static final Component SEARCH_BIOME_SHOW_CAVES = Component.translatable("world_preview.search.biome.show_caves");
     public static final Component SEARCH_BIOME_MAX = Component.translatable("world_preview.search.biome.max");

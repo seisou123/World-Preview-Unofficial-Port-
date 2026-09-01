@@ -50,6 +50,30 @@ class AnalysisReportExporterTest {
     }
 
     @Test
+    void legacyConstructorDefaultsContextIdToUnknown() {
+        String json = exporter.buildJson(sampleInput(), GSON);
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        assertEquals("unknown", root.get("contextId").getAsString());
+    }
+
+    @Test
+    void jsonCarriesProvidedContextId() {
+        LinkedHashMap<String, long[]> biomes = new LinkedHashMap<>();
+        biomes.put("Plains", new long[]{10});
+        ReportInput input = new ReportInput(
+                "777", "minecraft:overworld", "0,0 -> 15,15",
+                16, 16, 1.0, biomes,
+                OptionalInt.of(40), OptionalInt.of(60),
+                OptionalDouble.of(50), OptionalDouble.of(50),
+                OptionalDouble.of(1), OptionalDouble.of(0.5), OptionalDouble.of(2),
+                0.5,
+                "a1b2c3d4e5f6");
+        String json = exporter.buildJson(input, GSON);
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        assertEquals("a1b2c3d4e5f6", root.get("contextId").getAsString());
+    }
+
+    @Test
     void csvHasHeaderAndDescendingRowsWithFormattedShare() {
         String csv = exporter.buildCsv(sampleInput());
         String[] lines = csv.split("\n", -1);
