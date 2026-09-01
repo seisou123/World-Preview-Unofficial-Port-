@@ -164,8 +164,8 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
         interaction.setWaypointPlaceCallback(callback);
     }
 
-    public void setWaypointDeleteCallback(@Nullable java.util.function.Consumer<Waypoint> callback) {
-        interaction.setWaypointDeleteCallback(callback);
+    public void setWaypointEditCallback(@Nullable java.util.function.Consumer<Waypoint> callback) {
+        interaction.setWaypointEditCallback(callback);
     }
 
     /** Delegates hit-testing to the waypoint overlay renderer. */

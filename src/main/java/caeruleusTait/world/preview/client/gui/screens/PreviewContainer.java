@@ -156,7 +156,14 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private SeedSearchService seedSearchService;
     private TerrainExportController terrainExportController;
     private volatile TerrainMapExporter.BiomeSampler terrainExportSampler;
+    /** Worldgen epoch the current terrainExportSampler/seedSearchFactory were built for. */
+    private volatile long samplerContextEpoch = -1;
     private volatile SeedSearchService.SeedContextFactory seedSearchFactory;
+    // Analysis session lifecycle: the container owns the session so closing the
+    // WorldAnalysisScreen only detaches the view — a running analysis keeps
+    // going and is re-attached when the screen is reopened for the same world.
+    @Nullable private AnalysisSession activeAnalysisSession;
+    private long activeAnalysisSessionEpoch = -1;
     // Seed search listener indirection: a search started on one screen keeps
     // running in the background, and a reopened screen can take over the
     // progress/completion callbacks. Callbacks always fire on the main thread
@@ -577,14 +584,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             }
             minecraft.setScreen(new WaypointNameScreen(parentScreen, this, pos));
         });
-        previewDisplay.setWaypointDeleteCallback(waypoint -> {
-            var ctx = workManager.worldgenContext();
-            if (ctx == null) {
-                return;
-            }
-            worldPreview.waypointStore().removeNearest(
-                    ctx.seed(), ctx.dimension(), waypoint.x(), waypoint.z(), 64);
-        });
+        previewDisplay.setWaypointEditCallback(waypoint ->
+            // Editing an existing waypoint: the callback hands us the exact
+            // stored object, so the dialog can pre-fill values and offer delete.
+            minecraft.setScreen(new WaypointNameScreen(parentScreen, this, waypoint)));
 
         // Double-click a structure entry to center the map on its nearest
         // rendered instance.
@@ -603,6 +606,18 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
         worldPreview.waypointStore().add(caeruleusTait.world.preview.domain.waypoint.Waypoint.create(
                 name, pos.getX(), pos.getY(), pos.getZ(), ctx.dimension(), color, ctx.seed()));
+    }
+
+    /** Updates an existing waypoint's label and color, keeping its position and identity scope. */
+    public void updateWaypoint(caeruleusTait.world.preview.domain.waypoint.Waypoint existing, String name, int color) {
+        worldPreview.waypointStore().remove(existing.id());
+        worldPreview.waypointStore().add(caeruleusTait.world.preview.domain.waypoint.Waypoint.create(
+                name, existing.x(), existing.y(), existing.z(), existing.dimension(), color, existing.seed()));
+    }
+
+    /** Removes an existing waypoint by its stable id. */
+    public void deleteWaypoint(caeruleusTait.world.preview.domain.waypoint.Waypoint waypoint) {
+        worldPreview.waypointStore().remove(waypoint.id());
     }
 
     /** Wires cross-widget callbacks that depend on several groups being built. */
@@ -873,6 +888,11 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             WorldDataConfiguration worldDataConfiguration,
             @Nullable WorldCreationContext wcContext
     ) {
+        // World-scoped background tasks and their captured context snapshots
+        // are about to be invalidated: cancel exports/searches and detach the
+        // analysis session BEFORE the old worldgen context is torn down, so
+        // stale work can neither run on nor write into the new world.
+        invalidateWorldScopedTasks();
         workManager.cancel();
         Runnable changeWorldGenState = () -> {
             workManager.changeWorldGenState(
@@ -905,6 +925,35 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 
         // Do NOT run this in the lambda because this call might change screens
         workManager.postChangeWorldGenState();
+    }
+
+    /**
+     * Cancels every background task bound to the outgoing worldgen context and
+     * drops its captured snapshots (sampler factories). Called on every world
+     * identity change, before the old context is cancelled.
+     */
+    private void invalidateWorldScopedTasks() {
+        // Drop the stale factories first so no new task can capture them.
+        terrainExportSampler = null;
+        seedSearchFactory = null;
+        samplerContextEpoch = -1;
+        terrainExportController.cancel();
+        seedSearchService.cancel();
+        closeActiveAnalysisSession();
+    }
+
+    /** Closes and forgets the currently owned analysis session, if any. */
+    private void closeActiveAnalysisSession() {
+        AnalysisSession session = activeAnalysisSession;
+        activeAnalysisSession = null;
+        activeAnalysisSessionEpoch = -1;
+        if (session != null) {
+            try {
+                session.close();
+            } catch (Throwable ignored) {
+                // Never block world switches on session cleanup.
+            }
+        }
     }
 
     private void setupSearchContext() {
@@ -981,6 +1030,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 terrainQuartY,
                 net.minecraft.core.QuartPos.fromBlock(blockZ),
                 terrainSampler);
+
+        // Remember which worldgen epoch these snapshots belong to; background
+        // tasks started later verify this before they run or publish.
+        samplerContextEpoch = workManager.epoch();
     }
 
     public void onBiomeRightClick(BiomesList.BiomeEntry entry) {
@@ -1831,6 +1884,7 @@ public void onScreenReentry() {
     public void close() {
         seedSearchService.close();
         terrainExportController.close();
+        closeActiveAnalysisSession();
         workManager.cancel();
         previewDisplay.close();
         freeStructureIcons();
@@ -1935,12 +1989,30 @@ public void onScreenReentry() {
     public void openAnalysisScreen() {
         if (!workManager.isSetup()) return;
         try {
+            // Re-attach to the running/paused session when it still belongs to
+            // this exact worldgen state (same epoch, seed and dimension).
+            AnalysisSession existing = activeAnalysisSession;
+            if (existing != null) {
+                AnalysisRequest existingRequest = existing.request();
+                var currentContext = workManager.worldgenContext();
+                boolean sameWorld = activeAnalysisSessionEpoch == workManager.epoch()
+                        && currentContext != null
+                        && existingRequest.seed() == currentContext.seed()
+                        && existingRequest.dimension().equals(currentContext.dimension());
+                if (sameWorld) {
+                    minecraft.setScreen(new WorldAnalysisScreen(parentScreen, existing, this, existingRequest.region()));
+                    return;
+                }
+                closeActiveAnalysisSession();
+            }
             BlockPos center = previewDisplay.center();
             int radius = Math.max(1, Math.min(RegionSelector.MAX_DIMENSION / 2, previewDisplay.getWidth() * 4));
             AnalysisRequest request = workManager.analysisRequest(
                     new BlockPos(center.getX() - radius, center.getY(), center.getZ() - radius),
                     new BlockPos(center.getX() + radius, center.getY(), center.getZ() + radius));
             AnalysisSession session = workManager.openAnalysisSession(request);
+            activeAnalysisSession = session;
+            activeAnalysisSessionEpoch = workManager.epoch();
             minecraft.setScreen(new WorldAnalysisScreen(parentScreen, session, this, request.region()));
         } catch (RuntimeException ignored) {
             openAnalysis.active = false;
@@ -1982,8 +2054,38 @@ public void onScreenReentry() {
     public void startTerrainExport(TerrainExportSpec spec) {
         if (terrainExportController.isRunning()) return;
         if (terrainExportSampler == null) return;
+        // Lineage guard: the sampler was built for a specific worldgen context.
+        // After a seed/dimension/generator switch the old sampler must not
+        // produce exports labeled with (or sampling) the new world.
+        if (samplerContextEpoch != workManager.epoch()) {
+            LOGGER.warn("Terrain export rejected: worldgen context changed since the sampler was built");
+            return;
+        }
         Path outputDir = worldPreview.configDir().resolve("terrain_exports");
-        terrainExportController.start(spec, terrainExportSampler, outputDir);
+        terrainExportController.start(spec, terrainExportSampler, heightProbe(), exportOrigin(), outputDir);
+    }
+
+    /** Real-height probe over the live preview storage; null when unavailable. */
+    @Nullable
+    private TerrainMapExporter.HeightProbe heightProbe() {
+        var storage = workManager.previewStorage();
+        if (storage == null) {
+            return null;
+        }
+        return (blockX, blockZ) -> {
+            short h = storage.getRawData4(
+                    net.minecraft.core.QuartPos.fromBlock(blockX), 0,
+                    net.minecraft.core.QuartPos.fromBlock(blockZ),
+                    caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_HEIGHT);
+            return h == Short.MIN_VALUE ? null : (int) h;
+        };
+    }
+
+    /** World lineage written into terrain export metadata. */
+    @Nullable
+    private TerrainMapExporter.ExportContext exportOrigin() {
+        var ctx = workManager.worldgenContext();
+        return ctx == null ? null : new TerrainMapExporter.ExportContext(Long.toString(ctx.seed()), ctx.dimension());
     }
 
     public void cancelTerrainExport() {
@@ -2099,6 +2201,16 @@ public void onScreenReentry() {
     /** Whether the current screen allows changing the seed. */
     public boolean seedIsEditable() {
         return dataProvider.seedIsEditable();
+    }
+
+    /**
+     * Fingerprint of the live worldgen context, or null before setup. Result
+     * lineage checks (search hits, waypoints) compare against this value.
+     */
+    @Nullable
+    public String currentContextFingerprint() {
+        var ctx = workManager.worldgenContext();
+        return ctx != null ? ctx.fingerprint() : null;
     }
 
     /**
