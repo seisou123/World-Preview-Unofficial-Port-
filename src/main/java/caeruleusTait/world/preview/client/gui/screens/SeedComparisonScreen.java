@@ -48,7 +48,7 @@ public final class SeedComparisonScreen extends Screen {
     /** Sampling height, in blocks. */
     private static final int SAMPLE_Y = 64;
     /** Maximum number of compared seeds (current seed first). */
-    private static final int MAX_SEEDS = 4;
+    private static final int MAX_SEEDS = 8;
     /** Maximum characters of a seed string shown in the table. */
     private static final int MAX_SEED_CHARS = 16;
 
@@ -58,6 +58,8 @@ public final class SeedComparisonScreen extends Screen {
 
     private final Screen parent;
     private final PreviewContainer container;
+    /** Worldgen epoch captured at construction; comparison aborts when it changes. */
+    private final long epochAtOpen;
 
     /** Seeds to compare, in display order (current seed first), with a stable row color. */
     private final List<SeedLine> seedLines;
@@ -102,12 +104,33 @@ public final class SeedComparisonScreen extends Screen {
     }
 
     public SeedComparisonScreen(Screen parent, PreviewContainer container) {
+        this(parent, container, List.of());
+    }
+
+    /**
+     * Opens the comparison with a preferred seed list (e.g. search hits carried
+     * over with their lineage). Preferred seeds come first, then the current
+     * seed, then saved seeds; duplicates collapse and the list is capped.
+     */
+    public SeedComparisonScreen(Screen parent, PreviewContainer container, List<String> preferredSeeds) {
         super(WorldPreviewComponents.COMPARISON_TITLE);
         this.parent = parent;
         this.container = container;
+        this.epochAtOpen = container.workManager().epoch();
 
-        // Current seed first, then saved seeds; dedupe, preserve order, cap at MAX_SEEDS.
+        // Search hits first (they carry the context the player just searched),
+        // then the current seed, then saved seeds; dedupe, preserve order, cap.
         LinkedHashSet<String> uniqueSeeds = new LinkedHashSet<>();
+        if (preferredSeeds != null) {
+            for (String hit : preferredSeeds) {
+                if (uniqueSeeds.size() >= MAX_SEEDS) {
+                    break;
+                }
+                if (hit != null && !hit.isBlank()) {
+                    uniqueSeeds.add(hit.trim());
+                }
+            }
+        }
         String currentSeed = container.dataProvider().seed();
         if (currentSeed != null && !currentSeed.isBlank()) {
             uniqueSeeds.add(currentSeed);
@@ -230,6 +253,15 @@ public final class SeedComparisonScreen extends Screen {
         try {
             for (SeedLine line : lines) {
                 if (cancelled.get()) {
+                    return;
+                }
+                // Lineage guard: the comparison factory was captured for a
+                // specific worldgen context; once the context is rebuilt
+                // (seed/dimension/generator/compat change) its samplers are
+                // stale and must not produce rows for the new world.
+                if (container.workManager().epoch() != epochAtOpen) {
+                    caeruleusTait.world.preview.WorldPreview.LOGGER.info(
+                            "Seed comparison aborted: worldgen context changed since opening");
                     return;
                 }
                 ComparisonRow row = evaluateSeed(line, factory);

@@ -62,6 +62,13 @@ public final class AnalysisSession extends Session {
     private volatile boolean closed;
     private volatile boolean started;
 
+    // Result lineage: the worldgen epoch + identity short key that this session
+    // was created under. A mismatch against the live WorkManager epoch marks
+    // every result of this session as stale; consumers must refuse to publish,
+    // export or apply them into a new world.
+    private volatile long originEpoch = -1L;
+    private volatile String originIdentityKey;
+
     public AnalysisSession(AnalysisRequest request, TaskScheduler scheduler,
                            PreviewStorage storage, Sampler sampler) {
         this(request, scheduler, storage, sampler, null, false);
@@ -107,35 +114,103 @@ public final class AnalysisSession extends Session {
     public AnalysisSession(AnalysisRequest request, WorldgenContext context,
                            TaskScheduler scheduler, PreviewStorage storage,
                            PreviewData previewData, boolean ownsContext) throws java.io.IOException {
+        this(request, context, scheduler, storage, previewData, ownsContext, null);
+    }
+
+    /**
+     * @param facts optional read-only source of already-sampled biome/height
+     *              facts (typically the live preview storage). When a fact is
+     *              present for a sample position the sampler reuses it instead
+     *              of recomputing worldgen. Never written to.
+     */
+    public AnalysisSession(AnalysisRequest request, WorldgenContext context,
+                           TaskScheduler scheduler, PreviewStorage storage,
+                           PreviewData previewData, boolean ownsContext,
+                           @org.jetbrains.annotations.Nullable PreviewStorage facts) throws java.io.IOException {
         this(request, scheduler, storage, createContextSampler(request, context,
-                Objects.requireNonNull(previewData, "previewData")), ownsContext ? context : null, ownsContext);
+                Objects.requireNonNull(previewData, "previewData"), facts), ownsContext ? context : null, ownsContext);
     }
 
     private static Sampler createContextSampler(AnalysisRequest request, WorldgenContext context,
-                                                PreviewData previewData) {
+                                                PreviewData previewData,
+                                                @org.jetbrains.annotations.Nullable PreviewStorage facts) {
         // Reuse SampleUtils across samples on the same worker call chain, and keep BlockPos
         // allocations to one mutable instance to cut GC pressure on large analyses.
         return (x, z, y) -> {
-            SampleUtils utils = context.createSampleUtils();
-            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(x, y, z);
-            SampleUtils.BiomeResult result = utils.doSample(pos);
-            short biome = BiomeIdLookup.idFrom(previewData, result.biome());
+            short biome = Short.MIN_VALUE;
             short height = Short.MIN_VALUE;
+            // Fast path: reuse facts already sampled by the live preview (same
+            // seed & dimension). Biome/height are stored per quart, which is
+            // exactly the resolution worldgen defines them at, so any block
+            // coordinate inside the quart maps to the same value.
+            if (facts != null) {
+                biome = facts.getRawData4(
+                        net.minecraft.core.QuartPos.fromBlock(x),
+                        net.minecraft.core.QuartPos.fromBlock(y),
+                        net.minecraft.core.QuartPos.fromBlock(z),
+                        PreviewStorage.FLAG_BIOME);
+                if (request.includeHeight()) {
+                    height = facts.getRawData4(
+                            net.minecraft.core.QuartPos.fromBlock(x), 0,
+                            net.minecraft.core.QuartPos.fromBlock(z), PreviewStorage.FLAG_HEIGHT);
+                }
+            }
+
+            SampleUtils utils = null;
+            boolean needBiome = biome == Short.MIN_VALUE;
+            boolean needHeight = request.includeHeight() && height == Short.MIN_VALUE;
+            boolean needIntersection = request.includeIntersections();
+            if (needBiome || needHeight || needIntersection) {
+                utils = context.createSampleUtils();
+            }
             Short intersection = null;
-            if (request.includeHeight()) {
-                height = utils.doHeightSlow(pos.set(x, 0, z));
+            short[] noise = null;
+            if (utils != null) {
+                BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(x, y, z);
+                if (needBiome) {
+                    SampleUtils.BiomeResult result = utils.doSample(pos);
+                    biome = BiomeIdLookup.idFrom(previewData, result.biome());
+                    noise = result.noiseResult();
+                }
+                if (needHeight) {
+                    height = utils.doHeightSlow(pos.set(x, 0, z));
+                }
+                if (needIntersection) {
+                    intersection = (short) utils.doIntersectionsSlow(pos.set(x, 0, z))
+                            .getBlock(request.y())
+                            .getMapColor(null, pos.set(x, request.y(), z)).id;
+                }
+            } else if (needBiome) {
+                // Unreachable: needBiome implies utils != null.
+                throw new IllegalStateException("missing biome sample without sampler");
             }
-            if (request.includeIntersections()) {
-                intersection = (short) utils.doIntersectionsSlow(pos.set(x, 0, z))
-                        .getBlock(request.y())
-                        .getMapColor(null, pos.set(x, request.y(), z)).id;
-            }
-            return new Sample(biome, height, result.noiseResult(), intersection);
+            return new Sample(biome, height, noise, intersection);
         };
     }
 
     public AnalysisRequest request() {
         return request;
+    }
+
+    /** Attaches result lineage (worldgen epoch + identity short key). */
+    public void attachOrigin(long epoch, String identityKey) {
+        this.originEpoch = epoch;
+        this.originIdentityKey = identityKey;
+    }
+
+    /** The worldgen epoch this session was created under, or -1 when unknown. */
+    public long originEpoch() {
+        return originEpoch;
+    }
+
+    /** Short identity key of the worldgen context this session was created under, or null. */
+    public String originIdentityKey() {
+        return originIdentityKey;
+    }
+
+    /** True when this session's results belong to a worldgen context that no longer exists. */
+    public boolean isStale(long currentEpoch) {
+        return originEpoch >= 0 && originEpoch != currentEpoch;
     }
 
     public AnalysisProgress progress() {

@@ -36,8 +36,21 @@ public class PreviewBlock {
         if (flags == FLAG_STRUCT_START) {
             return new PreviewSectionStructure(quartX, quartZ);
         }
-        final int quartStride = WorldPreview.get().renderSettings().quartStride();
-        if (WorldPreview.get().cfg().enableCompression) {
+        // Resolve rendering-derived section resolution from the global mod
+        // instance. In headless environments (unit tests, tools) there is no
+        // mod instance; fall back to full resolution and no compression so the
+        // storage stays usable without a Fabric runtime.
+        final WorldPreview preview = WorldPreview.get();
+        final int quartStride;
+        final boolean compression;
+        if (preview != null && preview.renderSettings() != null && preview.cfg() != null) {
+            quartStride = preview.renderSettings().quartStride();
+            compression = preview.cfg().enableCompression;
+        } else {
+            quartStride = 1;
+            compression = false;
+        }
+        if (compression) {
             return switch (quartStride) {
                 case 1 -> new PreviewSectionCompressed.Full(quartX, quartZ);
                 case 2 -> new PreviewSectionCompressed.Half(quartX, quartZ);

@@ -101,11 +101,11 @@ task devJar(type: Jar) {
 	}
 }
 
-artifacts {
-	archives devJar
+// The default build produces the main remapped JAR, the un-remapped dev JAR
+// and the sources jar (via withSourcesJar). sourcesZip stays on-demand.
+tasks.named('build') {
+	dependsOn 'devJar'
 }
-
-// Source ZIP archive (contains all Java sources + resources for reference)
 tasks.register('sourcesZip', Zip) {
 	description = 'Bundles all source files into a ZIP archive.'
 	group = 'build'
@@ -121,8 +121,6 @@ tasks.register('sourcesZip', Zip) {
 		rename { "${it}_${project.base.archivesName.get()}" }
 	}
 }
-
-build.dependsOn sourcesZip
 
 // configure the maven publication
 publishing {

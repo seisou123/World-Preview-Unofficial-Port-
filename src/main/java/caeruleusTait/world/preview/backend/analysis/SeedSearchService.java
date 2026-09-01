@@ -199,10 +199,10 @@ public class SeedSearchService implements AutoCloseable {
                         task.consecutiveFailures.set(0);
                         if (request.maxHits() == 1) {
                             // Hit!
-                            reportHit(task, candidateSeed, evaluation.score());
+                            reportHit(task, candidateSeed, evaluation.score(), evaluation.structurePos());
                             return;
                         }
-                        task.hits.add(new SeedSearchResult.Ranked(candidateSeed, evaluation.score()));
+                        task.hits.add(new SeedSearchResult.Ranked(candidateSeed, evaluation.score(), evaluation.structurePos()));
                     } else {
                         // Sampled successfully but no hit, reset consecutive failure count
                         task.consecutiveFailures.set(0);
@@ -237,7 +237,9 @@ public class SeedSearchService implements AutoCloseable {
         }
         hits.sort(Comparator.comparingDouble(SeedSearchResult.Ranked::score).reversed());
         int limit = Math.min(hits.size(), task.request.maxHits());
-        return new SeedSearchResult.Multiple(hits.subList(0, limit));
+        // Lineage: multi-hit results carry the originating request so consumers
+        // can verify the context fingerprint and reuse the search parameters.
+        return new SeedSearchResult.Multiple(hits.subList(0, limit), task.request);
     }
 
     /**
@@ -256,24 +258,31 @@ public class SeedSearchService implements AutoCloseable {
             if (task.cancelled.get()) return null;
 
             double score = 0.0;
+            BlockPos structurePos = null;
 
             for (SearchCriterion criterion : request.criteria()) {
                 if (task.cancelled.get()) return null;
-                Double criterionScore = switch (criterion) {
-                    case SearchCriterion.Biome biome ->
-                            evaluateBiome(biome, request, samplePoints, sampler);
-                    case SearchCriterion.BiomeGroup biomeGroup ->
-                            evaluateBiomeGroup(biomeGroup, request, samplePoints, sampler);
-                    case SearchCriterion.Structure structure ->
-                            evaluateStructure(structure, request, sampler);
-                };
-                if (criterionScore == null) {
-                    return null;
+                switch (criterion) {
+                    case SearchCriterion.Biome biome -> {
+                        Double criterionScore = evaluateBiome(biome, request, samplePoints, sampler);
+                        if (criterionScore == null) return null;
+                        score += criterionScore;
+                    }
+                    case SearchCriterion.BiomeGroup biomeGroup -> {
+                        Double criterionScore = evaluateBiomeGroup(biomeGroup, request, samplePoints, sampler);
+                        if (criterionScore == null) return null;
+                        score += criterionScore;
+                    }
+                    case SearchCriterion.Structure structure -> {
+                        StructureEvaluation evaluation = evaluateStructure(structure, request, sampler);
+                        if (evaluation == null) return null;
+                        score += evaluation.score();
+                        structurePos = evaluation.position();
+                    }
                 }
-                score += criterionScore;
             }
 
-            return new SeedEvaluation(seed, score);
+            return new SeedEvaluation(seed, score, structurePos);
         }
     }
 
@@ -367,11 +376,11 @@ public class SeedSearchService implements AutoCloseable {
     /**
      * Checks a structure criterion via the sampler's {@link StructureProbe} capability.
      *
-     * @return score contribution, or {@code null} when the criterion fails or cannot be probed
+     * @return score contribution plus the located structure position, or {@code null} when the criterion fails or cannot be probed
      */
     @Nullable
-    private static Double evaluateStructure(SearchCriterion.Structure criterion, SeedSearchRequest request,
-                                            BiomeSampler sampler) throws Exception {
+    private static StructureEvaluation evaluateStructure(SearchCriterion.Structure criterion, SeedSearchRequest request,
+                                                         BiomeSampler sampler) throws Exception {
         if (!(sampler instanceof StructureProbe probe)) {
             LOGGER.warn("Structure criterion {} ignored: sampler does not support structure probing", criterion.structure());
             return null;
@@ -384,8 +393,12 @@ public class SeedSearchService implements AutoCloseable {
         double dz = found.getZ() - request.center().getZ();
         double distance = Math.sqrt(dx * dx + dz * dz);
         // Score 50..100: closer structures rank higher
-        return 50.0 + 50.0 * (1.0 - Math.min(1.0, distance / criterion.maxDistanceBlocks()));
+        double score = 50.0 + 50.0 * (1.0 - Math.min(1.0, distance / criterion.maxDistanceBlocks()));
+        return new StructureEvaluation(score, found);
     }
+
+    /** Structure criterion outcome: score contribution plus located position. */
+    private record StructureEvaluation(double score, BlockPos position) {}
 
     /**
      * Generate sample point list based on the current viewport.
@@ -415,7 +428,7 @@ public class SeedSearchService implements AutoCloseable {
     /**
      * Report hit result on the main thread and validate fingerprint.
      */
-    private void reportHit(SearchTask task, long seed, double score) {
+    private void reportHit(SearchTask task, long seed, double score, @Nullable BlockPos structurePos) {
         minecraftExecute(() -> {
             // Validate: is the task token still valid?
             if (currentTask != task || task.cancelled.get()) {
@@ -432,7 +445,8 @@ public class SeedSearchService implements AutoCloseable {
             if (task.onHit != null) {
                 task.onHit.accept(seed);
             }
-            task.onComplete.accept(new SeedSearchResult.Hit(seed, score));
+            // Lineage: the hit keeps the originating request + structure position.
+            task.onComplete.accept(new SeedSearchResult.Hit(seed, score, task.request, structurePos));
         });
     }
 
@@ -461,7 +475,7 @@ public class SeedSearchService implements AutoCloseable {
     // ========== Internal types ==========
 
     /** Seed evaluation outcome: non-null when all criteria passed. */
-    private record SeedEvaluation(long seed, double score) {}
+    private record SeedEvaluation(long seed, double score, @Nullable BlockPos structurePos) {}
 
     /** Search task state */
     private static class SearchTask {
