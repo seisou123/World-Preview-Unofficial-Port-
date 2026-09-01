@@ -4,6 +4,7 @@ import caeruleusTait.world.preview.util.AtomicFiles;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -43,7 +44,21 @@ public final class AnalysisReportExporter {
             OptionalDouble standardDeviation,
             OptionalDouble meanSlope,
             OptionalDouble maxSlope,
-            double flatRatio) {
+            double flatRatio,
+            @Nullable String contextId) {
+
+        /** Legacy constructor without lineage info. */
+        public ReportInput(
+                String seed, String dimension, String regionDescription,
+                long expectedSamples, long presentSamples, double coverage,
+                LinkedHashMap<String, long[]> biomeTable,
+                OptionalInt minHeight, OptionalInt maxHeight,
+                OptionalDouble meanHeight, OptionalDouble medianHeight, OptionalDouble standardDeviation,
+                OptionalDouble meanSlope, OptionalDouble maxSlope, double flatRatio) {
+            this(seed, dimension, regionDescription, expectedSamples, presentSamples, coverage,
+                    biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
+                    meanSlope, maxSlope, flatRatio, null);
+        }
 
         public ReportInput {
             seed = seed == null ? "unknown" : seed;
@@ -57,6 +72,7 @@ public final class AnalysisReportExporter {
             standardDeviation = standardDeviation == null ? OptionalDouble.empty() : standardDeviation;
             meanSlope = meanSlope == null ? OptionalDouble.empty() : meanSlope;
             maxSlope = maxSlope == null ? OptionalDouble.empty() : maxSlope;
+            contextId = contextId == null ? "unknown" : contextId;
         }
 
         private static LinkedHashMap<String, long[]> copyBiomeTable(LinkedHashMap<String, long[]> source) {
@@ -102,6 +118,9 @@ public final class AnalysisReportExporter {
         JsonObject root = new JsonObject();
         root.addProperty("seed", input.seed());
         root.addProperty("dimension", input.dimension());
+        // Lineage: identity of the worldgen context the metrics were computed
+        // under, so a report can never be mistaken for another world's data.
+        root.addProperty("contextId", input.contextId());
         root.addProperty("region", input.regionDescription());
         root.addProperty("coverage", input.coverage());
 

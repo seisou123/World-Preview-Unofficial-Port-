@@ -32,10 +32,11 @@ class MapInteractionController {
     private java.util.function.Consumer<BlockPos> spawnPinCallback = null;
 
     // === Waypoints (v1.5) ===
-    /** One-shot placement mode: the next left click places a waypoint. */
+    /** One-shot mode: a left click on an existing waypoint opens its editor;
+     *  otherwise it places a new waypoint. */
     private boolean waypointMode = false;
     private java.util.function.Consumer<BlockPos> waypointPlaceCallback = null;
-    private java.util.function.Consumer<Waypoint> waypointDeleteCallback = null;
+    private java.util.function.Consumer<Waypoint> waypointEditCallback = null;
 
     // === Measure tool (v1.5) ===
     private boolean measureMode = false;
@@ -82,8 +83,8 @@ class MapInteractionController {
         this.waypointPlaceCallback = callback;
     }
 
-    void setWaypointDeleteCallback(java.util.function.Consumer<Waypoint> callback) {
-        this.waypointDeleteCallback = callback;
+    void setWaypointEditCallback(java.util.function.Consumer<Waypoint> callback) {
+        this.waypointEditCallback = callback;
     }
 
     // === Measure tool API ===
@@ -155,80 +156,16 @@ class MapInteractionController {
             host.playDownSound();
             return true;
         }
-        return false;
-    }
+        // Right-click actions live here, not in onClick(): AbstractWidget only
+        // forwards left clicks (isValidClickButton admits button 0), so any
+        // right-click branch placed in onClick() is unreachable dead code.
 
-    void onClick(MouseButtonEvent event, boolean doubleClick) {
-        // Fix: set focus so Screen dispatches onDrag to this widget
-        if (host.minecraft().gui.screen() != null) {
-            host.minecraft().gui.screen().setFocused(host);
+        // Measure tool: right click clears both points.
+        if (measureMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
+            measureA = null;
+            measureB = null;
+            return true;
         }
-
-        // Spawn pin placement
-        if (spawnPinMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
-                BlockPos pos = host.screenToBlock(event.x(), event.y());
-                if (pos != null) {
-                    spawnPinPos = pos;
-                    if (spawnPinCallback != null) {
-                        spawnPinCallback.accept(pos);
-                    }
-                    host.playDownSound();
-                }
-                return;
-            } else if (event.button() == 1) {
-                removeSpawnPin();
-                host.playDownSound();
-                return;
-            }
-        }
-
-        // Waypoint placement (one-shot): left click places and exits the
-        // mode; right click deletes the waypoint under the cursor.
-        if (waypointMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
-                BlockPos pos = host.screenToBlock(event.x(), event.y());
-                if (pos != null && waypointPlaceCallback != null) {
-                    waypointPlaceCallback.accept(pos);
-                }
-                waypointMode = false;
-                host.playDownSound();
-                return;
-            } else if (event.button() == 1) {
-                Waypoint hit = host.waypointAt(event.x(), event.y());
-                if (hit != null && waypointDeleteCallback != null) {
-                    waypointDeleteCallback.accept(hit);
-                }
-                host.playDownSound();
-                return;
-            }
-        }
-
-        // Measure tool: first click sets point A, second click sets point B
-        // (restarting from A on the next click). Right click clears.
-        if (measureMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
-                BlockPos pos = host.screenToBlock(event.x(), event.y());
-                if (pos != null) {
-                    if (measureA == null || measureB != null) {
-                        measureA = pos;
-                        measureB = null;
-                    } else {
-                        measureB = pos;
-                    }
-                }
-                return;
-            } else if (event.button() == 1) {
-                measureA = null;
-                measureB = null;
-                return;
-            }
-        }
-
-        clicked = true;
-        host.throttle.touchDragRenderTimer();
-        clickMouseX = event.x();
-        clickMouseY = event.y();
 
         // Copy coordinates on right click:
         // - Ctrl+Right click (or always if height unavailable): plain "x y z" / "x ~ z"
@@ -253,7 +190,73 @@ class MapInteractionController {
                         coordinates
                 ));
             }
+            return true;
         }
+        return false;
+    }
+
+    void onClick(MouseButtonEvent event, boolean doubleClick) {
+        // Fix: set focus so Screen dispatches onDrag to this widget
+        if (host.minecraft().gui.screen() != null) {
+            host.minecraft().gui.screen().setFocused(host);
+        }
+
+        // Spawn pin placement
+        if (spawnPinMode && host.widgetIsMouseOver(event.x(), event.y())) {
+            if (event.button() == 0) {
+                BlockPos pos = host.screenToBlock(event.x(), event.y());
+                if (pos != null) {
+                    spawnPinPos = pos;
+                    if (spawnPinCallback != null) {
+                        spawnPinCallback.accept(pos);
+                    }
+                    host.playDownSound();
+                }
+                return;
+            }
+        }
+
+        // Waypoint placement (one-shot): a left click on an existing waypoint
+        // opens its editor instead of placing a duplicate. Either way the mode
+        // exits after the click.
+        if (waypointMode && host.widgetIsMouseOver(event.x(), event.y())) {
+            if (event.button() == 0) {
+                BlockPos pos = host.screenToBlock(event.x(), event.y());
+                if (pos != null) {
+                    Waypoint hit = host.waypointAt(event.x(), event.y());
+                    if (hit != null && waypointEditCallback != null) {
+                        waypointEditCallback.accept(hit);
+                    } else if (waypointPlaceCallback != null) {
+                        waypointPlaceCallback.accept(pos);
+                    }
+                }
+                waypointMode = false;
+                host.playDownSound();
+                return;
+            }
+        }
+
+        // Measure tool: first click sets point A, second click sets point B
+        // (restarting from A on the next click). Right click clears.
+        if (measureMode && host.widgetIsMouseOver(event.x(), event.y())) {
+            if (event.button() == 0) {
+                BlockPos pos = host.screenToBlock(event.x(), event.y());
+                if (pos != null) {
+                    if (measureA == null || measureB != null) {
+                        measureA = pos;
+                        measureB = null;
+                    } else {
+                        measureB = pos;
+                    }
+                }
+                return;
+            }
+        }
+
+        clicked = true;
+        host.throttle.touchDragRenderTimer();
+        clickMouseX = event.x();
+        clickMouseY = event.y();
     }
 
     void onDrag(MouseButtonEvent event, double dragX, double dragY) {
