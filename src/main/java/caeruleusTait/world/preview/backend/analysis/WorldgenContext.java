@@ -34,6 +34,7 @@ public final class WorldgenContext implements AutoCloseable {
     private volatile SampleUtils sampleUtils;
     private volatile boolean ownsSampleUtils = true;
     private volatile ChunkGeneratorAdapter chunkGeneratorAdapter;
+    private volatile WorldIdentity identity;
 
     public WorldgenContext(
             WorldOptions worldOptions,
@@ -123,6 +124,67 @@ public final class WorldgenContext implements AutoCloseable {
 
     public String fingerprint() {
         return Long.toHexString(seed()) + ":" + dimension() + ":" + levelStem.generator().getClass().getName();
+    }
+
+    /**
+     * Full identity of this world generation configuration (seed, dimension,
+     * generator, datapacks, biome/structure registry layout and compat
+     * configuration). Computed lazily on first use and cached; the registry
+     * digest walks the biome and structure registries once.
+     */
+    public WorldIdentity identity() {
+        WorldIdentity id = identity;
+        if (id == null) {
+            synchronized (this) {
+                id = identity;
+                if (id == null) {
+                    identity = id = computeIdentity();
+                }
+            }
+        }
+        return id;
+    }
+
+    private WorldIdentity computeIdentity() {
+        String registryDigest = computeRegistryDigest();
+        String compatProfile;
+        try {
+            caeruleusTait.world.preview.WorldPreview preview = caeruleusTait.world.preview.WorldPreview.get();
+            caeruleusTait.world.preview.WorldPreviewConfig cfg = preview != null ? preview.cfg() : null;
+            compatProfile = cfg == null ? "n/a"
+                    : (cfg.autoDetectMods ? "auto" : "manual")
+                        + "|" + cfg.activeCompatProfile
+                        + "|" + (cfg.disabledCompatMods == null ? "" :
+                            cfg.disabledCompatMods.stream().sorted().reduce((a, b) -> a + "," + b).orElse(""));
+        } catch (Exception e) {
+            compatProfile = "n/a";
+        }
+        return WorldIdentity.of(
+                seed(),
+                dimension(),
+                levelStem.generator().getClass().getName(),
+                String.valueOf(worldDataConfiguration.dataPacks()),
+                registryDigest,
+                compatProfile
+        );
+    }
+
+    /**
+     * Compact digest of the biome and structure registry key sets. Registry
+     * access is essential but must never break context setup, so any failure
+     * degrades to "none" (which only weakens cache-key precision).
+     */
+    private String computeRegistryDigest() {
+        try {
+            var composite = registryAccess.compositeAccess();
+            String biomes = composite.lookupOrThrow(net.minecraft.core.registries.Registries.BIOME)
+                    .keySet().stream().sorted().map(Object::toString).reduce((a, b) -> a + "," + b).orElse("");
+            String structures = composite.lookupOrThrow(net.minecraft.core.registries.Registries.STRUCTURE)
+                    .keySet().stream().sorted().map(Object::toString).reduce((a, b) -> a + "," + b).orElse("");
+            return Integer.toHexString(biomes.hashCode()) + ":" + Integer.toHexString(structures.hashCode());
+        } catch (Exception e) {
+            return "none";
+        }
     }
 
     public WorldOptions worldOptions() {

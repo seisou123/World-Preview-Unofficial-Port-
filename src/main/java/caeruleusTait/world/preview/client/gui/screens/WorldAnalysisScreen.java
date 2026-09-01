@@ -11,7 +11,6 @@ import caeruleusTait.world.preview.backend.analysis.ProfileResult;
 import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.analysis.RegionMetrics;
 import caeruleusTait.world.preview.backend.analysis.SpawnAdvisor;
-import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import caeruleusTait.world.preview.backend.export.AnalysisReportExporter;
 import caeruleusTait.world.preview.backend.export.AnalysisReportExporter.ReportInput;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
@@ -69,6 +68,8 @@ public final class WorldAnalysisScreen extends Screen {
     private Button closeButton;
     private Region region;
     private boolean closed;
+    /** True once the worldgen context this session belongs to has been replaced. */
+    private boolean stale;
     private int profileRefreshCooldown;
     private boolean lastRunning;
     private Component exportStatusMessage;
@@ -122,6 +123,9 @@ public final class WorldAnalysisScreen extends Screen {
     }
 
     private void startAnalysis() {
+        if (stale) {
+            return;
+        }
         session.start();
         // A fresh run invalidates the previously computed spawn/top-biome data.
         analysisPanel.setSpawnAnalysis(null, List.of());
@@ -163,6 +167,13 @@ public final class WorldAnalysisScreen extends Screen {
         if (metrics.presentSamples() <= 0 || metrics.biomeCounts().isEmpty()) {
             return;
         }
+        // Lineage gate: reports may only be produced from metrics that were
+        // computed under the currently active worldgen context.
+        if (stale || session.isStale(previewContainer.workManager().epoch())) {
+            LOGGER.warn("Analysis report export rejected: session belongs to a replaced worldgen context");
+            showExportStatus(Component.translatable("world_preview.analysis.export.stale"), 0xFFFF5555);
+            return;
+        }
         try {
             ReportInput input = buildReportInput(metrics);
             Path outputDir = WorldPreview.get().configDir().resolve("reports");
@@ -198,16 +209,18 @@ public final class WorldAnalysisScreen extends Screen {
         String regionDescription = region.minX() + "," + region.minZ()
                 + " -> " + region.maxX() + "," + region.maxZ();
 
-        WorldgenContext context = previewContainer.worldPreview().workManager().worldgenContext();
-        String seed = context != null ? Long.toString(context.seed())
-                : Long.toString(session.request().seed());
-        String dimension = context != null ? context.dimension() : session.request().dimension();
+        // Lineage: report the seed/dimension/context the analysis itself was
+        // created with. Reading the live context here would mislabel metrics
+        // when the world changed after the analysis ran.
+        String seed = Long.toString(session.request().seed());
+        String dimension = session.request().dimension();
+        String contextId = session.originIdentityKey() != null ? session.originIdentityKey() : "unknown";
 
         return new ReportInput(seed, dimension, regionDescription,
                 metrics.expectedSamples(), metrics.presentSamples(), metrics.coverage(),
                 biomeTable, metrics.minHeight(), metrics.maxHeight(), metrics.meanHeight(),
                 metrics.medianHeight(), metrics.standardDeviation(), metrics.meanSlope(),
-                metrics.maxSlope(), metrics.flatRatio());
+                metrics.maxSlope(), metrics.flatRatio(), contextId);
     }
 
     private String buildReportBaseName(ReportInput input) {
@@ -368,6 +381,24 @@ public final class WorldAnalysisScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        // Stale detection: the session keeps running after the screen closes;
+        // when the worldgen context it was created under has been replaced,
+        // cancel it and lock the controls instead of letting it write results
+        // (or reports) belonging to another world.
+        if (!stale && session.isStale(previewContainer.workManager().epoch())) {
+            stale = true;
+            session.cancel();
+            analysisPanel.setMetrics(session.result());
+            startButton.active = false;
+            cancelButton.active = false;
+            exportReportButton.active = false;
+            showExportStatus(Component.translatable("world_preview.analysis.stale"), 0xFFFF5555);
+            return;
+        }
+        if (stale) {
+            return;
+        }
+
         // Lightweight control-state update every tick.
         boolean running = session.isRunning();
         if (running != lastRunning) {
@@ -458,10 +489,8 @@ public final class WorldAnalysisScreen extends Screen {
         if (minecraft != null) {
             minecraft.setScreen(parent);
         }
-        try {
-            session.close();
-        } catch (Throwable ignored) {
-            // Ignore close errors so the screen still transitions back.
-        }
+        // Detach only: the session is owned by the PreviewContainer so a
+        // running analysis keeps going in the background and is re-attached
+        // (or cancelled on a world change) by the container.
     }
 }

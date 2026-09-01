@@ -141,4 +141,6 @@ tasks.register('devJar', Jar) {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
-build.dependsOn 'sourcesJar', 'sourceZip', 'devJar'
+// The default build produces the main JAR, the dev JAR and the sources jar
+// (via withSourcesJar). sourceZip stays on-demand.
+build.dependsOn 'sourcesJar', 'devJar'
