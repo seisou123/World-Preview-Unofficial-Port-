@@ -16,6 +16,7 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.LongSupplier;
 
 import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
@@ -32,6 +33,13 @@ public class WorkBatch {
 
     // TaskGroup adapter: wraps the batch's work units for group-level operations.
     private final TaskGroup taskGroup;
+
+    // Write-side staleness guard (attached by WorkManager): results computed
+    // for a worldgen context that has since been replaced (seed/dimension/
+    // generator switch or shutdown) must never be written into the new
+    // context's storage.
+    private LongSupplier epochSupplier;
+    private long epochAtQueue = Long.MIN_VALUE;
 
     public WorkBatch(List<WorkUnit> workUnits, Object completedSynchro, PreviewData previewData) {
         this.workUnits = workUnits;
@@ -53,6 +61,17 @@ public class WorkBatch {
         taskGroup.cancelAll();
     }
 
+    /** Attaches the write-side epoch guard. Called by WorkManager before submission. */
+    public void attachEpochGuard(LongSupplier epochSupplier, long epochAtQueue) {
+        this.epochSupplier = epochSupplier;
+        this.epochAtQueue = epochAtQueue;
+    }
+
+    /** True when the worldgen epoch changed since this batch was queued. */
+    private boolean isStale() {
+        return epochSupplier != null && epochSupplier.getAsLong() != epochAtQueue;
+    }
+
     public void process() {
         try {
             if (isCanceled()) {
@@ -66,6 +85,15 @@ public class WorkBatch {
                 if (isCanceled()) {
                     return;
                 }
+            }
+
+            // 1.5. Discard results captured by an obsolete worldgen context.
+            // Without this check a batch racing a world switch could write
+            // another seed's data into the new world's storage.
+            if (isStale()) {
+                LOGGER.info("Discarding {} work result(s): worldgen context changed since queueing",
+                        res.size());
+                return;
             }
 
             // 2. Apply results first — on failure, do NOT mark completed so work can be retried

@@ -32,8 +32,10 @@ import java.util.zip.ZipOutputStream;
  */
 public interface PreviewStorageCacheManager {
 
-    /** Bumped to 2 when Java serialization cache I/O was disabled for safety. */
-    int CACHE_FORMAT_VERSION = 2;
+    /** Bumped to 2 when Java serialization cache I/O was disabled for safety.
+     *  Bumped to 3 when the cache key gained world identity + sampling config
+     *  components (old v2 caches cannot prove which world they belong to). */
+    int CACHE_FORMAT_VERSION = 3;
 
     /** Zip entry name for the binary payload. */
     String CACHE_ZIP_ENTRY = "bin";
@@ -54,9 +56,30 @@ public interface PreviewStorageCacheManager {
         flags |= (settings.samplerType.ordinal() & 0b1111) << 4;
         flags |= (PreviewSection.SHIFT & 0b1111) << 8;
         flags |= (PreviewBlock.PREVIEW_BLOCK_SHIFT & 0b1111) << 12;
-        flags |= cfg.enableCompression ? 1 << 16 : 0;
+        flags |= cfg.enableCompression ? 1L << 16 : 0;
+        // Sampling-config components: which noise channels exist and which
+        // height range was sampled are part of the data identity.
+        flags |= cfg.storeNoiseSamples ? 1L << 17 : 0;
+        flags |= (long) (Math.max(0, Math.min(255, cfg.heightmapMinY)) & 0xFF) << 18;
+        flags |= (long) (Math.max(0, Math.min(255, cfg.heightmapMaxY)) & 0xFF) << 26;
 
-        return String.format("%s-%d-%d", settings.dimension, settings.pixelsPerChunk(), flags)
+        // World-identity component: seed alone cannot prove cache ownership —
+        // the same seed with a different generator/datapack/registry layout
+        // (e.g. flat vs normal, mod list change) decodes biome ids differently.
+        // Prefer the live worldgen context identity; fall back to "" when the
+        // context is not available (identity unknown => new file on next store).
+        String identity = "";
+        try {
+            var workManager = worldPreview.workManager();
+            var context = workManager != null ? workManager.worldgenContext() : null;
+            if (context != null) {
+                identity = "-" + context.identity().shortKey();
+            }
+        } catch (Exception ignored) {
+            // Identity is best-effort; a cache miss is always safe.
+        }
+
+        return String.format("%s-%d-%d%s", settings.dimension, settings.pixelsPerChunk(), flags, identity)
                 .replace(":", "_")
                 .replace(";", "_")
                 .replace("/", "_")

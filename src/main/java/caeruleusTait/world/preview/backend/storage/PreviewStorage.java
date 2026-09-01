@@ -457,6 +457,15 @@ public class PreviewStorage {
      * The returned array is {minX, minZ, maxX, maxZ} in block coordinates.
      */
     public int[] sampledBounds(int y) {
+        return sampledBounds(y, FLAG_BIOME);
+    }
+
+    /**
+     * Channel-aware variant of {@link #sampledBounds(int)}: computes the
+     * bounds of the given channel (biome/height/noise/...) independently, so
+     * consumers never treat "biome sampled" as "every channel sampled".
+     */
+    public int[] sampledBounds(int y, long flags) {
         final int indexY = (y - yMin) >> Y_BLOCK_SHIFT;
         if (indexY < 0 || indexY >= blocks.length) {
             return null;
@@ -469,8 +478,8 @@ public class PreviewStorage {
         synchronized (blocks[indexY]) {
             for (var entry : blocks[indexY].long2ObjectEntrySet()) {
                 final long key = entry.getLongKey();
-                final long flags = (key >> FLAG_SHIFT) & FLAG_MASK;
-                if (flags != FLAG_BIOME) continue;
+                final long entryFlags = (key >> FLAG_SHIFT) & FLAG_MASK;
+                if (entryFlags != flags) continue;
 
                 final long sX = (key >> X_SHIFT) & XZ_MASK;
                 final long sZ = (key >> Z_SHIFT) & XZ_MASK;
@@ -506,6 +515,17 @@ public class PreviewStorage {
      * Returns the total number of sampled quart positions for the given y-layer.
      */
     public int sampledCount(int y) {
+        return sampledCount(y, FLAG_BIOME);
+    }
+
+    /**
+     * Channel-aware variant of {@link #sampledCount(int)}: counts sampled
+     * quart positions. Every section covers {@code SIZE * SIZE} quarts
+     * regardless of its storage resolution (compressed sections sub-sample
+     * the same area), so the count is the section count times the section
+     * area in quarts.
+     */
+    public int sampledCount(int y, long flags) {
         final int indexY = (y - yMin) >> Y_BLOCK_SHIFT;
         if (indexY < 0 || indexY >= blocks.length) {
             return 0;
@@ -514,11 +534,11 @@ public class PreviewStorage {
         synchronized (blocks[indexY]) {
             for (var entry : blocks[indexY].long2ObjectEntrySet()) {
                 final long key = entry.getLongKey();
-                final long flags = (key >> FLAG_SHIFT) & FLAG_MASK;
-                if (flags != FLAG_BIOME) continue;
+                final long entryFlags = (key >> FLAG_SHIFT) & FLAG_MASK;
+                if (entryFlags != flags) continue;
                 for (PreviewSection section : entry.getValue().sectionsRaw()) {
                     if (section == null) continue;
-                    count += section.size();
+                    count += PreviewSection.SIZE * PreviewSection.SIZE;
                 }
             }
         }

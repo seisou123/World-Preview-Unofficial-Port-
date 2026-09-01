@@ -11,6 +11,8 @@ import caeruleusTait.world.preview.client.gui.widgets.lists.BiomePickerList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.SearchResultsList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
+import caeruleusTait.world.preview.domain.waypoint.Waypoint;
+import caeruleusTait.world.preview.domain.waypoint.WaypointStore;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
@@ -72,6 +74,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private boolean showCaves = false;
     private final List<SearchResultsList.Row> hitRows = new ArrayList<>();
+    /** The latest finished result with its lineage, kept for chained actions. */
+    @Nullable private SeedSearchResult currentResult;
     private String statusText = "";
     private boolean searching = false;
     /**
@@ -163,8 +167,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         minAreaSlider = new IntSlider(0, 0, 150, 20,
                 WorldPreviewComponents.SEARCH_MIN_AREA, 0, 100, 1,
                 container.worldPreview().cfg().searchMinAreaPercent);
+        // Config wiring: searchMaxDistance (previously stored but unread)
+        // pre-seeds the biome distance slider; 0 keeps the unlimited default.
         biomeDistanceSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_BIOME_DISTANCE, 0, 4096, 64, 0);
+                WorldPreviewComponents.SEARCH_BIOME_DISTANCE, 0, 4096, 64,
+                Math.max(0, container.worldPreview().cfg().searchMaxDistance));
         biomeDistanceSlider.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_BIOME_DISTANCE_TOOLTIP));
         structureDistanceSlider = new IntSlider(0, 0, 150, 20,
                 WorldPreviewComponents.SEARCH_STRUCTURE_DISTANCE, 128, 8192, 128, 512);
@@ -406,10 +413,20 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         container.cancelSeedSearch();
     }
 
-    /** Opens the seed comparison screen; back navigation returns to this instance. */
+    /** Opens the seed comparison screen; back navigation returns to this instance.
+     *  Search hits (with their scores and located structures) are carried into
+     *  the comparison as the preferred seed list instead of being dropped. */
     private void openComparison() {
         if (minecraft != null) {
-            minecraft.gui.setScreen(new SeedComparisonScreen(this, container));
+            List<String> preferredHits = new ArrayList<>();
+            if (currentResult instanceof SeedSearchResult.Hit hit) {
+                preferredHits.add(String.valueOf(hit.seed()));
+            } else if (currentResult instanceof SeedSearchResult.Multiple multiple) {
+                for (SeedSearchResult.Ranked ranked : multiple.hits()) {
+                    preferredHits.add(String.valueOf(ranked.seed()));
+                }
+            }
+            minecraft.gui.setScreen(new SeedComparisonScreen(this, container, preferredHits));
         }
     }
 
@@ -450,17 +467,18 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private void applyResult(SeedSearchResult result, String criteria, boolean recordHistory) {
         searching = false;
         hitRows.clear();
+        currentResult = result;
 
         switch (result) {
             case SeedSearchResult.Hit hit -> {
                 hitRows.add(resultsList.createRow(
-                        String.valueOf(hit.seed()), criteria, hit.score(), false, false));
+                        String.valueOf(hit.seed()), criteria, hit.score(), false, false, hit.structurePos()));
                 statusText = WorldPreviewComponents.SEARCH_FOUND.getString() + hit.seed();
             }
             case SeedSearchResult.Multiple multiple -> {
                 for (SeedSearchResult.Ranked ranked : multiple.hits()) {
                     hitRows.add(resultsList.createRow(
-                            String.valueOf(ranked.seed()), criteria, ranked.score(), false, false));
+                            String.valueOf(ranked.seed()), criteria, ranked.score(), false, false, ranked.structurePos()));
                 }
                 if (multiple.isEmpty()) {
                     statusText = WorldPreviewComponents.SEARCH_NOT_FOUND.getString();
@@ -468,8 +486,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                     statusText = WorldPreviewComponents.SEARCH_FOUND.getString() + multiple.hits().get(0).seed();
                 }
             }
-            case SeedSearchResult.Miss ignored ->
-                    statusText = WorldPreviewComponents.SEARCH_NOT_FOUND.getString();
+            case SeedSearchResult.Miss ignored -> {
+                statusText = WorldPreviewComponents.SEARCH_NOT_FOUND.getString();
+            }
             default -> statusText = WorldPreviewComponents.SEARCH_STOPPED.getString();
         }
 
@@ -480,7 +499,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             bestSeed = hitRows.get(0).seed;
         }
         if (applyBestOnComplete && bestSeed != null) {
-            applySeed(bestSeed);
+            applySeedChecked(bestSeed, requestOf(result));
         }
 
         // Remember the hits so they can be re-applied later.
@@ -542,7 +561,83 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     @Override
     public void onApply(String seed) {
+        applySeedChecked(seed, requestOf(currentResult));
+    }
+
+    /** The originating request of a search result, when it carries lineage. */
+    @Nullable
+    private static SeedSearchRequest requestOf(@Nullable SeedSearchResult result) {
+        if (result instanceof SeedSearchResult.Hit hit) {
+            return hit.request();
+        }
+        if (result instanceof SeedSearchResult.Multiple multiple) {
+            return multiple.request();
+        }
+        return null;
+    }
+
+    /**
+     * Applies a seed after verifying the result's lineage: when the search was
+     * run under a different worldgen context (seed/dimension/generator/compat
+     * changed since), the stale action is rejected instead of silently applying
+     * a result computed for another world.
+     */
+    private void applySeedChecked(String seed, @Nullable SeedSearchRequest source) {
+        if (source != null) {
+            String currentFingerprint = container.currentContextFingerprint();
+            if (currentFingerprint == null || !currentFingerprint.equals(source.contextFingerprint())) {
+                statusText = WorldPreviewComponents.SEARCH_STALE.getString();
+                return;
+            }
+        }
         applySeed(seed);
+    }
+
+    @Override
+    public void onCreateWaypoint(String seed) {
+        if (currentResult == null) {
+            return;
+        }
+        BlockPos structurePos = null;
+        if (currentResult instanceof SeedSearchResult.Hit hit
+                && hit.seed() == parseSeed(seed)
+                && hit.structurePos() != null) {
+            structurePos = hit.structurePos();
+        } else if (currentResult instanceof SeedSearchResult.Multiple multiple) {
+            for (SeedSearchResult.Ranked ranked : multiple.hits()) {
+                if (ranked.seed() == parseSeed(seed) && ranked.structurePos() != null) {
+                    structurePos = ranked.structurePos();
+                    break;
+                }
+            }
+        }
+        if (structurePos == null) {
+            return;
+        }
+        SeedSearchRequest source = requestOf(currentResult);
+        String dimension = source != null ? source.dimension()
+                : (container.currentContextFingerprint() != null
+                    && container.workManager().worldgenContext() != null
+                        ? container.workManager().worldgenContext().dimension() : null);
+        if (dimension == null) {
+            return;
+        }
+        long seedLong = parseSeed(seed);
+        int color = WaypointStore.PALETTE[(int) (seedLong & 0x7FFFFFFL) % WaypointStore.PALETTE.length];
+        String name = structureName != null ? structureName : "structure";
+        var waypoint = Waypoint.create(name, structurePos.getX(), structurePos.getY(), structurePos.getZ(),
+                dimension, color, seedLong);
+        container.worldPreview().waypointStore().add(waypoint);
+        statusText = Component.translatable("world_preview.search.waypoint_created",
+                name, structurePos.getX(), structurePos.getZ()).getString();
+    }
+
+    private static long parseSeed(String seed) {
+        try {
+            return Long.parseLong(seed.trim());
+        } catch (NumberFormatException e) {
+            return seed.hashCode();
+        }
     }
 
     @Override

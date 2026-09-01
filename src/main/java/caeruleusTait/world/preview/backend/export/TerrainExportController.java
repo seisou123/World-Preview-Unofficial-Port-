@@ -59,6 +59,20 @@ public final class TerrainExportController implements AutoCloseable {
             TerrainMapExporter.BiomeSampler sampler,
             Path outputDir
     ) {
+        return start(spec, sampler, null, null, outputDir);
+    }
+
+    /**
+     * Start a terrain export task with an optional real-height probe and world
+     * lineage for the metadata. Returns false if a task is already running.
+     */
+    public synchronized boolean start(
+            TerrainExportSpec spec,
+            TerrainMapExporter.BiomeSampler sampler,
+            @Nullable TerrainMapExporter.HeightProbe heightProbe,
+            @Nullable TerrainMapExporter.ExportContext exportContext,
+            Path outputDir
+    ) {
         if (state == State.RUNNING) {
             return false;
         }
@@ -77,7 +91,10 @@ public final class TerrainExportController implements AutoCloseable {
                 return exporter.export(
                         spec,
                         sampler,
+                        heightProbe,
+                        exportContext,
                         outputDir,
+                        "",
                         cancelRequested::get,
                         completedPixels::addAndGet
                 );

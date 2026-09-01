@@ -4,6 +4,7 @@ import caeruleusTait.world.preview.backend.terrain.ContourRenderer;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.biome.Biome;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -53,6 +54,21 @@ public final class TerrainMapExporter {
     }
 
     /**
+     * Optional probe for real sampled surface heights. When the probe returns
+     * a value for a pixel the export uses the real height; when it returns
+     * null (or no probe is supplied) the exporter falls back to the rough
+     * biome-based estimate and the metadata marks the height source
+     * accordingly. Backed by {@code SampleQuery#realHeightAt}.
+     */
+    @FunctionalInterface
+    public interface HeightProbe {
+        @Nullable Integer heightAt(int blockX, int blockZ) throws Exception;
+    }
+
+    /** Lineage info written into the export metadata (world identity). */
+    public record ExportContext(String seed, String dimension) {}
+
+    /**
      * Execute terrain map export.
      *
      * @param spec       Export specification
@@ -84,6 +100,25 @@ public final class TerrainMapExporter {
             BooleanSupplier cancelled,
             LongConsumer progress
     ) throws Exception {
+        return export(spec, sampler, null, null, outputDir, filenamePrefix, cancelled, progress);
+    }
+
+    /**
+     * Full export entry: optional real-height probe and optional world lineage
+     * for the metadata. {@code heightProbe == null} keeps the legacy estimate
+     * behavior; when supplied, real heights win and the metadata records the
+     * height source per pixel set.
+     */
+    public Result export(
+            TerrainExportSpec spec,
+            BiomeSampler sampler,
+            @Nullable HeightProbe heightProbe,
+            @Nullable ExportContext exportContext,
+            Path outputDir,
+            String filenamePrefix,
+            BooleanSupplier cancelled,
+            LongConsumer progress
+    ) throws Exception {
         Files.createDirectories(outputDir);
 
         int width = spec.imageWidth();
@@ -110,7 +145,7 @@ public final class TerrainMapExporter {
             // Submit all tile tasks
             for (TileTask task : tasks) {
                 final TileTask t = task;
-                futures.add(workers.submit(() -> sampleTile(t, spec, sampler, cancelled, progress)));
+                futures.add(workers.submit(() -> sampleTile(t, spec, sampler, heightProbe, cancelled, progress)));
             }
 
             // Collect results in completion order, write to NativeImage, collect height field
@@ -119,9 +154,13 @@ public final class TerrainMapExporter {
                 heightField = new byte[width * height];
             }
 
+            // Track how many pixels used real vs estimated heights for metadata.
+            AtomicInteger realHeightPixels = new AtomicInteger();
+
             for (Future<TileResult> future : futures) {
                 checkCancelled(cancelled);
                 TileResult tile = await(future);
+                realHeightPixels.addAndGet(tile.realHeightCount);
                 // Write tile pixels to NativeImage and collect height data
                 for (int row = 0; row < tile.rowCount; row++) {
                     int y = tile.startY + row;
@@ -173,7 +212,8 @@ public final class TerrainMapExporter {
             moveCompleteFile(partPath, pngPath);
 
             // Write metadata JSON
-            String metadata = buildMetadata(spec, width, height, timestamp);
+            String metadata = buildMetadata(spec, width, height, timestamp,
+                    heightProbe != null, realHeightPixels.get(), exportContext);
             Path metaPath = pngPath.resolveSibling(filename.replace(".png", ".json"));
             Path metaPart = metaPath.resolveSibling(metaPath.getFileName() + ".part");
             Files.writeString(metaPart, metadata);
@@ -212,11 +252,13 @@ public final class TerrainMapExporter {
             TileTask task,
             TerrainExportSpec spec,
             BiomeSampler sampler,
+            @Nullable HeightProbe heightProbe,
             BooleanSupplier cancelled,
             LongConsumer progress
     ) {
         int[] pixels = new int[task.tileWidth * task.tileHeight];
         byte[] heights = new byte[task.tileWidth * task.tileHeight];
+        int realHeightCount = 0;
         int minBlockX = spec.minBlockX();
         int minBlockZ = spec.minBlockZ();
         int bpp = spec.blocksPerPixel();
@@ -240,15 +282,35 @@ public final class TerrainMapExporter {
                     biomeHolder = null;
                 }
 
+                // Real sampled height wins; estimation is the explicit fallback.
+                Integer realHeight = null;
+                if (heightProbe != null) {
+                    try {
+                        realHeight = heightProbe.heightAt(blockX, blockZ);
+                    } catch (Exception ignored) {
+                        realHeight = null;
+                    }
+                }
+                if (realHeight != null) {
+                    realHeightCount++;
+                    heights[rowOffset + col] = clampHeightByte(realHeight);
+                } else {
+                    heights[rowOffset + col] = estimateHeight(biomeHolder);
+                }
+
                 TerrainCategory category = TerrainClassifier.classify(biomeHolder);
                 pixels[rowOffset + col] = category.pixelColor();
-                heights[rowOffset + col] = estimateHeight(biomeHolder);
             }
 
             progress.accept(task.tileWidth);
         }
 
-        return new TileResult(task.startX, task.startY, task.tileWidth, task.tileHeight, pixels, heights);
+        return new TileResult(task.startX, task.startY, task.tileWidth, task.tileHeight, pixels, heights, realHeightCount);
+    }
+
+    /** Real heights can be negative or exceed 255; the byte height field is a 0-255 contour source. */
+    private static byte clampHeightByte(int height) {
+        return (byte) Math.max(0, Math.min(255, height));
     }
 
     /**
@@ -330,10 +392,28 @@ public final class TerrainMapExporter {
         }
     }
 
-    private static String buildMetadata(TerrainExportSpec spec, int width, int height, String timestamp) {
+    private static String buildMetadata(TerrainExportSpec spec, int width, int height, String timestamp,
+                                        boolean heightProbeSupplied, int realHeightPixels,
+                                        @Nullable ExportContext exportContext) {
+        String heightSource;
+        if (!heightProbeSupplied) {
+            heightSource = "estimated";
+        } else if (realHeightPixels <= 0) {
+            heightSource = "estimated";
+        } else if (realHeightPixels >= width * height) {
+            heightSource = "real";
+        } else {
+            heightSource = "mixed";
+        }
         StringBuilder sb = new StringBuilder(256);
         sb.append("{\n");
         sb.append("  \"timestamp\": \"").append(timestamp).append("\",\n");
+        if (exportContext != null) {
+            sb.append("  \"seed\": \"").append(exportContext.seed()).append("\",\n");
+            sb.append("  \"dimension\": \"").append(exportContext.dimension()).append("\",\n");
+        }
+        sb.append("  \"heightSource\": \"").append(heightSource).append("\",\n");
+        sb.append("  \"realHeightPixels\": ").append(realHeightPixels).append(",\n");
         sb.append("  \"centerX\": ").append(spec.centerX()).append(",\n");
         sb.append("  \"centerZ\": ").append(spec.centerZ()).append(",\n");
         sb.append("  \"coverageRadius\": ").append(spec.coverageRadius()).append(",\n");
@@ -376,7 +456,8 @@ public final class TerrainMapExporter {
     private record TileTask(int startX, int startY, int tileWidth, int tileHeight) {}
 
     /** Tile sampling result. */
-    private record TileResult(int startX, int startY, int tileWidth, int rowCount, int[] pixels, byte[] heights) {}
+    private record TileResult(int startX, int startY, int tileWidth, int rowCount, int[] pixels, byte[] heights,
+                              int realHeightCount) {}
 
     /** Export thread factory. */
     private static final class ExportThreadFactory implements ThreadFactory {

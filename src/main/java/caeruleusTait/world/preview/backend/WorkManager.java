@@ -117,6 +117,18 @@ public class WorkManager {
 
     /** Bumped on cancel/shutdown so in-flight queue work can detect obsolescence. */
     private final AtomicLong sessionEpoch = new AtomicLong(0);
+
+    /**
+     * Current worldgen session epoch. Incremented whenever the world generation
+     * state is torn down (world/dimension/generator/seed switch or shutdown).
+     * Background tasks capture this value when they start and MUST re-check it
+     * before publishing results or writing to storage; a mismatch means the
+     * captured worldgen context is stale and its results must be discarded.
+     */
+    public long epoch() {
+        return sessionEpoch.get();
+    }
+
     /** Latest viewport range requested while a queue pass was already running. */
     private volatile BlockPos pendingTopLeft = null;
     private volatile BlockPos pendingBottomRight = null;
@@ -656,6 +668,7 @@ shutdownExecutors();
         }
 
         // Submit and store
+        final long epochAtQueue = sessionEpoch.get();
         synchronized (futures) {
             // Guard against executor being shut down between the isShutdown()
             // check in queueRange() and this submit call.  This can happen when
@@ -667,6 +680,11 @@ shutdownExecutors();
             for (WorkBatch batch : batches) {
                 futures.add(executorService.submit(batch::process));
             }
+        }
+        // Write-side staleness guard: batches capture the epoch at queue time
+        // and refuse to write results that outlive their worldgen context.
+        for (WorkBatch batch : batches) {
+            batch.attachEpochGuard(sessionEpoch::get, epochAtQueue);
         }
         synchronized (currentBatches) {
             currentBatches.addAll(Arrays.asList(batches));
@@ -824,14 +842,28 @@ shutdownExecutors();
         }
         TaskScheduler scheduler = new TaskScheduler(Math.max(1, config.numThreads()));
         try {
-            return new AnalysisSession(request, context, scheduler, storage, previewData, ownsContext);
+            // Live-preview sessions may reuse already-sampled biome/height facts
+            // from the shared preview storage instead of recomputing them.
+            AnalysisSession session = new AnalysisSession(
+                    request, context, scheduler, storage, previewData, ownsContext,
+                    ownsContext ? null : previewStorage);
+            // Lineage: remember which worldgen epoch + identity produced this
+            // session so stale results can be detected before they are used.
+            session.attachOrigin(sessionEpoch.get(), context.identity().shortKey());
+            return session;
         } catch (java.io.IOException error) {
             scheduler.close();
             throw new IllegalStateException("unable to create analysis sampler", error);
         }
     }
 
-    /** Converts an existing viewport into an analysis request without changing viewport queueing. */
+    /** Converts an existing viewport into an analysis request without changing viewport queueing.
+     *
+     * <p>Consumes the previously-inert config fields {@code analysisDefaultSampleStep}
+     * (values &gt; 1 force a fixed sampling step in blocks; 1 keeps the zoom-adaptive
+     * default) and {@code analysisMaxRegionBlocks} (caps the analyzed area so the
+     * sample count stays within the configured budget).</p>
+     */
     public AnalysisRequest analysisRequest(BlockPos topLeftBlock, BlockPos bottomRightBlock) {
         if (worldOptions == null || levelStem == null) {
             throw new IllegalStateException("world generation state is not initialized");
@@ -839,12 +871,32 @@ shutdownExecutors();
         String dimension = levelStem.type().unwrapKey()
                 .map(key -> key.identifier().toString())
                 .orElseThrow(() -> new IllegalStateException("world dimension has no identifier"));
+
+        // Region cap: clamp the requested area to analysisMaxRegionBlocks (block area).
+        BlockPos clampedTopLeft = topLeftBlock;
+        BlockPos clampedBottomRight = bottomRightBlock;
+        long maxSide = (long) Math.floor(Math.sqrt(Math.max(1.0, (double) config.analysisMaxRegionBlocks)));
+        long width = (long) bottomRightBlock.getX() - topLeftBlock.getX();
+        long height = (long) bottomRightBlock.getZ() - topLeftBlock.getZ();
+        if (width > maxSide || height > maxSide) {
+            long centerX = ((long) topLeftBlock.getX() + bottomRightBlock.getX()) / 2L;
+            long centerZ = ((long) topLeftBlock.getZ() + bottomRightBlock.getZ()) / 2L;
+            int half = (int) Math.min(maxSide / 2L, Integer.MAX_VALUE / 4L);
+            clampedTopLeft = new BlockPos((int) (centerX - half), topLeftBlock.getY(), (int) (centerZ - half));
+            clampedBottomRight = new BlockPos((int) (centerX + half), topLeftBlock.getY(), (int) (centerZ + half));
+            LOGGER.info("Analysis region clamped to {}x{} blocks (analysisMaxRegionBlocks={})",
+                    maxSide, maxSide, config.analysisMaxRegionBlocks);
+        }
+
+        int step = config.analysisDefaultSampleStep > 1
+                ? config.analysisDefaultSampleStep
+                : Math.max(1, renderSettings.quartStride() * 4);
         return new AnalysisRequest(
                 worldOptions.seed(),
                 dimension,
-                Region.of(topLeftBlock.getX(), topLeftBlock.getZ(), bottomRightBlock.getX(), bottomRightBlock.getZ()),
-                topLeftBlock.getY(),
-                Math.max(1, renderSettings.quartStride() * 4),
+                Region.of(clampedTopLeft.getX(), clampedTopLeft.getZ(), clampedBottomRight.getX(), clampedBottomRight.getZ()),
+                clampedTopLeft.getY(),
+                step,
                 config.sampleHeightmap,
                 config.sampleIntersections,
                 config.storeNoiseSamples);
