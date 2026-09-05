@@ -25,7 +25,6 @@
   "world_preview.preview.btn-cycle-noise": "Tipo de ruído",
   "world_preview.preview.btn-cycle.BIOMES": "Biomas",
   "world_preview.preview.btn-cycle.STRUCTURES": "Estruturas",
-  "world_preview.preview.btn-cycle.SEEDS": "Sementes",
   "world_preview.preview.btn-cycle.structures.disabled.tooltip": "A amostragem de estrutura está desativada e pode ser ativada nas configurações",
   "world_preview.preview.error.setup-failed": "§c§lFalha na configuração da visualização do mundo!§r\n\nIsto deve-se provavelmente devido a um mod incompatível.\nPara mais informações consultas a nossa FAQ:\nhttps://github.com/caeruleusDraconis/world-preview/",
   "world_preview.preview.msg.loading": "§lInicializando visualização...§r",

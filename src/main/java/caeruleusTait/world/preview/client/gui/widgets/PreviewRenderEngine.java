@@ -60,8 +60,17 @@ class PreviewRenderEngine {
 
     private final PreviewDisplay host;
 
-    private byte[] heightFieldBuffer;
+    private short[] heightFieldBuffer;
     private int[] heightFieldColors;
+    // Cached hillshade state: rebuilt only when the config parameters change,
+    // and the output buffer is reused across heavy renders (a full-viewport
+    // render used to allocate a fresh renderer + width*height array per pass).
+    private HillshadeRenderer hillshadeRenderer;
+    private float hillshadeAzimuth = Float.NaN;
+    private float hillshadeAltitude = Float.NaN;
+    private float hillshadeAmbient = Float.NaN;
+    private float hillshadeExaggeration = Float.NaN;
+    private byte[] hillshadeBuffer;
     private int heightFieldWidth;
     private int heightFieldHeight;
     private Short2LongMap visibleBiomes;
@@ -83,6 +92,10 @@ class PreviewRenderEngine {
     private int[] noiseColorMapDepth;
     private int[] noiseColorMapWeirdness;
     private int[] noiseColorMapPeaksAndValleys;
+    // (R10) Precomputed peaks-and-valleys transform: maps the raw short noise
+    // sample (indexed by rawData & 0xFFFF) directly to the final palette index.
+    // Depends only on the fixed transform, not on the palette colors.
+    private short[] peaksValleysLut;
     private boolean[] cavesMap;
     private IconData[] structureIcons;
     private IconData playerIcon;
@@ -191,8 +204,26 @@ class PreviewRenderEngine {
                 noiseColorMapWeirdness = noiseColorMap;
                 noiseColorMapPeaksAndValleys = noiseColorMap;
             }
+            // (R10) Precompute the peaks-and-valleys transform once per reload
+            // instead of calling NoiseRouterData.peaksAndValleys for every
+            // pixel on every heavy render.  Replicates the per-pixel branch in
+            // updateTexture() exactly (Short.MAX_VALUE scaling, 0.75 divisor,
+            // clamp to [-1, 1], 512 + data*512 palette index clamped to 1023).
+            // Built into a local first so a mid-build failure can never leave
+            // a half-filled LUT visible to the render thread.
+            final short[] pvLut = new short[65536];
+            for (int i = 0; i < 65536; i++) {
+                float data = (short) i / (float) Short.MAX_VALUE;
+                data /= 0.75f;
+                data = NoiseRouterData.peaksAndValleys(Math.min(1.0f, Math.max(-1.0f, data)));
+                pvLut[i] = (short) Math.min(1023, Math.max(0, 512 + (int) (data * 512)));
+            }
+            peaksValleysLut = pvLut;
         } catch (Throwable e) {
             e.printStackTrace();
+            // (R10) Never trust a partially built transform LUT; the noise
+            // branch falls back to the per-pixel path while it is null.
+            peaksValleysLut = null;
         }
         PreviewData.BiomeData[] rawBiomeMap = provider.previewData().biomeId2BiomeData();
         workingVisibleBiomes = new long[rawBiomeMap.length];
@@ -393,17 +424,25 @@ class PreviewRenderEngine {
             return;
         }
 
+        // Per-texel constants hoisted out of the sample loops below: each was
+        // previously re-evaluated for every quart sample (two virtual calls
+        // plus a division per pixel in the hot path).
+        final int yMin = host.dataProvider().yMin();
+        final short selectedBiomeId = host.selectedBiomeId();
+        final boolean highlightCaves = host.highlightCaves();
+        final int hfExpand = Math.max(1, quartExpand);
+
         boolean needHeightField = renderSettings.mode == RenderSettings.RenderMode.HEIGHTMAP
                 && (config.enableHillshade || config.enableContours);
         if (needHeightField) {
-            heightFieldWidth = texWidth / Math.max(1, quartExpand);
-            heightFieldHeight = texHeight / Math.max(1, quartExpand);
+            heightFieldWidth = texWidth / hfExpand;
+            heightFieldHeight = texHeight / hfExpand;
             int bufSize = heightFieldWidth * heightFieldHeight;
             if (heightFieldBuffer == null || heightFieldBuffer.length < bufSize) {
-                heightFieldBuffer = new byte[bufSize];
+                heightFieldBuffer = new short[bufSize];
                 heightFieldColors = new int[bufSize];
             }
-            java.util.Arrays.fill(heightFieldBuffer, (byte) 0);
+            java.util.Arrays.fill(heightFieldBuffer, (short) 0);
             java.util.Arrays.fill(heightFieldColors, 0x00000000);
         } else {
             heightFieldBuffer = null;
@@ -449,9 +488,9 @@ class PreviewRenderEngine {
                     switch (renderSettings.mode) {
                         case BIOMES -> {
                             if (rawData >= 0 && rawData < colorMap.length) {
-                                color = host.selectedBiomeId() >= 0 || host.highlightCaves()
+                                color = selectedBiomeId >= 0 || highlightCaves
                                         ? colorMapGrayScale[rawData] : colorMap[rawData];
-                                if (host.selectedBiomeId() == rawData || (host.highlightCaves() && cavesMap[rawData])) {
+                                if (selectedBiomeId == rawData || (highlightCaves && cavesMap[rawData])) {
                                     color = colorMap[rawData];
                                 }
                                 workingVisibleBiomes[rawData] += 1;
@@ -460,17 +499,17 @@ class PreviewRenderEngine {
                         }
                         case HEIGHTMAP -> {
                             if (rawData > Short.MIN_VALUE) {
-                                int idx = rawData - host.dataProvider().yMin();
+                                int idx = rawData - yMin;
                                 if (idx >= 0 && idx < heightColorMap.length) {
                                     color = heightColorMap[idx];
                                 }
                                 if (heightFieldBuffer != null) {
-                                    int hfX = texX / Math.max(1, quartExpand);
-                                    int hfZ = texZ / Math.max(1, quartExpand);
-                                    int hfIdx = hfZ * heightFieldWidth + hfX;
+                                    int hfIdx = (texZ / hfExpand) * heightFieldWidth + texX / hfExpand;
                                     if (hfIdx >= 0 && hfIdx < heightFieldBuffer.length) {
-                                        int clampedH = Math.max(0, Math.min(255, rawData - host.dataProvider().yMin() + 64));
-                                        heightFieldBuffer[hfIdx] = (byte) clampedH;
+                                        // 1 unit = 1 world block above yMin; a byte clamp here used to
+                                        // flatten every sample above yMin+191 (overworld surface y>=126)
+                                        int hfHeight = Math.max(0, idx);
+                                        heightFieldBuffer[hfIdx] = (short) hfHeight;
                                         heightFieldColors[hfIdx] = color;
                                     }
                                 }
@@ -490,13 +529,20 @@ class PreviewRenderEngine {
                         case NOISE_TEMPERATURE, NOISE_HUMIDITY, NOISE_CONTINENTALNESS, NOISE_EROSION,
                              NOISE_DEPTH, NOISE_WEIRDNESS, NOISE_PEAKS_AND_VALLEYS -> {
                             if (rawData > Short.MIN_VALUE && noisePalette != null) {
-                                float data = ((float) rawData) / ((float) Short.MAX_VALUE);
-                                if (renderSettings.mode == RenderSettings.RenderMode.NOISE_PEAKS_AND_VALLEYS) {
-                                    data /= 0.75f;
-                                    data = NoiseRouterData.peaksAndValleys(Math.min(1.0f, Math.max(-1.0f, data)));
+                                if (renderSettings.mode == RenderSettings.RenderMode.NOISE_PEAKS_AND_VALLEYS
+                                        && peaksValleysLut != null) {
+                                    // (R10) Precomputed transform: raw short sample
+                                    // -> final palette index in one lookup.
+                                    color = noisePalette[peaksValleysLut[rawData & 0xFFFF]];
+                                } else {
+                                    float data = ((float) rawData) / ((float) Short.MAX_VALUE);
+                                    if (renderSettings.mode == RenderSettings.RenderMode.NOISE_PEAKS_AND_VALLEYS) {
+                                        data /= 0.75f;
+                                        data = NoiseRouterData.peaksAndValleys(Math.min(1.0f, Math.max(-1.0f, data)));
+                                    }
+                                    final int idx = Math.min(1023, Math.max(0, 512 + (int) (data * 512)));
+                                    color = noisePalette[idx];
                                 }
-                                final int idx = Math.min(1023, Math.max(0, 512 + (int) (data * 512)));
-                                color = noisePalette[idx];
                             }
                         }
                         default -> {
@@ -547,10 +593,28 @@ class PreviewRenderEngine {
 
         byte[] shadeBuffer = null;
         if (config.enableHillshade) {
-            HillshadeRenderer renderer = new HillshadeRenderer(
-                    config.hillshadeAzimuth, config.hillshadeAltitude,
-                    config.hillshadeAmbient, config.hillshadeExaggeration, 0.5f);
-            shadeBuffer = renderer.render(heightFieldBuffer, fw, fh, (float) quartExpand);
+            if (hillshadeRenderer == null
+                    || hillshadeAzimuth != config.hillshadeAzimuth
+                    || hillshadeAltitude != config.hillshadeAltitude
+                    || hillshadeAmbient != config.hillshadeAmbient
+                    || hillshadeExaggeration != config.hillshadeExaggeration) {
+                hillshadeRenderer = new HillshadeRenderer(
+                        config.hillshadeAzimuth, config.hillshadeAltitude,
+                        config.hillshadeAmbient, config.hillshadeExaggeration, 0.5f);
+                hillshadeAzimuth = config.hillshadeAzimuth;
+                hillshadeAltitude = config.hillshadeAltitude;
+                hillshadeAmbient = config.hillshadeAmbient;
+                hillshadeExaggeration = config.hillshadeExaggeration;
+            }
+            final int size = fw * fh;
+            if (hillshadeBuffer == null || hillshadeBuffer.length < size) {
+                hillshadeBuffer = new byte[size];
+            }
+            // Write the returned buffer back: render() only reuses the caller's
+            // array when it is large enough, otherwise it allocates a fresh
+            // one, so the field must track the array actually in use.
+            hillshadeBuffer = hillshadeRenderer.render(heightFieldBuffer, fw, fh, (float) quartExpand, hillshadeBuffer);
+            shadeBuffer = hillshadeBuffer;
         }
 
         if (shadeBuffer != null) {
@@ -590,12 +654,28 @@ class PreviewRenderEngine {
     // === Overlays ===
 
     void renderStructures(List<RenderHelper> renderData, GuiGraphicsExtractor GuiGraphicsExtractor) {
-        if (!host.config().sampleStructures) {
+        renderStructures(renderData, GuiGraphicsExtractor, true);
+    }
+
+    /**
+     * @param updateHoverGrid false on render-skip frames: the hover grid from
+     *     the last heavy render is still valid, and re-adding the same
+     *     structures every idle frame made the grid grow without bound.
+     */
+    void renderStructures(List<RenderHelper> renderData, GuiGraphicsExtractor GuiGraphicsExtractor, boolean updateHoverGrid) {
+        // Render-skip frames pass the cached list, which is null until the
+        // first heavy render (and after invalidateRenderCache): nothing to draw.
+        if (!host.config().sampleStructures || renderData == null) {
             return;
         }
         final RenderSettings renderSettings = host.renderSettings();
         final int texWidth = host.getTexWidth();
         final int texHeight = host.getTexHeight();
+
+        // (R3) One viewport mapping for the whole pass: blockToTexture() used
+        // to build a fresh ViewportMapping (+ ScaleSpec) per structure, and the
+        // screen conversion below built yet another one per structure.
+        final ViewportMapping map = currentMapping();
 
         // Draw structures
         //  - Do this in a separate RenderHelper loop to ensure that the biome data is overwritten
@@ -606,7 +686,12 @@ class PreviewRenderEngine {
                 if (id < 0 || id >= structureIcons.length || id >= structureItems.length || id >= structureRenderInfoMap.length) {
                     continue;
                 }
-                TextureCoordinate texCenter = blockToTexture(structure.center());
+                // (R3) Inlined blockToTexture(structure.center()) on the hoisted
+                // mapping — identical world->texel math, no per-structure mapping.
+                final TextureCoordinate texCenter = new TextureCoordinate(
+                        map.worldToTextureX(structure.center().getX()),
+                        map.worldToTextureZ(structure.center().getZ())
+                );
                 IconData iconData = structureIcons[id];
                 NativeImage icon = iconData.img;
                 DynamicTexture iconTexture = iconData.texture;
@@ -641,7 +726,7 @@ class PreviewRenderEngine {
                 final int texStartX = texCenter.x() - (icon.getWidth() / 2);
                 final int texStartZ = texCenter.z() - (icon.getHeight() / 2);
 
-                ViewportMapping map = currentMapping();
+                // (R3) Reuses the mapping hoisted at the head of this method.
                 final int rXMin = map.textureToScreenX(texStartX, host.getX());
                 final int rZMin = map.textureToScreenZ(texStartZ, host.getY());
                 final int rXMax = map.textureToScreenXCeil(texStartX + icon.getWidth(), host.getX());
@@ -656,13 +741,15 @@ class PreviewRenderEngine {
                     WorldPreviewClient.renderTexture(GuiGraphicsExtractor, iconTexture, rXMin, rZMin, rXMax, rZMax);
                 }
 
-                host.hoverInspector.putStructEntry(
-                        texCenter.x(),
-                        texCenter.z(),
-                        icon.getWidth(),
-                        icon.getHeight(),
-                        structure
-                );
+                if (updateHoverGrid) {
+                    host.hoverInspector.putStructEntry(
+                            texCenter.x(),
+                            texCenter.z(),
+                            icon.getWidth(),
+                            icon.getHeight(),
+                            structure
+                    );
+                }
             }
         }
     }
@@ -698,10 +785,12 @@ class PreviewRenderEngine {
         final int texWidth = host.getTexWidth();
         final int texHeight = host.getTexHeight();
 
-        TextureCoordinate texCenter = blockToTexture(pos);
-        texCenter = new TextureCoordinate(
-                Math.max(0, Math.min(texWidth, texCenter.x())),
-                Math.max(0, Math.min(texHeight, texCenter.z()))
+        // (R3) Inlined blockToTexture(pos) on a single hoisted mapping instead
+        // of allocating one inside blockToTexture; same clamping as before.
+        final ViewportMapping map = currentMapping();
+        final TextureCoordinate texCenter = new TextureCoordinate(
+                Math.max(0, Math.min(texWidth, map.worldToTextureX(pos.getX()))),
+                Math.max(0, Math.min(texHeight, map.worldToTextureZ(pos.getZ())))
         );
 
         // Render icon at double size — tex coords are texture-pixel space; convert to GUI

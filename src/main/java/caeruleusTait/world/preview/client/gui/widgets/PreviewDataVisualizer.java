@@ -32,6 +32,14 @@ final class PreviewDataVisualizer {
     private int[] minimapCacheBounds;
     private boolean minimapNeedsRegenerate = true;
 
+    // (R5) Time throttle for the full-layer sampledBounds scan + minimap
+    // regeneration: while loading, batch completions bump the write counter
+    // several times per second, and each bump used to trigger two full-layer
+    // scans under the storage layer lock plus a full texture upload.  The
+    // viewport box/crosshair drawing itself stays per frame.
+    private long lastMinimapRegenerateNanos = 0;
+    private static final long MINIMAP_REGENERATE_COOLDOWN_NANOS = 250_000_000L;
+
     PreviewDataVisualizer(Minecraft minecraft, PreviewDisplayDataProvider dataProvider, WorkManager workManager) {
         this.minecraft = minecraft;
         this.dataProvider = dataProvider;
@@ -59,6 +67,8 @@ final class PreviewDataVisualizer {
         minimapCacheWriteCounter = -1;
         minimapCacheBounds = null;
         minimapNeedsRegenerate = true;
+        // (R5) First paint after a context change stays immediate.
+        lastMinimapRegenerateNanos = 0;
     }
 
     void renderMinimap(GuiGraphicsExtractor guiGraphicsExtractor, int xMin, int yMin, int xMax, int yMax, BlockPos centerPos) {
@@ -77,10 +87,18 @@ final class PreviewDataVisualizer {
         if (minimapCacheWriteCounter != currentWriteCounter
                 || minimapCacheY != currentY
                 || minimapCacheBounds == null) {
-            minimapCacheBounds = storage.sampledBounds(currentY);
-            minimapCacheWriteCounter = currentWriteCounter;
-            minimapCacheY = currentY;
-            minimapNeedsRegenerate = true;
+            // (R5) sampledBounds is a full-layer scan under the layer lock and
+            // the write counter bumps several times per second while loading,
+            // so the rescan is cooldown-limited.  The cache fields are
+            // intentionally NOT updated while suppressed so the pending change
+            // retries once the cooldown window has elapsed.
+            final long now = System.nanoTime();
+            if (now - lastMinimapRegenerateNanos >= MINIMAP_REGENERATE_COOLDOWN_NANOS) {
+                minimapCacheBounds = storage.sampledBounds(currentY);
+                minimapCacheWriteCounter = currentWriteCounter;
+                minimapCacheY = currentY;
+                minimapNeedsRegenerate = true;
+            }
         }
 
         final int[] bounds = minimapCacheBounds;
@@ -113,6 +131,9 @@ final class PreviewDataVisualizer {
                     colorMap, minimapImg, miniW, miniH);
             minimapTexture.upload();
             minimapNeedsRegenerate = false;
+            // (R5) Start the rescan/regenerate cooldown window only after the
+            // expensive regenerate+upload actually happened.
+            lastMinimapRegenerateNanos = System.nanoTime();
         }
 
         guiGraphicsExtractor.fill(miniX - 2, miniY - 2, miniX + miniW + 2, miniY + miniH + 2, 0xDD0A0A12);

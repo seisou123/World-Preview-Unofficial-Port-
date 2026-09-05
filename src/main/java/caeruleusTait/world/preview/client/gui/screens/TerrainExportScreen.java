@@ -355,7 +355,8 @@ public final class TerrainExportScreen extends Screen {
                 LongConsumer progress = trackDimensionProgress(
                         dimensionId, i + 1, dimensions.size(), totalWork, completedPixels);
                 progress.accept(0L);
-                exporter.export(spec, sampler, outputDir,
+                int yMin = stem.type().value().minY();
+                exporter.export(spec, sampler, yMin, yMin + stem.type().value().height(), outputDir,
                         sanitizeFileToken(dimensionId.getPath()) + "_", batchCancelled::get, progress);
             }
             batchPct = 100.0;

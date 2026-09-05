@@ -20,10 +20,12 @@ public class StructStartWorkUnit extends WorkUnit {
     @Override
     protected List<WorkResult> doWork() {
         if (isCanceled()) {
+            markInterrupted();
             return List.of();
         }
         List<Pair<Identifier, StructureStart>> res = sampleUtils.doStructures(chunkPos);
         if (isCanceled()) {
+            markInterrupted();
             return List.of();
         }
         return List.of(

@@ -40,7 +40,7 @@ public final class HillshadeRenderer {
 
     /**
      * Pre-computed light vector L (normalized).
-     * Azimuth -> x = sin(az), z = cos(az)
+     * Azimuth -> x = sin(az), z = -cos(az) (north = -Z in Minecraft)
      * Altitude -> y = sin(alt), horizontal component = cos(alt)
      */
     private final float lightX, lightY, lightZ;
@@ -56,7 +56,7 @@ public final class HillshadeRenderer {
         float horiz = (float) Math.cos(this.altitudeRad);
         this.lightX = horiz * (float) Math.sin(this.azimuthRad);
         this.lightY = (float) Math.sin(this.altitudeRad);
-        this.lightZ = horiz * (float) Math.cos(this.azimuthRad);
+        this.lightZ = -horiz * (float) Math.cos(this.azimuthRad);
     }
 
     /**
@@ -72,60 +72,69 @@ public final class HillshadeRenderer {
      * Uses Sobel operator for gradients, better noise suppression and edge preservation than central differences.
      * </p>
      *
-     * @param heights Height field, row-major, heights[y * width + x]
+     * @param heights Height field, row-major, heights[y * width + x]; values are
+     *                block heights in world-Y units (only differences matter)
      * @param width   Field width
      * @param height  Field height
      * @param blockScale Block distance per sample point (real scale for gradient computation)
      * @return Brightness array (0-255), same size as input
      */
-    public byte[] render(byte[] heights, int width, int height, float blockScale) {
-        byte[] result = new byte[width * height];
-        float ve = verticalExaggeration;
-        float invScale = 1f / blockScale;
+    public byte[] render(short[] heights, int width, int height, float blockScale) {
+        return render(heights, width, height, blockScale, null);
+    }
+
+    /**
+     * Same as {@link #render(short[], int, int, float)} but writes into the
+     * caller-provided {@code out} array when it is large enough, so repeated
+     * full-viewport renders reuse the buffer instead of allocating a fresh
+     * one every frame.
+     *
+     * @return {@code out} when reused, otherwise a newly allocated array
+     */
+    public byte[] render(short[] heights, int width, int height, float blockScale, byte[] out) {
+        final int size = width * height;
+        byte[] result = (out != null && out.length >= size) ? out : new byte[size];
+        final float gradScale = verticalExaggeration / (8f * blockScale);
+        // Constant brightness for fully unsampled (all-zero) neighborhoods: a
+        // flat gradient yields slope factor 1 and diffuse = lightY.
+        final int flatVal = POW_LUT[Math.min(255, (int) (reinhard(ambient + (1f - ambient) * lightY) * 255f))];
 
         for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int idx = y * width + x;
+            final int row0 = (y > 0 ? y - 1 : 0) * width;
+            final int row2 = (y < height - 1 ? y + 1 : height - 1) * width;
+            final int row1 = y * width;
+            int idx = row1;
+            for (int x = 0; x < width; x++, idx++) {
+                final int xm1 = x > 0 ? x - 1 : 0;
+                final int xp1 = x < width - 1 ? x + 1 : width - 1;
 
-                // Compute gradient using Sobel operator
-                // Edge handling: mirror boundary
-                int xm1 = x > 0 ? x - 1 : 0;
-                int xp1 = x < width - 1 ? x + 1 : width - 1;
-                int ym1 = y > 0 ? y - 1 : 0;
-                int yp1 = y < height - 1 ? y + 1 : height - 1;
+                final int r00 = heights[row0 + xm1] & 0xFFFF;
+                final int r10 = heights[row0 + x] & 0xFFFF;
+                final int r20 = heights[row0 + xp1] & 0xFFFF;
+                final int r01 = heights[row1 + xm1] & 0xFFFF;
+                final int r21 = heights[row1 + xp1] & 0xFFFF;
+                final int r02 = heights[row2 + xm1] & 0xFFFF;
+                final int r12 = heights[row2 + x] & 0xFFFF;
+                final int r22 = heights[row2 + xp1] & 0xFFFF;
 
-                float h00 = heights[ym1 * width + xm1] & 0xFF;
-                float h10 = heights[ym1 * width + x]  & 0xFF;
-                float h20 = heights[ym1 * width + xp1] & 0xFF;
-                float h01 = heights[y   * width + xm1] & 0xFF;
-                float h21 = heights[y   * width + xp1] & 0xFF;
-                float h02 = heights[yp1 * width + xm1] & 0xFF;
-                float h12 = heights[yp1 * width + x]  & 0xFF;
-                float h22 = heights[yp1 * width + xp1] & 0xFF;
+                // Skip unsampled (all-zero) regions: a flat gradient produces a
+                // constant ambient shade, so there is no lighting to compute.
+                if ((r00 | r10 | r20 | r01 | r21 | r02 | r12 | r22) == 0) {
+                    result[idx] = (byte) flatVal;
+                    continue;
+                }
 
                 // Sobel X: (-1 0 +1; -2 0 +2; -1 0 +1)
-                float dzdx = ve * invScale * (
-                    -h00 + h20 - 2f * h01 + 2f * h21 - h02 + h22) / 8f;
+                float dzdx = gradScale * (-r00 + r20 - 2f * r01 + 2f * r21 - r02 + r22);
 
                 // Sobel Z: (-1 -2 -1; 0 0 0; +1 +2 +1)
-                float dzdz = ve * invScale * (
-                    -h00 - 2f * h10 - h20 + h02 + 2f * h12 + h22) / 8f;
+                float dzdz = gradScale * (-r00 - 2f * r10 - r20 + r02 + 2f * r12 + r22);
 
-                // Normal N = (-dzdx, 1, -dzdz)
+                // Normal N = (-dzdx, 1, -dzdz), normalized, dotted with light L.
                 float nx = -dzdx;
-                float ny = 1f;
                 float nz = -dzdz;
-
-                // Fast normalization (inverse square root approximation)
-                float lenSq = nx * nx + ny * ny + nz * nz;
-                float invLen = fastInvSqrt(lenSq);
-                nx *= invLen;
-                ny *= invLen;
-                nz *= invLen;
-
-                // Diffuse: N dot L
-                float diffuse = nx * lightX + ny * lightY + nz * lightZ;
-                diffuse = Math.max(0f, diffuse);
+                float invLen = fastInvSqrt(nx * nx + 1f + nz * nz);
+                float diffuse = Math.max(0f, (nx * lightX + lightY + nz * lightZ) * invLen);
 
                 // Slope factor: steeper slopes are slightly dimmer (atmospheric scattering)
                 float slope = (float) Math.sqrt(dzdx * dzdx + dzdz * dzdz);
@@ -133,14 +142,8 @@ public final class HillshadeRenderer {
 
                 // Final brightness = ambient + diffuse * slope factor
                 float intensity = ambient + (1f - ambient) * diffuse * slopeFactor;
-
-                // Gamma correction and tone mapping (Reinhard)
-                intensity = intensity / (intensity + 0.15f);
-                intensity = (float) Math.pow(intensity, 0.8f);
-
-                // Map to 0-255
-                int val = Math.max(0, Math.min(255, (int) (intensity * 255f)));
-                result[idx] = (byte) val;
+                intensity = reinhard(intensity);
+                result[idx] = (byte) POW_LUT[Math.min(255, (int) (intensity * 255f))];
             }
         }
 
@@ -182,6 +185,25 @@ public final class HillshadeRenderer {
             r = (int) (r * factor);
             return (a << 24) | (b << 16) | (g << 8) | r;
         }
+    }
+
+    /** Reinhard tone map applied to the raw brightness before gamma. */
+    private static float reinhard(float intensity) {
+        return intensity / (intensity + 0.15f);
+    }
+
+    /**
+     * Look-up table for {@code pow(i/255, 0.8)} over the 0-255 brightness
+     * range, replacing a per-pixel {@link Math#pow} call in the hot loop.
+     */
+    private static final byte[] POW_LUT = buildPowLut();
+
+    private static byte[] buildPowLut() {
+        byte[] lut = new byte[256];
+        for (int i = 0; i < 256; i++) {
+            lut[i] = (byte) (int) (Math.pow(i / 255.0, 0.8) * 255.0);
+        }
+        return lut;
     }
 
     /**
