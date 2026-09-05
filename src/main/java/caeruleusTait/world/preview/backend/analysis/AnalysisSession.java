@@ -217,11 +217,10 @@ public final class AnalysisSession extends Session {
         TaskScheduler.TaskHandle handle = task.get();
         if (handle == null) {
             synchronized (metrics) {
-                RegionMetrics snapshot = metrics.snapshot();
                 AnalysisStatus status = started ? AnalysisStatus.CANCELLED : AnalysisStatus.QUEUED;
                 String stage = started ? "cancelled" : "not started";
                 return new AnalysisProgress(status, 0, totalUnits,
-                        snapshot.presentSamples(), totalUnits, stage, null);
+                        metrics.presentSampleCount(), totalUnits, stage, null);
             }
         }
         TaskState state = scheduler.stateOf(handle);
@@ -231,7 +230,7 @@ public final class AnalysisSession extends Session {
         syncSessionState(status);
         synchronized (metrics) {
             return new AnalysisProgress(status, schedulerProgress.completedUnits(),
-                    schedulerProgress.totalUnits(), metrics.snapshot().presentSamples(),
+                    schedulerProgress.totalUnits(), metrics.presentSampleCount(),
                     Math.max(0, totalUnits - schedulerProgress.completedUnits()),
                     schedulerProgress.stage(), scheduler.errorOf(handle));
         }
@@ -240,6 +239,17 @@ public final class AnalysisSession extends Session {
     public RegionMetrics result() {
         synchronized (metrics) {
             return metrics.snapshot();
+        }
+    }
+
+    /**
+     * Cheap check for "has data worth exporting" — avoids building a full
+     * {@link RegionMetrics} snapshot when the caller only needs this test
+     * (the analysis screen polls it every tick to enable the export button).
+     */
+    public boolean hasExportableData() {
+        synchronized (metrics) {
+            return metrics.hasExportableData();
         }
     }
 

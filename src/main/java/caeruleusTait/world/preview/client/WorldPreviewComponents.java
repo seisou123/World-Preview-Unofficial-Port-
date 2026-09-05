@@ -102,6 +102,9 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_VIEW_RESULTS = Component.translatable("world_preview.search.view.results");
     public static final Component SEARCH_VIEW_HISTORY = Component.translatable("world_preview.search.view.history");
     public static final Component SEARCH_VIEW_FAVORITES = Component.translatable("world_preview.search.view.favorites");
+    public static final Component SEARCH_VIEW_SAVED = Component.translatable("world_preview.search.view.saved");
+    public static final Component SEARCH_SEED_RANDOM = Component.translatable("world_preview.search.seed.random");
+    public static final Component SEARCH_SEED_SAVE = Component.translatable("world_preview.search.seed.save");
     public static final Component SEARCH_NO_CRITERIA = Component.translatable("world_preview.search.no_criteria");
     public static final Component SEARCH_APPLIED = Component.translatable("world_preview.search.applied");
     public static final Component SEARCH_APPLIED_CLIPBOARD = Component.translatable("world_preview.search.applied.clipboard");

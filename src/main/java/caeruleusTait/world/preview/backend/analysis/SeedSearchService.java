@@ -15,6 +15,7 @@ import java.util.SplittableRandom;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static caeruleusTait.world.preview.WorldPreview.LOGGER;
@@ -25,7 +26,8 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
  * Receives an immutable {@link SeedSearchRequest}, creates temporary worldgen context for each candidate seed,
  * evaluates every {@link SearchCriterion} against the sampled viewport and keeps the best
  * {@code maxHits} ranked seeds. Searches with {@code maxHits == 1} stop on the first hit.
- * Only one search task may run at a time.
+ * At most one task holds the search slot at a time; a cancelled task's workers
+ * may still be draining while its replacement starts.
  * </p>
  */
 public class SeedSearchService implements AutoCloseable {
@@ -33,8 +35,13 @@ public class SeedSearchService implements AutoCloseable {
     /** Abort search early if consecutive failures exceed this threshold */
     private static final int MAX_CONSECUTIVE_FAILURES = 10;
 
+    /** Log interval while the coordinator waits for in-flight worker evaluations */
+    private static final long WORKER_WAIT_LOG_INTERVAL_SECONDS = 10;
+
     private final SplittableRandom random = new SplittableRandom();
     private final ExecutorService executor;
+    /** Worker count for candidate evaluation; the fixed pool holds one extra coordinator slot. */
+    private final int parallelism;
 
     /** Handle to the currently running search task, used for cancellation */
     @Nullable private volatile SearchTask currentTask;
@@ -50,7 +57,12 @@ public class SeedSearchService implements AutoCloseable {
 
     public SeedSearchService(@Nullable Minecraft minecraft, int threadCount) {
         this.minecraft = minecraft;
-        this.executor = Executors.newFixedThreadPool(Math.max(1, threadCount));
+        this.parallelism = Math.max(1, threadCount);
+        // One slot of headroom: the coordinator runs on this pool too, so a
+        // follow-up search started right after a cancellation must not queue
+        // behind the previous task's still-finishing workers (otherwise it
+        // degrades to single-threaded and can trip the worker wait diagnostics).
+        this.executor = Executors.newFixedThreadPool(this.parallelism + 1);
     }
 
     /**
@@ -81,12 +93,22 @@ public class SeedSearchService implements AutoCloseable {
         currentFingerprint = request.contextFingerprint();
         currentLatch = latch;
 
-        CompletableFuture.runAsync(() -> executeSearch(task), executor)
+        CompletableFuture.runAsync(() -> executeSearch(task, latch), executor)
                 .exceptionally(error -> {
                     LOGGER.error("Seed search failed unexpectedly", error);
+                    // Fallback dispatch: the coordinator rethrows any Throwable
+                    // escaping its own loop, so without this cleanup the task
+                    // handle would linger forever and isSearching() would keep
+                    // rejecting every follow-up search. Mirror reportResult()'s
+                    // cleanup set (task + fingerprint; the latch was already
+                    // counted down by executeSearch's finally).
                     minecraftExecute(() -> {
-                        if (currentTask == task && !cancelled.get()) {
-                            onComplete.accept(new SeedSearchResult.Miss());
+                        if (currentTask == task) {
+                            currentTask = null;
+                            currentFingerprint = null;
+                            onComplete.accept(cancelled.get()
+                                    ? new SeedSearchResult.Cancelled()
+                                    : new SeedSearchResult.Miss());
                         }
                     });
                     return null;
@@ -162,7 +184,7 @@ public class SeedSearchService implements AutoCloseable {
 
     // ========== Internal search logic ==========
 
-    private void executeSearch(SearchTask task) {
+    private void executeSearch(SearchTask task, CountDownLatch doneLatch) {
         try {
             var request = task.request;
             var cancelled = task.cancelled;
@@ -171,59 +193,165 @@ public class SeedSearchService implements AutoCloseable {
             // Generate sample point list (consistent with PreviewDisplay's render grid)
             var samplePoints = generateSamplePoints(request);
 
-            for (int i = 0; i < request.maxAttempts(); i++) {
-                if (cancelled.get()) {
-                    reportResult(task, new SeedSearchResult.Cancelled());
-                    return;
-                }
-
-                // Generate unique random seeds
-                long candidateSeed;
-                do {
-                    candidateSeed = random.nextLong();
-                } while (!attemptedSeeds.add(candidateSeed));
-
-                task.attempts.incrementAndGet();
-
-                // Notify UI of progress (first attempt and every 2nd attempt)
-                int currentAttempts = task.attempts.get();
-                if (task.onProgress != null && (currentAttempts == 1 || currentAttempts % 2 == 0)) {
-                    final int attempts = currentAttempts;
-                    minecraftExecute(() -> task.onProgress.accept(attempts));
-                }
-
-                try {
-                    SeedEvaluation evaluation = evaluateSeed(candidateSeed, request, samplePoints, task);
-                    if (evaluation != null) {
-                        // Sampled successfully; reset consecutive failure count
-                        task.consecutiveFailures.set(0);
-                        if (request.maxHits() == 1) {
-                            // Hit!
-                            reportHit(task, candidateSeed, evaluation.score(), evaluation.structurePos());
-                            return;
-                        }
-                        task.hits.add(new SeedSearchResult.Ranked(candidateSeed, evaluation.score(), evaluation.structurePos()));
-                    } else {
-                        // Sampled successfully but no hit, reset consecutive failure count
-                        task.consecutiveFailures.set(0);
+            // Candidate-level parallelism: every worker pulls the next candidate
+            // slot from the same shared budget and the same unique-seed source,
+            // so the union of all evaluations matches the serial loop exactly
+            // (maxAttempts unique seeds, no duplicates). Which worker evaluates
+            // which seed first is nondeterministic — that only changes WHICH
+            // seed is tried k-th, never the result semantics. The coordinator
+            // thread participates as one of the workers, keeping the fixed
+            // pool fully utilized.
+            var stop = new AtomicBoolean(false);
+            var hit = new AtomicReference<SeedEvaluation>();
+            var workerLatch = new CountDownLatch(parallelism - 1);
+            for (int w = 1; w < parallelism; w++) {
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        evaluateLoop(task, attemptedSeeds, samplePoints, hit, stop);
+                    } catch (Throwable t) {
+                        stop.set(true);
+                        LOGGER.error("Seed search worker failed unexpectedly", t);
+                    } finally {
+                        workerLatch.countDown();
                     }
-                } catch (Exception e) {
-                    LOGGER.warn("Seed {} threw exception during sampling, skipping", candidateSeed, e);
-                    task.consecutiveFailures.incrementAndGet();
-                    if (task.consecutiveFailures.get() >= MAX_CONSECUTIVE_FAILURES) {
-                        LOGGER.error("Too many consecutive failures ({}), aborting search", MAX_CONSECUTIVE_FAILURES);
-                        reportResult(task, finish(task));
-                        return;
-                    }
+                }, executor);
+            }
+            try {
+                evaluateLoop(task, attemptedSeeds, samplePoints, hit, stop);
+            } catch (Throwable t) {
+                stop.set(true);
+                // Not logged here: the exceptionally() fallback on the
+                // runAsync future is the single record point for coordinator
+                // escapes, including generateSamplePoints and the dispatch
+                // chain that this catch does not wrap.
+                throw t;
+            }
+            try {
+                // No hard timeout: a single evaluation can legitimately take
+                // minutes (a structure probe with a large radius scans up to
+                // ~16k placement cells) and the serial implementation waited
+                // for the whole budget too. Dispatching before the latch hits
+                // zero would race in-flight evaluations and can silently drop
+                // a slow hit, so keep waiting and only log periodically.
+                long waitedSeconds = 0;
+                while (!workerLatch.await(WORKER_WAIT_LOG_INTERVAL_SECONDS, TimeUnit.SECONDS)) {
+                    waitedSeconds += WORKER_WAIT_LOG_INTERVAL_SECONDS;
+                    LOGGER.warn("Seed search workers still running after {}s ({} pending)",
+                            waitedSeconds, workerLatch.getCount());
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                stop.set(true);
             }
 
-            // Exhausted max attempts
-            reportResult(task, finish(task));
+            SeedEvaluation evaluation = hit.get();
+            if (evaluation != null) {
+                // Hit!
+                reportHit(task, evaluation.seed(), evaluation.score(), evaluation.structurePos());
+            } else if (cancelled.get()) {
+                reportResult(task, new SeedSearchResult.Cancelled());
+            } else {
+                // Exhausted max attempts (or aborted after repeated failures)
+                reportResult(task, finish(task));
+            }
         } finally {
-            var latch = currentLatch;
-            if (latch != null) latch.countDown();
+            // Count down this task's own latch, never whatever currentLatch
+            // points at by now (a follow-up search may already have replaced it).
+            doneLatch.countDown();
         }
+    }
+
+    /**
+     * Serial worker loop shared by the coordinator thread and the executor
+     * workers: claims the next attempt slot from the shared budget, evaluates
+     * that candidate and records single-hit / abort stop signals.
+     */
+    private void evaluateLoop(SearchTask task, Set<Long> attemptedSeeds, BlockPos[] samplePoints,
+                              AtomicReference<SeedEvaluation> hit, AtomicBoolean stop) {
+        var request = task.request;
+        var cancelled = task.cancelled;
+        while (!cancelled.get() && !stop.get()) {
+            // Claim the next attempt slot from the shared budget (CAS keeps
+            // task.attempts exact and <= maxAttempts under concurrency).
+            int attempt = claimAttemptSlot(task, request.maxAttempts());
+            if (attempt < 0) {
+                return;
+            }
+            long candidateSeed = nextUniqueSeed(attemptedSeeds);
+
+            // Notify UI of progress (first attempt and every 2nd attempt)
+            if (task.onProgress != null && (attempt == 1 || attempt % 2 == 0)) {
+                final int attempts = attempt;
+                minecraftExecute(() -> task.onProgress.accept(attempts));
+            }
+
+            try {
+                SeedEvaluation evaluation = evaluateSeed(candidateSeed, request, samplePoints, task);
+                if (cancelled.get()) {
+                    // Cancellation discards the in-flight result; the
+                    // coordinator reports the explicit Cancelled outcome.
+                    return;
+                }
+                if (evaluation != null) {
+                    // Sampled successfully; reset consecutive failure count
+                    task.consecutiveFailures.set(0);
+                    if (request.maxHits() == 1) {
+                        // First worker to land a hit wins the report; every
+                        // other worker loses the CAS and returns. The CAS alone
+                        // guarantees exactly-once, so this record must happen
+                        // even when stop is already set (an abort racing this
+                        // evaluation must not drop a computed hit).
+                        if (hit.compareAndSet(null, evaluation)) {
+                            stop.set(true);
+                        }
+                        return;
+                    }
+                    // Record before any stop check: an abort (too many
+                    // consecutive failures elsewhere) must not discard a hit
+                    // this worker has already computed. The coordinator only
+                    // snapshots task.hits after all workers exited.
+                    task.hits.add(new SeedSearchResult.Ranked(candidateSeed, evaluation.score(), evaluation.structurePos()));
+                } else {
+                    // Sampled successfully but no hit, reset consecutive failure count
+                    task.consecutiveFailures.set(0);
+                }
+            } catch (Exception e) {
+                LOGGER.warn("Seed {} threw exception during sampling, skipping", candidateSeed, e);
+                if (task.consecutiveFailures.incrementAndGet() >= MAX_CONSECUTIVE_FAILURES) {
+                    LOGGER.error("Too many consecutive failures ({}), aborting search", MAX_CONSECUTIVE_FAILURES);
+                    stop.set(true);
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
+     * Atomically claims the next attempt slot; returns the 1-based attempt
+     * number, or -1 when the budget of {@code maxAttempts} is exhausted.
+     */
+    private static int claimAttemptSlot(SearchTask task, int maxAttempts) {
+        for (;;) {
+            int seen = task.attempts.get();
+            if (seen >= maxAttempts) {
+                return -1;
+            }
+            if (task.attempts.compareAndSet(seen, seen + 1)) {
+                return seen + 1;
+            }
+        }
+    }
+
+    /**
+     * Draws the next never-tried seed. Synchronized because the draw itself
+     * costs nanoseconds next to the millisecond-scale per-seed evaluation.
+     */
+    private synchronized long nextUniqueSeed(Set<Long> attemptedSeeds) {
+        long candidateSeed;
+        do {
+            candidateSeed = random.nextLong();
+        } while (!attemptedSeeds.add(candidateSeed));
+        return candidateSeed;
     }
 
     /**
@@ -426,13 +554,27 @@ public class SeedSearchService implements AutoCloseable {
     }
 
     /**
-     * Report hit result on the main thread and validate fingerprint.
+     * Report hit result on the main thread and validate fingerprint. A task
+     * that was cancelled while its hit was in dispatch still receives exactly
+     * one terminal {@link SeedSearchResult.Cancelled} callback.
      */
     private void reportHit(SearchTask task, long seed, double score, @Nullable BlockPos structurePos) {
         minecraftExecute(() -> {
             // Validate: is the task token still valid?
-            if (currentTask != task || task.cancelled.get()) {
+            if (currentTask != task) {
                 LOGGER.info("Search result discarded: task no longer current");
+                return;
+            }
+            if (task.cancelled.get()) {
+                // Cancellation raced the hit dispatch (it landed after the
+                // winning worker's cancelled check in evaluateLoop but before
+                // this guard): the hit is discarded as before, but the caller
+                // still gets exactly one terminal callback instead of waiting
+                // for a result that never arrives.
+                LOGGER.info("Search hit discarded: task cancelled during dispatch");
+                currentTask = null;
+                currentFingerprint = null;
+                task.onComplete.accept(new SeedSearchResult.Cancelled());
                 return;
             }
             // Validate: does the config fingerprint match?

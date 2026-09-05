@@ -156,10 +156,10 @@ public final class WorldAnalysisScreen extends Screen {
 
     private void refreshExportButton(boolean running) {
         // Only finished analyses have non-partial metrics worth reporting.
-        RegionMetrics metrics = session.result();
-        exportReportButton.active = !running
-                && metrics.presentSamples() > 0
-                && !metrics.biomeCounts().isEmpty();
+        // hasExportableData() is an O(1) check; session.result() would
+        // rebuild (and, while running, re-sort) the full metrics snapshot
+        // every tick on the client thread.
+        exportReportButton.active = !running && session.hasExportableData();
     }
 
     private void exportReport() {

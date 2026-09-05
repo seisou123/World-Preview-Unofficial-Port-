@@ -40,7 +40,11 @@ public class FullChunkWorkUnit extends WorkUnit {
 
     private List<WorkResult> doRawNoiseWork() {
         List<WorkResult> results = new ArrayList<>((yMax - yMin) / yStride);
-        for (int y = yMin; y <= yMax && !isCanceled(); y += yStride) {
+        for (int y = yMin; y <= yMax; y += yStride) {
+            if (isCanceled()) {
+                markInterrupted();
+                break;
+            }
             WorkResult res             = new WorkResult(this, QuartPos.fromBlock(y), y == this.y ? primarySection : storage.section4(chunkPos, y, flags()),    new ArrayList<>(16), List.of());
             WorkResult temperature     = new WorkResult(this, QuartPos.fromBlock(y), storage.section4(chunkPos, y, PreviewStorage.FLAG_NOISE_TEMPERATURE),     new ArrayList<>(16), List.of());
             WorkResult humidity        = new WorkResult(this, QuartPos.fromBlock(y), storage.section4(chunkPos, y, PreviewStorage.FLAG_NOISE_HUMIDITY),        new ArrayList<>(16), List.of());
@@ -50,6 +54,7 @@ public class FullChunkWorkUnit extends WorkUnit {
             WorkResult weirdness       = new WorkResult(this, QuartPos.fromBlock(y), storage.section4(chunkPos, y, PreviewStorage.FLAG_NOISE_WEIRDNESS),       new ArrayList<>(16), List.of());
             for (BlockPos p : sampler.blocksForChunk(chunkPos, y)) {
                 if (isCanceled()) {
+                    markInterrupted();
                     break;
                 }
                 final var sample = sampleUtils.doSample(p);
@@ -76,7 +81,11 @@ public class FullChunkWorkUnit extends WorkUnit {
 
     private List<WorkResult> doNormalWork() {
         List<WorkResult> results = new ArrayList<>(((yMax - yMin) / yStride) * 7);
-        for (int y = yMin; y <= yMax && !isCanceled(); y += yStride) {
+        for (int y = yMin; y <= yMax; y += yStride) {
+            if (isCanceled()) {
+                markInterrupted();
+                break;
+            }
             WorkResult res = new WorkResult(
                     this,
                     QuartPos.fromBlock(y),
@@ -86,6 +95,7 @@ public class FullChunkWorkUnit extends WorkUnit {
             );
             for (BlockPos p : sampler.blocksForChunk(chunkPos, y)) {
                 if (isCanceled()) {
+                    markInterrupted();
                     break;
                 }
                 final var sample = sampleUtils.doSample(p);
