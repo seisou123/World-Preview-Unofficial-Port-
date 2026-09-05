@@ -96,6 +96,22 @@ public final class LightweightSeedSampler implements SeedSearchService.BiomeSamp
     }
 
     @Override
+    public boolean sampleContainsAny(int x, int y, int z, Set<Identifier> biomes) {
+        // One noise lookup per point for the whole group instead of one per
+        // group member (the interface default calls sampleContains k times,
+        // each triggering a full getNoiseBiome evaluation).
+        var biomeHolder = biomeSource.getNoiseBiome(
+                QuartPos.fromBlock(x),
+                QuartPos.fromBlock(y),
+                QuartPos.fromBlock(z),
+                randomState.sampler()
+        );
+        return biomeHolder.unwrapKey()
+                .map(key -> biomes.contains(key.identifier()))
+                .orElse(false);
+    }
+
+    @Override
     @Nullable
     public Identifier biomeAt(int x, int y, int z) {
         // Mirrors sampleContains() but returns the biome identifier instead of

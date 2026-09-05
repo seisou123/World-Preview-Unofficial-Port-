@@ -1,4 +1,21 @@
-# CHANGELOG — World Preview Fork
+## 1.5.1
+
+### New Features
+
+- The seed search screen is now a unified "Seeds" hub: the seed box with Random and Save buttons lives inside the screen, and results, history, favorites and saved seeds are tabs of one shared list; the old sidebar Seeds list was removed
+
+### Improvements
+
+- Preview maps load and draw noticeably faster: dragging feels more responsive, and the minimap, per-pixel noise effects and the analysis screen are much lighter
+- The saved-seeds workflow works again: the current seed is marked, clicking a saved seed applies it, and saving takes effect immediately
+- Seed search runs on several worker threads for faster hits; typing a new seed re-samples after a short pause instead of on every keystroke
+
+### Fixes
+
+- Fixed the y-intersections view staying black when its data had not been sampled yet
+- Fixed the waypoint naming dialog opening empty and crashing
+- Fixed multi-dimension terrain export flattening deep and tall dimensions
+- Seed searches are more robust: restarting no longer gets blocked by a just-stopped search, a crashed search no longer hangs, and searches no longer time out after 30 seconds
 
 ## 1.5.0
 

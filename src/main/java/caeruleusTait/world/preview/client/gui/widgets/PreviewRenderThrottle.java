@@ -22,6 +22,13 @@ final class PreviewRenderThrottle {
     private static final long DRAG_RENDER_INTERVAL_NANOS = 50_000_000L;
     /** While dragging, re-queue sampling at most every 50ms (same cadence as drag re-render). */
     private static final long DRAG_QUEUE_INTERVAL_NANOS = 50_000_000L;
+    /**
+     * Minimum spacing between data-driven heavy renders. Worker batches
+     * complete many times per second; without coalescing each completion
+     * triggered a full re-rasterize + full-texture GPU upload even though a
+     * later batch would overwrite it within the same frame period.
+     */
+    private static final long WRITE_RENDER_COALESCE_NANOS = 33_333_333L; // ~30 fps ceiling
 
     // --- Lightweight frame-time tracking (no boxing, no allocation) ---
     private long lastFrameNanos = 0;
@@ -37,6 +44,9 @@ final class PreviewRenderThrottle {
     // --- Render-skip optimization ---
     private BlockPos lastRenderedCenter = null;
     private long lastWriteCounter = -1;
+    private long lastWriteRenderNanos = 0;
+    /** Test hook: 0 disables write-render coalescing entirely. */
+    private long writeRenderCoalesceNanos = WRITE_RENDER_COALESCE_NANOS;
 
     // --- Texture upload tracking ---
     // Set whenever a new GPU texture has been created but not yet had biome
@@ -145,8 +155,19 @@ final class PreviewRenderThrottle {
             return false;
         }
         if (writeCounterChanged) {
-            // Data changed: ALWAYS re-render, bypassing adaptive throttle.
-            return true;
+            // Data changed: re-render, bypassing the adaptive throttle, but
+            // coalesced in time. The change itself is still DETECTED on every
+            // frame (the check above runs unconditionally); only the heavy
+            // render is rate-limited. While inside the window the still-stale
+            // writeCounter keeps this branch active, so the deferred render
+            // happens on the first frame after the window elapses — updates
+            // are delayed by at most one coalesce interval, never dropped.
+            final long now = System.nanoTime();
+            if (now - lastWriteRenderNanos >= writeRenderCoalesceNanos) {
+                lastWriteRenderNanos = now;
+                return true;
+            }
+            return false;
         }
         if (adaptiveSkipEveryN > 1 && lastRenderedCenter != null && currentCenter.equals(lastRenderedCenter)) {
             // Adaptive throttling active: only re-render on every Nth frame.
@@ -167,6 +188,11 @@ final class PreviewRenderThrottle {
     void markRendered(BlockPos center, long writeCounter) {
         lastRenderedCenter = center;
         lastWriteCounter = writeCounter;
+    }
+
+    /** Test hook: override the write-render coalesce window (0 disables it). */
+    void setWriteRenderCoalesceNanos(long nanos) {
+        this.writeRenderCoalesceNanos = nanos;
     }
 
     boolean needsInitialQueue() {
@@ -210,6 +236,7 @@ final class PreviewRenderThrottle {
     void invalidateAll() {
         lastRenderedCenter = null;
         lastWriteCounter = -1;
+        lastWriteRenderNanos = 0;
         resetDragTimers();
         needsInitialQueue = true;
         textureNeedsUpload = true;

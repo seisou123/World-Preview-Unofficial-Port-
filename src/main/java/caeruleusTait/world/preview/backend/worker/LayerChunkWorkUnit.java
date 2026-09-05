@@ -36,6 +36,7 @@ public class LayerChunkWorkUnit extends WorkUnit {
         WorkResult res = new WorkResult(this, QuartPos.fromBlock(y), primarySection, new ArrayList<>(16), List.of());
         for (BlockPos p : sampler.blocksForChunk(chunkPos, y)) {
             if (isCanceled()) {
+                markInterrupted();
                 break;
             }
             final var sample = sampleUtils.doSample(p);
@@ -54,6 +55,7 @@ public class LayerChunkWorkUnit extends WorkUnit {
         WorkResult weirdness       = new WorkResult(this, QuartPos.fromBlock(y), storage.section4(chunkPos, y, PreviewStorage.FLAG_NOISE_WEIRDNESS),       new ArrayList<>(16), List.of());
         for (BlockPos p : sampler.blocksForChunk(chunkPos, y)) {
             if (isCanceled()) {
+                markInterrupted();
                 break;
             }
             final var sample = sampleUtils.doSample(p);

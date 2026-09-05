@@ -20,6 +20,7 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.LayeredRegistryAccess;
+import net.minecraft.core.QuartPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.packs.resources.ResourceManager;
@@ -386,6 +387,18 @@ shutdownExecutors();
     }
 
     /**
+     * Clears the last-queued dedup guard so the next {@link #queueRange} call
+     * re-issues the range even when it is unchanged.  Used when the render mode
+     * changes to a storage layer that may never have been sampled for the
+     * current viewport: the biome layer is queued by every pass, but e.g. the
+     * y-intersection layer is only written while its feature toggle is enabled.
+     */
+    public void resetQueuedRange() {
+        lastQueuedTopLeft = null;
+        lastQueuedBotRight = null;
+    }
+
+    /**
      * True when no queue pass is running and every submitted batch has finished
      * (successfully, exceptionally or cancelled).  More accurate than
      * {@link #activeBatchCount()}, which never reaches zero because finished
@@ -511,11 +524,11 @@ shutdownExecutors();
             lastQueuedBotRight = null;
             return;
         }
-        units += queueForLevel(chunks, topLeftBlock.getY(), 4096, this::workUnitFactory);
+        units += queueForLevel(chunks, topLeftBlock.getY(), 4096, PreviewStorage.FLAG_BIOME, this::workUnitFactory);
 
         // Structures
         if (config.sampleStructures && shouldContinueQueuing(epochSnapshot)) {
-            units += queueForLevel(chunks, 0, 256, (pos, y) -> new StructStartWorkUnit(this, sampleUtils, pos, previewData));
+            units += queueForLevel(chunks, 0, 256, PreviewStorage.FLAG_STRUCT_START, (pos, y) -> new StructStartWorkUnit(this, sampleUtils, pos, previewData));
         }
 
         // Height map
@@ -530,9 +543,9 @@ shutdownExecutors();
                     heightMapChunks.add(shifted);
                 }
             }
-            units += queueForLevel(heightMapChunks, 0, 1, (pos, y) -> new HeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData));
+            units += queueForLevel(heightMapChunks, 0, 1, PreviewStorage.FLAG_HEIGHT, (pos, y) -> new HeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData));
         } else if (config.sampleHeightmap && shouldContinueQueuing(epochSnapshot)) {
-            units += queueForLevel(chunks, 0, 64, (pos, y) -> new SlowHeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, previewData));
+            units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_HEIGHT, (pos, y) -> new SlowHeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, previewData));
         }
 
         // Intersections
@@ -547,9 +560,9 @@ shutdownExecutors();
                     intersectChunks.add(shifted);
                 }
             }
-            units += queueForLevel(intersectChunks, 0, 1, (pos, y) -> new IntersectionWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData, Y_BLOCK_STRIDE));
+            units += queueForLevel(intersectChunks, 0, 1, PreviewStorage.FLAG_INTERSECT, (pos, y) -> new IntersectionWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData, Y_BLOCK_STRIDE));
         } else if (config.sampleIntersections && shouldContinueQueuing(epochSnapshot)) {
-            units += queueForLevel(chunks, 0, 64, (pos, y) -> new SlowIntersectionWorkUnit(this, chunkSampler, sampleUtils, pos, previewData, yMin(), yMax(), Y_BLOCK_STRIDE));
+            units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_INTERSECT, (pos, y) -> new SlowIntersectionWorkUnit(this, chunkSampler, sampleUtils, pos, previewData, yMin(), yMax(), Y_BLOCK_STRIDE));
         }
 
         // Now sample adjacent levels
@@ -558,7 +571,7 @@ shutdownExecutors();
                 if (shouldEarlyAbortQueuing || epochSnapshot != sessionEpoch.get()) {
                     break;
                 }
-                units += queueForLevel(chunks, y, 4096, this::workUnitFactory);
+                units += queueForLevel(chunks, y, 4096, PreviewStorage.FLAG_BIOME, this::workUnitFactory);
             }
         }
 
@@ -591,17 +604,40 @@ shutdownExecutors();
         return !shouldEarlyAbortQueuing && epochSnapshot == sessionEpoch.get();
     }
 
-    private int queueForLevel(List<ChunkPos> chunks, int y, int maxBatchSize, BiFunction<ChunkPos, Integer, WorkUnit> workUnitFactoryFunc) {
+    private int queueForLevel(List<ChunkPos> chunks, int y, int maxBatchSize, long flag, BiFunction<ChunkPos, Integer, WorkUnit> workUnitFactoryFunc) {
         WorkUnit[] toQueue = new WorkUnit[chunks.size()];
         int size = 0;
-        synchronized (completedSynchro) {
-            for (ChunkPos chunkPos : chunks) {
-                WorkUnit workUnit = workUnitFactoryFunc.apply(chunkPos, y);
-                if (workUnit.isCompleted()) {
-                    continue;
-                }
-                toQueue[size++] = workUnit;
+        // No completedSynchro here: the probe below is a read-only storage
+        // lookup (isChunkSampled never creates blocks or sections), and units
+        // are only constructed on a probe miss, outside any lock.  The old
+        // code held completedSynchro while constructing units, which itself
+        // takes section monitors, so dropping the outer lock cannot introduce
+        // a deadlock.  A batch completing a chunk between the probe and
+        // queueing at worst causes one redundant re-sample (sampling is
+        // idempotent); the secondary isCompleted() check after construction
+        // covers the cheap direction of that race.
+        // Note: FullChunkWorkUnit anchors its primary section at y == 0, so
+        // probe at 0 when full-vertical batching is enabled.  Every other call
+        // site passes y == 0 or builds layer units anchored at y.
+        final int probeY = config.buildFullVertChunk ? 0 : y;
+        for (ChunkPos chunkPos : chunks) {
+            // Cheap read-only probe: skip chunks whose layer was already fully
+            // sampled, without constructing a WorkUnit (its constructor does
+            // storage.section4: layer-map monitor + PreviewBlock monitor +
+            // possible section creation).
+            if (previewStorage.isChunkSampled(
+                    QuartPos.fromSection(chunkPos.x),
+                    QuartPos.fromBlock(probeY),
+                    QuartPos.fromSection(chunkPos.z),
+                    flag
+            )) {
+                continue;
             }
+            WorkUnit workUnit = workUnitFactoryFunc.apply(chunkPos, y);
+            if (workUnit.isCompleted()) {
+                continue;
+            }
+            toQueue[size++] = workUnit;
         }
 
         if (size == 0) {

@@ -61,6 +61,8 @@ public class SearchResultsList extends BaseObjectSelectionList<SearchResultsList
         public final boolean favorite;
         /** Whether right-click deletes this row (history entries). */
         public final boolean deletable;
+        /** Whether this row is the currently active preview seed (saved view). */
+        public boolean current;
         /** Located structure position for search hits with a structure criterion (nullable). */
         @Nullable public final BlockPos structurePos;
 
@@ -92,7 +94,8 @@ public class SearchResultsList extends BaseObjectSelectionList<SearchResultsList
         public void renderContent(GuiGraphics guiGraphics, int mouseX, int mouseY, boolean hovered, float partialTick) {
             int top = getContentY();
             int left = getContentX();
-            guiGraphics.drawString(minecraft.font, primaryText(), left + 4, top + 3, 0xFFFFFFFF);
+            String text = current ? "§a● " + primaryText() : primaryText();
+            guiGraphics.drawString(minecraft.font, text, left + 4, top + 3, current ? 0xFFB0FFB0 : 0xFFFFFFFF);
             String detail = (label == null || label.isBlank()) ? "" : seed;
             if (score > 0) {
                 detail = (detail.isEmpty() ? "" : detail + "  ") + String.format("§7%.0f", score);

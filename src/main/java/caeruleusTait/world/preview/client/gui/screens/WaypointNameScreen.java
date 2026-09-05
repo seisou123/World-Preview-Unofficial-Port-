@@ -55,6 +55,13 @@ public final class WaypointNameScreen extends Screen {
 
     @Override
     protected void init() {
+        // EditBox.setValue() fires the responder immediately, so confirmButton
+        // must exist before the responder is registered below.
+        confirmButton = Button.builder(CommonComponents.GUI_DONE, ignored -> confirm())
+                .bounds(width / 2 - 100, height / 2 + 22, 98, 20).build();
+        Button cancelButton = Button.builder(CommonComponents.GUI_CANCEL, ignored -> goBack())
+                .bounds(width / 2 + 2, height / 2 + 22, 98, 20).build();
+
         nameBox = new EditBox(font, width / 2 - 100, height / 2 - 30, 200, 20,
                 WorldPreviewComponents.WAYPOINT_NAME);
         nameBox.setMaxLength(32);
@@ -69,11 +76,6 @@ public final class WaypointNameScreen extends Screen {
                 .withValues(java.util.List.of(0, 1, 2, 3, 4, 5, 6, 7))
                 .create(width / 2 - 100, height / 2 - 4, 200, 20,
                         WorldPreviewComponents.WAYPOINT_COLOR, (btn, value) -> colorIndex = value);
-
-        confirmButton = Button.builder(CommonComponents.GUI_DONE, ignored -> confirm())
-                .bounds(width / 2 - 100, height / 2 + 22, 98, 20).build();
-        Button cancelButton = Button.builder(CommonComponents.GUI_CANCEL, ignored -> goBack())
-                .bounds(width / 2 + 2, height / 2 + 22, 98, 20).build();
 
         addRenderableWidget(nameBox);
         addRenderableWidget(colorCycle);

@@ -93,19 +93,7 @@ jar {
 	}
 }
 
-task devJar(type: Jar) {
-	from sourceSets.main.output
-	archiveClassifier = 'dev'
-	from("LICENSE") {
-		rename { "${it}_${project.base.archivesName.get()}"}
-	}
-}
-
-// The default build produces the main remapped JAR, the un-remapped dev JAR
-// and the sources jar (via withSourcesJar). sourcesZip stays on-demand.
-tasks.named('build') {
-	dependsOn 'devJar'
-}
+// Source ZIP archive (contains all Java sources + resources for reference)
 tasks.register('sourcesZip', Zip) {
 	description = 'Bundles all source files into a ZIP archive.'
 	group = 'build'
@@ -120,6 +108,24 @@ tasks.register('sourcesZip', Zip) {
 	from('LICENSE') {
 		rename { "${it}_${project.base.archivesName.get()}" }
 	}
+}
+
+// Dev JAR (compiled mod classes only, for use in dev environments where
+// dependencies are resolved separately)
+tasks.register('devJar', Jar) {
+	description = 'Assembles a dev JAR containing compiled classes for development.'
+	group = 'build'
+	archiveClassifier = 'dev'
+	from sourceSets.main.output
+	from("LICENSE") {
+		rename { "${it}_${project.base.archivesName.get()}" }
+	}
+}
+
+// The default build produces the main remapped JAR, the un-remapped dev JAR
+// and the sources jar (via withSourcesJar). sourcesZip stays on-demand.
+tasks.named('build') {
+	dependsOn 'devJar'
 }
 
 // configure the maven publication

@@ -6,6 +6,7 @@ import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.client.gui.PreviewContainerDataProvider;
 import caeruleusTait.world.preview.mixin.client.CreateWorldScreenAccessor;
+import net.minecraft.util.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.tabs.Tab;
@@ -58,8 +59,6 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
 
     private final Minecraft minecraft;
 
-    private final ExecutorService loadingExecutor = Executors.newFixedThreadPool(2);
-
     public PreviewTab(CreateWorldScreen screen, Minecraft _minecraft) {
         createWorldScreen = screen;
         uiState = screen.getUiState();
@@ -88,22 +87,6 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
     @Override
     public void close() {
         previewContainer.close();
-        if (loadingExecutor != null) {
-            loadingExecutor.shutdownNow();
-            boolean interrupted = false;
-            try {
-                if (!loadingExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    WorldPreview.LOGGER.warn("loadingExecutor did not terminate within 5s");
-                }
-            } catch (InterruptedException e) {
-                interrupted = true;
-                WorldPreview.LOGGER.warn("Interrupted while awaiting loadingExecutor termination");
-            } finally {
-                if (interrupted) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        }
     }
 
 
@@ -152,8 +135,8 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
                     // call (e.g. when the user changes seed/dimension/settings).
                     return new WorldCreationContext(cookie.worldGenSettings, layeredRegistryAccess, reloadableServerResources, worldDataConfiguration);
                 },
-                loadingExecutor,
-                loadingExecutor
+                Util.backgroundExecutor(),
+                minecraft
         );
 
         try {
