@@ -147,4 +147,34 @@ class PreviewDisplayRenderSkipTest {
         // Rendered-content cache is stale after resize
         assertTrue(t.shouldRerender(false, true, 5, CENTER, true));
     }
+
+    // === Write-render coalescing (setWriteRenderCoalesceNanos hook) ===
+
+    @Test
+    void writeCoalesce_skipsInsideWindow_withoutConsumingThePendingChange() {
+        PreviewRenderThrottle t = new PreviewRenderThrottle();
+        t.markTextureUploaded();
+        t.markRendered(CENTER, 1);
+        // First change passes: lastWriteRenderNanos is still 0, so the very
+        // first write-driven render is never delayed (same assumption as the
+        // existing writeCounterChanged tests above).
+        assertTrue(t.shouldRerender(false, true, 2, CENTER, true));
+        t.markRendered(CENTER, 2);
+
+        // Arm an effectively infinite window; uptime-independent.
+        t.setWriteRenderCoalesceNanos(Long.MAX_VALUE);
+        // A new write (2 -> 3) lands inside the window: heavy render deferred.
+        assertFalse(t.shouldRerender(false, true, 3, CENTER, true));
+        // Repeated call: still deferred, no state advanced inside the window.
+        assertFalse(t.shouldRerender(false, true, 3, CENTER, true));
+
+        // Disabling coalescing must surface the still-pending change. If the
+        // two deferred calls above had advanced lastWriteCounter, this call
+        // would fall through to the idle branch and return false - so this
+        // assertion proves both "never consumed while deferred" and "never
+        // dropped".
+        t.setWriteRenderCoalesceNanos(0);
+        assertTrue(t.shouldRerender(false, true, 3, CENTER, true));
+    }
 }
+

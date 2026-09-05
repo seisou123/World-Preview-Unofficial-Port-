@@ -78,13 +78,28 @@ public class WorkBatch {
                 return;
             }
 
-            // 1. Run work units collecting results; check isCanceled in loop
+            // 1. Run work units collecting results; check isCanceled in loop.
+            // On cancellation, break instead of returning so work that already
+            // finished is not dropped: batches are canceled at the start of
+            // every queue pass (drags re-queue every ~50ms), so dying with
+            // finished units in hand is the common case, not the exception.
+            // Units interrupted mid-sampling are excluded from markCompleted:
+            // their partial writes are idempotent, but only fully-run units may
+            // receive the completed bit ("completed => all quarts sampled").
             List<WorkResult> res = new ArrayList<>();
+            List<WorkUnit> doneUnits = new ArrayList<>();
             for (WorkUnit unit : workUnits) {
                 res.addAll(unit.work());
-                if (isCanceled()) {
-                    return;
+                if (!unit.wasInterrupted()) {
+                    doneUnits.add(unit);
                 }
+                if (isCanceled()) {
+                    break;
+                }
+            }
+
+            if (res.isEmpty()) {
+                return;
             }
 
             // 1.5. Discard results captured by an obsolete worldgen context.
@@ -104,15 +119,14 @@ public class WorkBatch {
                 return;
             }
 
-            // 3. Only mark completed after successful apply
+            // 3. Only mark completed after successful apply, and only for units
+            // that ran to completion
             synchronized (completedSynchro) {
-                workUnits.forEach(WorkUnit::markCompleted);
+                doneUnits.forEach(WorkUnit::markCompleted);
             }
 
             // 4. Notify the render thread that new data was written
-            if (!workUnits.isEmpty()) {
-                workUnits.get(0).storage.notifyWrite();
-            }
+            workUnits.get(0).storage.notifyWrite();
         } catch (Exception e) {
             LOGGER.error("WorkBatch process failed", e);
         }

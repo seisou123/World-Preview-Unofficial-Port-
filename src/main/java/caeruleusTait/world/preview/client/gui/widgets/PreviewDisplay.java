@@ -102,6 +102,7 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
 
     void resetQueuedRange() {
         lastQueuedRange = null;
+        lastQueueKey = null;
     }
 
     void showCopiedMessage(Component msg) {
@@ -134,6 +135,18 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     private final MapInteractionController interaction = new MapInteractionController(this);
 
     final PreviewRenderThrottle throttle = new PreviewRenderThrottle();
+
+    // --- Black-state (loading/failure screen) upload guard (R8) ---
+    // fillBlackAndUpload() is a full-texture fill plus a full GPU upload; on
+    // the loading/failure screens it used to run every frame even though the
+    // texture is not modified while such a screen is shown.  One fill+upload
+    // is enough; reset when a live render path runs or the texture changes.
+    private boolean blackStateUploaded = false;
+
+    // Lazily-built lines of the setup-failure message (R8).  Only rebuilt on
+    // world data reload / render-cache invalidation; language-change staleness
+    // on the failure screen is acceptable.
+    private List<MutableComponent> setupFailLines = null;
 
     // === Spawn pin API (delegated to the interaction controller) ===
     public void setSpawnPinMode(boolean enabled) { interaction.setSpawnPinMode(enabled); }
@@ -197,6 +210,15 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
 
     private GenerationRange lastQueuedRange = null;
 
+    // (R7) Identity of everything that determines the queued generation range:
+    // viewport center (the same value the mapping/range is built from),
+    // texture size, scale (quart expand/stride) and preload radius.  When this
+    // key is unchanged, the computed range is identical to the last queued
+    // one, so queueGeneration() can skip building the per-frame mapping/AABB/
+    // range objects unless an unsampled-viewport probe or the initial-queue
+    // guarantee requires the full path.
+    private QueueGenerationKey lastQueueKey = null;
+
     // --- Viewport force-load safety net ---
     // When sampling is fully idle but the visible viewport still contains
     // chunks without completed biome sampling (lost pending handoff in
@@ -206,6 +228,15 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     // hot-looping.
     private static final long FORCE_QUEUE_COOLDOWN_NANOS = 1_000_000_000L;
     private long lastForceQueueNanos = 0;
+
+    // --- Unsampled-viewport probe throttle (R7) ---
+    // queueGeneration() runs every frame; while sampling is idle the 3x3
+    // unsampled-area probe costs nine storage lookups (~18 monitor
+    // acquisitions per frame in the steady state) with no frequency limit.
+    // Cooldown-limit the probe so the idle steady state pays it at a bounded
+    // rate; the force-queue backstop itself keeps its own 1s cooldown.
+    private static final long UNSAMPLED_PROBE_COOLDOWN_NANOS = 250_000_000L;
+    private long lastUnsampledProbeNanos = 0;
 
     // --- Center coordinate string cache ---
     private String cachedCenterStr = null;
@@ -237,6 +268,9 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
         // biome data has not been rendered into it yet.  Mark it so the next
         // render frame performs a full generateRenderData + updateTexture cycle.
         throttle.invalidateAfterResize();
+        // (R8) The texture was recreated; the next loading/failure frame must
+        // perform its one-time black fill+upload again.
+        blackStateUploaded = false;
     }
 
 public void setSize(int width, int height) {
@@ -281,6 +315,11 @@ resizeImage();
         // longer valid (different seed/dimension/scale).  Drop the dedup guard
         // so the next render frame re-queues sampling for the current center.
         lastQueuedRange = null;
+        lastQueueKey = null;
+        // (R8) Reset the black-state upload guard and the cached failure
+        // message lines for the new world configuration.
+        blackStateUploaded = false;
+        setupFailLines = null;
         // Force a fresh queue + render cycle for the new world data.
         throttle.invalidateAll();
 
@@ -321,10 +360,20 @@ resizeImage();
         queueGeneration();
         synchronized (dataProvider) {
             if (dataProvider.setupFailed()) {
-                engine.fillBlackAndUpload();
+                // (R8) The texture is not modified while this screen is shown:
+                // fill+upload black once instead of on every frame.
+                if (!blackStateUploaded) {
+                    engine.fillBlackAndUpload();
+                    blackStateUploaded = true;
+                }
                 WorldPreviewClient.renderTexture(GuiGraphicsExtractor, engine.mainTexture(), xMin, yMin, xMax, yMax);
 
-                final List<MutableComponent> lines = MSG_ERROR_SETUP_FAILED.getString().lines().map(Component::literal).toList();
+                // (R8) Build the message lines once; the per-frame stream +
+                // toList() allocated a list and one component per line.
+                if (setupFailLines == null) {
+                    setupFailLines = MSG_ERROR_SETUP_FAILED.getString().lines().map(Component::literal).toList();
+                }
+                final List<MutableComponent> lines = setupFailLines;
 
                 final int centerX = getX() + (width / 2);
                 final int centerY = getY() + (height / 2) - ((lines.size() / 2) * (minecraft.font.lineHeight + 4));
@@ -335,7 +384,11 @@ resizeImage();
                     GuiGraphicsExtractor.centeredText(minecraft.font, line, centerX, centerY + offsetY, 0xFFFFFFFF);
                 }
             } else if (dataProvider.isUpdating()) {
-                engine.fillBlackAndUpload();
+                // (R8) Same once-only black fill+upload as the failure screen.
+                if (!blackStateUploaded) {
+                    engine.fillBlackAndUpload();
+                    blackStateUploaded = true;
+                }
                 WorldPreviewClient.renderTexture(GuiGraphicsExtractor, engine.mainTexture(), xMin, yMin, xMax, yMax);
 
                 final int centerX = getX() + (width / 2);
@@ -364,17 +417,27 @@ resizeImage();
                         cachedRenderData != null);
 
                 if (!needRerender) {
+                    // (R8) A live frame ran: the next loading/failure screen
+                    // must perform its one-time black fill+upload again.
+                    blackStateUploaded = false;
                     // Reuse cached render data — just re-render the existing texture
                     // and structures without regenerating or re-uploading.
                     WorldPreviewClient.renderTexture(GuiGraphicsExtractor, engine.mainTexture(), xMin, yMin, xMax, yMax);
 
                     GuiGraphicsExtractor.enableScissor(xMin, yMin, xMax, yMax);
-                    engine.renderStructures(cachedRenderData, GuiGraphicsExtractor);
+                    // Render-skip frame: reuse the hover grid from the last
+                    // heavy render instead of re-adding the same structures
+                    // (which grew the grid on every idle frame).
+                    engine.renderStructures(cachedRenderData, GuiGraphicsExtractor, false);
                     engine.renderPlayerAndSpawn(GuiGraphicsExtractor);
                     engine.renderSpawnPin(GuiGraphicsExtractor);
                     renderOverlays(GuiGraphicsExtractor);
                     GuiGraphicsExtractor.disableScissor();
                 } else {
+                    // (R8) A live frame ran: the next loading/failure screen
+                    // must perform its one-time black fill+upload again.
+                    blackStateUploaded = false;
+
                     throttle.markRendered(currentCenter, currentWriteCounter);
 
                     engine.beginFrameCounts();
@@ -566,6 +629,14 @@ resizeImage();
 
     private record GenerationRange(BlockPos min, BlockPos max) {}
 
+    /**
+     * (R7) Identity of everything that determines the queued generation range:
+     * the viewport center (the same value {@link #center()} feeds into the
+     * mapping), texture size, scale (quart expand/stride) and preload radius.
+     */
+    private record QueueGenerationKey(BlockPos center, int texWidth, int texHeight,
+                                      int quartExpand, int quartStride, int preload) {}
+
     void queueGeneration() {
         // Live drag center so newly revealed areas start sampling while the user
         // still holds the mouse.  Throttle during drag (50ms) so we do not cancel
@@ -603,7 +674,29 @@ resizeImage();
                 preload = config.preloadRadius;
             }
         }
+        // === (R7) Steady-state early-out ===
+        // queueGeneration() runs every frame and everything below allocates
+        // (ViewportMapping + ScaleSpec + QueueAabb + range + two BlockPos) and,
+        // while sampling is idle, probes a 3x3 grid of viewport points (nine
+        // storage lookups).  When the viewport key is unchanged, the computed
+        // range is identical to the last queued one, so the only reasons to run
+        // the full path are the initial-queue guarantee (needsInitialQueue) or
+        // a due unsampled-viewport probe (idle + probe cooldown elapsed).
+        final long now = System.nanoTime();
+        final boolean idle = workManager.isSetup() && workManager.isIdle();
+        final boolean probeDue = idle && (now - lastUnsampledProbeNanos) >= UNSAMPLED_PROBE_COOLDOWN_NANOS;
         final BlockPos c = center();
+        final QueueGenerationKey key = new QueueGenerationKey(
+                c,
+                texWidth,
+                texHeight,
+                renderSettings.quartExpand(),
+                renderSettings.quartStride(),
+                preload
+        );
+        if (!probeDue && !throttle.needsInitialQueue() && key.equals(lastQueueKey)) {
+            return;
+        }
         final ViewportMapping map = new ViewportMapping(
                 c.getX(),
                 c.getY(),
@@ -626,13 +719,16 @@ resizeImage();
         // WorkManager-side).  Intentionally no isDragging() gate: pausing
         // mid-drag at an unloaded position must also recover.
         if (throttle.initialDataReceived()
-                && workManager.isSetup()
-                && workManager.isIdle()
+                && idle
                 && viewportHasUnsampledArea(map)) {
-            final long now = System.nanoTime();
+            // (R7) The probe ran on this frame; restart the probe cooldown
+            // regardless of the outcome so the idle steady state probes at a
+            // bounded rate instead of every frame.
+            lastUnsampledProbeNanos = now;
             if (now - lastForceQueueNanos >= FORCE_QUEUE_COOLDOWN_NANOS) {
                 lastForceQueueNanos = now;
                 lastQueuedRange = range;
+                lastQueueKey = key;
                 throttle.clearNeedsInitialQueue();
                 WorldPreview.LOGGER.info(
                         "Viewport contains unsampled chunks while sampling is idle — forcing re-queue of {} .. {}",
@@ -652,6 +748,7 @@ resizeImage();
         }
         throttle.clearNeedsInitialQueue();
         lastQueuedRange = range;
+        lastQueueKey = key;
         workManager.queueRange(range.min(), range.max());
     }
 
@@ -805,6 +902,11 @@ resizeImage();
         // Drop the queued-range dedup guard so the next frame re-evaluates the
         // range instead of short-circuiting against a stale pre-change range.
         lastQueuedRange = null;
+        lastQueueKey = null;
+        // (R8) Reset the black-state guard so a following loading/failure
+        // screen performs its one-time fill+upload again.
+        blackStateUploaded = false;
+        setupFailLines = null;
         dataVisualizer.invalidateCache();
         // Reset mouse interaction state in case a mouse press was interrupted
         // by a screen change (e.g. opening TerrainExportScreen while dragging).
