@@ -60,6 +60,7 @@ public class SlowIntersectionWorkUnit extends WorkUnit {
         // Do the actual work
         for (BlockPos p : sampler.blocksForChunk(chunkPos, 0)) {
             if (isCanceled()) {
+                markInterrupted();
                 break;
             }
             final NoiseColumn nc = sampleUtils.doIntersectionsSlow(p);

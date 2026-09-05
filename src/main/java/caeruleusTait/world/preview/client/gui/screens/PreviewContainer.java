@@ -26,7 +26,6 @@ import caeruleusTait.world.preview.client.gui.widgets.ToggleButton;
 import caeruleusTait.world.preview.client.gui.widgets.TranslucentButton;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BaseObjectSelectionList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
-import caeruleusTait.world.preview.client.gui.widgets.lists.SeedsList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
 import caeruleusTait.world.preview.mixin.client.ScreenAccessor;
 import com.mojang.blaze3d.platform.NativeImage;
@@ -86,8 +85,9 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -202,7 +202,6 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private Button resetDefaultStructureVisibility;
     private Button switchBiomes;
     private Button switchStructures;
-    private Button switchSeeds;
     private Button toggleSetSpawn;
     private boolean spawnPinActive = false;
     private Button toggleWaypoints;
@@ -215,7 +214,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     // floating semi-transparent panel that overlays the map.
     private boolean sidebarCollapsed = true;  // collapsed by default for max map area
     // Which floating panel is currently shown over the map:
-    // -1 = none, 0 = biomes, 1 = structures, 2 = seeds
+    // -1 = none, 0 = biomes, 1 = structures
     private int floatingPanel = -1;
     // Width of the floating panel when collapsed
     private static final int RAIL_WIDTH = 28;
@@ -227,23 +226,38 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private final PreviewDisplay previewDisplay;
     private BiomesList biomesList;
     private StructuresList structuresList;
-    private SeedsList seedsList;
     private PreviewContainerTabManager tabManager;
     private BiomesList.BiomeEntry[] allBiomes;
     private StructuresList.StructureEntry[] allStructures;
     private NativeImage[] allStructureIcons;
     private NativeImage playerIcon;
     private NativeImage spawnIcon;
-    private List<SeedsList.SeedEntry> seedEntries;
     private ScreenRectangle lastScreenRectangle;
 
     private boolean inhibitUpdates = true;
     private boolean isUpdating = false;
     private boolean setupFailed = false;
     private volatile boolean cacheLoading = false;
-    private final ExecutorService reloadExecutor = Executors.newSingleThreadExecutor();
+    private volatile boolean closed = false;
+    private final ScheduledExecutorService reloadExecutor = Executors.newSingleThreadScheduledExecutor();
     private final Executor serverThreadPoolExecutor;
     private final AtomicInteger reloadRevision = new AtomicInteger(0);
+
+    // Seed edits trigger a full world reload; debounce them so typing (or a
+    // randomize+edit burst) starts exactly one reload after the input pauses.
+    private static final long SEED_EDIT_DEBOUNCE_MS = 300;
+    private ScheduledFuture<?> pendingSeedEditCommit;
+    /** Newest seed awaiting the debounced commit; consumed by commitSeedEdit. */
+    private String pendingSeedEditValue;
+
+    // The sidebar biome list is re-sorted and rebuilt on every visible-count
+    // change; while sampling runs this used to fire per heavy render (dozens
+    // of times per second). Coalesce it to at most ~4 Hz with a trailing
+    // flush so the final counts are never dropped.
+    private static final long BIOMES_LIST_MIN_INTERVAL_NANOS = 250_000_000L;
+    private long lastBiomesListUpdateNanos = 0;
+    private volatile Short2LongMap pendingVisibleBiomes;
+    private ScheduledFuture<?> pendingBiomesListFlush;
 
     private final List<AbstractWidget> toRender = new ArrayList<>();
 
@@ -372,18 +386,16 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(resetDefaultStructureVisibility);
     }
 
-    /** Creates the three sidebar rail buttons (biomes / structures / seeds). */
+    /** Creates the two sidebar rail buttons (biomes / structures). The seeds
+     *  surface lives in {@link SeedSearchScreen}, which also manages saved seeds. */
     private void createRailButtons(Font font) {
         switchBiomes = railButton(font, PreviewContainerTabManager.DisplayType.BIOMES, 0,
                 x -> tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.BIOMES));
         switchStructures = railButton(font, PreviewContainerTabManager.DisplayType.STRUCTURES, 1,
                 x -> tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.STRUCTURES));
-        switchSeeds = railButton(font, PreviewContainerTabManager.DisplayType.SEEDS, 2,
-                x -> tabManager.onTabButtonChange(x, PreviewContainerTabManager.DisplayType.SEEDS));
 
         toRender.add(switchBiomes);
         toRender.add(switchStructures);
-        toRender.add(switchSeeds);
     }
 
     /**
@@ -413,17 +425,12 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         structuresList = new StructuresList(minecraft, 200, 300, 4, 100);
         structuresList.setRightClickListener(entry -> openSeedSearchScreen(null, entry, true));
 
-        seedsList = new SeedsList(minecraft, this);
-        updateSeedListWidget();
-
         tabManager = new PreviewContainerTabManager(
                 cfg,
                 biomesList,
                 structuresList,
-                seedsList,
                 switchBiomes,
                 switchStructures,
-                switchSeeds,
                 resetDefaultStructureVisibility
         );
 
@@ -432,7 +439,6 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // priority over the map.  They also render on top of the map.
         toRender.add(biomesList);
         toRender.add(structuresList);
-        toRender.add(seedsList);
     }
 
     /** Creates the view-mode toggles (caves, structures, biomes/noise/heightmap/intersections, expand). */
@@ -702,6 +708,15 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // Without this, the render-skip optimization sees an unchanged center and
         // write counter, so it reuses stale cached data from the previous mode.
         previewDisplay.invalidateRenderCache();
+        // The new mode reads a different storage flag (e.g. FLAG_INTERSECT for the
+        // y-intersections view), and that layer is only written while a range pass
+        // runs with its feature toggle enabled.  Clear the WorkManager dedup guard
+        // so the next frame re-issues the viewport even though its range is
+        // unchanged; queueForLevel skips completed chunks, so only the missing
+        // layer gets sampled.  Without this, a view whose layer was never sampled
+        // here renders permanently black: the empty sections render as 0xFF000000
+        // and the frozen write counter keeps re-drawing that black frame.
+        workManager.resetQueuedRange();
     }
 
     private synchronized void updateSettings() {
@@ -840,7 +855,6 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 
     private void updateSeedAndConfigUI() {
         saveSeed.active = !dataProvider.seed().isEmpty() && !cfg.savedSeeds.contains(dataProvider.seed());
-        updateSeedListWidget();
         seedEdit.setValue(dataProvider.seed());
         if (!seedEdit.isFocused()) {
             seedEdit.moveCursorToStart(false);
@@ -1152,6 +1166,14 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // Without this, lastQueuedRange still holds the previous drag range,
         // causing queueGeneration() to return early and the preview stays black.
         previewDisplay.invalidateRenderCache();
+        if (lastScreenRectangle == null) {
+            // Display not laid out yet (tab never opened): texWidth/texHeight
+            // are still the 100x100 constructor defaults, so a range computed
+            // now would be the wrong size and get cancelled wholesale by the
+            // real viewport's first queue pass.  The first render frame queues
+            // the actual viewport instead (throttle.needsInitialQueue).
+            return;
+        }
         final BlockPos earlyCenter = renderSettings.center();
         final double earlyScale = renderSettings.toScaleSpec().blockScale();
         // Use getTexWidth()/getTexHeight() so the early-queue range matches
@@ -1414,6 +1436,36 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 
     @Override
     public void onVisibleBiomesChanged(Short2LongMap visibleBiomes) {
+        long now = System.nanoTime();
+        long elapsed = now - lastBiomesListUpdateNanos;
+        if (elapsed >= BIOMES_LIST_MIN_INTERVAL_NANOS) {
+            applyVisibleBiomes(visibleBiomes);
+            return;
+        }
+        // Inside the coalesce window: remember the newest counts and schedule
+        // one trailing flush so the final state is never dropped.
+        pendingVisibleBiomes = visibleBiomes;
+        if (pendingBiomesListFlush == null || pendingBiomesListFlush.isDone()) {
+            long delayMs = Math.max(1, (BIOMES_LIST_MIN_INTERVAL_NANOS - elapsed) / 1_000_000L);
+            pendingBiomesListFlush = reloadExecutor.schedule(() -> minecraft.execute(() -> {
+                // close() only cancels the outer schedule; an inner lambda
+                // already queued on the main thread still runs. Guard at the
+                // point of effect (same thread that runs close()).
+                if (closed) {
+                    return;
+                }
+                Short2LongMap pending = pendingVisibleBiomes;
+                pendingVisibleBiomes = null;
+                if (pending != null) {
+                    applyVisibleBiomes(pending);
+                }
+            }), delayMs, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void applyVisibleBiomes(Short2LongMap visibleBiomes) {
+        lastBiomesListUpdateNanos = System.nanoTime();
+        pendingVisibleBiomes = null;
         // Update visible count for all biomes
         for (BiomesList.BiomeEntry biome : allBiomes) {
             long count = visibleBiomes.getOrDefault(biome.id(), 0L);
@@ -1447,7 +1499,30 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         structuresList.replaceEntries(res);
     }
 
-    private void randomizeSeed(Button btn) {
+    /**
+     * Applies a seed change. Called on every keystroke of the seed edit box
+     * and by the randomize/apply flows; the (expensive) world reload is
+     * debounced so a burst of calls starts exactly one reload.
+     */
+    public void setSeed(String seed) {
+        if (Objects.equals(dataProvider.seed(), seed) || !dataProvider.seedIsEditable()) {
+            return;
+        }
+        pendingSeedEditValue = seed;
+        if (pendingSeedEditCommit != null) {
+            pendingSeedEditCommit.cancel(false);
+        }
+        pendingSeedEditCommit = reloadExecutor.schedule(
+                () -> minecraft.execute(() -> setSeedImmediate(seed)),
+                SEED_EDIT_DEBOUNCE_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Generates a fresh random string seed, applies it to the preview and
+     * returns it so callers can sync their own seed edit boxes immediately
+     * (the debounced commit only updates dataProvider.seed() ~300ms later).
+     */
+    public String randomizeSeed(Button btn) {
         UUID uuid = UUID.randomUUID();
         ByteBuffer bb = ByteBuffer.allocate(Long.BYTES * 2);
         bb.putLong(uuid.getMostSignificantBits());
@@ -1456,21 +1531,50 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         String uuidSeed = Base64.getEncoder().encodeToString(bb.array()).substring(0, 16);
         setSeed(uuidSeed);
         // setSeed(String.valueOf(WorldOptions.randomSeed()));
+        return uuidSeed;
     }
 
-    private void saveCurrentSeed(Button btn) {
-        cfg.savedSeeds.add(dataProvider.seed());
-        saveSeed.active = false;
-        updateSeedListWidget();
+    /**
+     * Applies a pending debounced seed edit immediately instead of waiting out
+     * the debounce window.  Used by the seed screen's save flow so the saved
+     * seed is the one currently typed, not the previously applied one.
+     */
+    public void commitSeedEdit() {
+        if (pendingSeedEditCommit != null) {
+            pendingSeedEditCommit.cancel(false);
+            pendingSeedEditCommit = null;
+        }
+        if (pendingSeedEditValue != null) {
+            String seed = pendingSeedEditValue;
+            pendingSeedEditValue = null;
+            setSeedImmediate(seed);
+        }
+    }
+
+    /** Saves the current seed into the config's savedSeeds list (deduplicated). */
+    public void saveCurrentSeed(Button btn) {
+        if (dataProvider.seed().isEmpty()) {
+            return;
+        }
+        if (!cfg.savedSeeds.contains(dataProvider.seed())) {
+            cfg.savedSeeds.add(dataProvider.seed());
+            saveSeed.active = false;
+            // Persist immediately: a crash before the host screen closes must
+            // not lose the just-saved seed.
+            worldPreview().saveConfig();
+        }
     }
 
     public void deleteSeed(String seed) {
-        cfg.savedSeeds.remove(seed);
-        updateSeedListWidget();
+        if (cfg.savedSeeds.remove(seed)) {
+            worldPreview().saveConfig();
+        }
+        // Deleting the current seed re-enables the seed bar's save button.
+        saveSeed.active = !dataProvider.seed().isEmpty() && !cfg.savedSeeds.contains(dataProvider.seed());
     }
 
-    public void setSeed(String seed) {
-        if (Objects.equals(dataProvider.seed(), seed) || !dataProvider.seedIsEditable()) {
+    private void setSeedImmediate(String seed) {
+        if (closed || Objects.equals(dataProvider.seed(), seed) || !dataProvider.seedIsEditable()) {
             return;
         }
 
@@ -1482,15 +1586,6 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             inhibitUpdates = initialInhibitUpdates;
         }
         updateSettings();
-    }
-
-    private void updateSeedListWidget() {
-        seedEntries = cfg.savedSeeds.stream().map(seedsList::createEntry).toList();
-        seedsList.replaceEntries(seedEntries);
-        int idx = cfg.savedSeeds.indexOf(dataProvider.seed());
-        if (idx >= 0) {
-            seedsList.setSelected(seedEntries.get(idx));
-        }
     }
 
     public void resetTabs() {
@@ -1652,25 +1747,20 @@ public void onScreenReentry() {
         int switchHeight = LINE_HEIGHT - 2;
         int maxSwitchWidth = RAIL_WIDTH - 2;
         // The seed search button shares the rail, so its label counts toward
-        // the shared auto width (computed before the three setWidth calls).
+        // the shared auto width (computed before the setWidth calls).
         seedSearchButton.updateAutoWidth();
         maxSwitchWidth = Math.max(maxSwitchWidth, seedSearchButton.getWidth());
         if (switchBiomes instanceof TranslucentButton tb) { tb.updateAutoWidth(); maxSwitchWidth = Math.max(maxSwitchWidth, tb.getWidth()); }
         if (switchStructures instanceof TranslucentButton ts) { ts.updateAutoWidth(); maxSwitchWidth = Math.max(maxSwitchWidth, ts.getWidth()); }
-        if (switchSeeds instanceof TranslucentButton tsp) { tsp.updateAutoWidth(); maxSwitchWidth = Math.max(maxSwitchWidth, tsp.getWidth()); }
         switchBiomes.setWidth(maxSwitchWidth);
         switchStructures.setWidth(maxSwitchWidth);
-        switchSeeds.setWidth(maxSwitchWidth);
         switchBiomes.setPosition(railLeft, railY);
         switchBiomes.active = true;
         railY += switchHeight + 4;
         switchStructures.setPosition(railLeft, railY);
         switchStructures.active = true;
         railY += switchHeight + 4;
-        switchSeeds.setPosition(railLeft, railY);
-        switchSeeds.active = true;
-        railY += switchHeight + 4;
-        // Seed search button directly below the three rail buttons.
+        // Seed search button directly below the two rail buttons.
         seedSearchButton.setPosition(railLeft, railY);
         seedSearchButton.setWidth(maxSwitchWidth);
         seedSearchButton.visible = cfg.showSeedSearchButton;
@@ -1718,7 +1808,6 @@ public void onScreenReentry() {
         // --- Floating panel overlay ---
         boolean showBiomesList = (floatingPanel == 0);
         boolean showStructuresList = (floatingPanel == 1);
-        boolean showSeedsList = (floatingPanel == 2);
 
         int panelTop = top + (cfg.showAnalysisButton ? 2 : 1) * (LINE_HEIGHT + LINE_VSPACE);
         int panelBottom = bottom - 4;
@@ -1732,8 +1821,6 @@ public void onScreenReentry() {
             biomesList.active = true;
             structuresList.visible = false;
             structuresList.active = false;
-            seedsList.visible = false;
-            seedsList.active = false;
         } else if (showStructuresList) {
             structuresList.setPosition(panelX, panelTop);
             structuresList.setSize(FLOATING_PANEL_WIDTH, panelHeight);
@@ -1741,24 +1828,11 @@ public void onScreenReentry() {
             structuresList.active = true;
             biomesList.visible = false;
             biomesList.active = false;
-            seedsList.visible = false;
-            seedsList.active = false;
-        } else if (showSeedsList) {
-            seedsList.setPosition(panelX, panelTop);
-            seedsList.setSize(FLOATING_PANEL_WIDTH, panelHeight);
-            seedsList.visible = true;
-            seedsList.active = true;
-            biomesList.visible = false;
-            biomesList.active = false;
-            structuresList.visible = false;
-            structuresList.active = false;
         } else {
             biomesList.visible = false;
             biomesList.active = false;
             structuresList.visible = false;
             structuresList.active = false;
-            seedsList.visible = false;
-            seedsList.active = false;
         }
     }
 
@@ -1844,15 +1918,12 @@ public void onScreenReentry() {
         int topRows = cfg.showAnalysisButton ? 2 : 1;
         top += topRows * (LINE_HEIGHT + LINE_VSPACE);
         int switchBiomesWidth = 45;
-        int switchSeedsWidth = 45;
-        int switchStructuresWidth = leftWidth - switchBiomesWidth - switchSeedsWidth - 4;
+        int switchStructuresWidth = leftWidth - switchBiomesWidth - 4;
         switchBiomes.setPosition(left, top);
         switchStructures.setPosition(left + switchBiomesWidth + 2, top);
-        switchSeeds.setPosition(left + switchBiomesWidth + switchStructuresWidth + 4, top);
 
         switchBiomes.setWidth(switchBiomesWidth);
         switchStructures.setWidth(switchStructuresWidth);
-        switchSeeds.setWidth(switchSeedsWidth);
 
         // Seed search button directly below the switch row; the lists start
         // one row further down when it is shown.
@@ -1865,9 +1936,6 @@ public void onScreenReentry() {
 
         biomesList.setPosition(left, top);
         biomesList.setSize(leftWidth, bottom - top - LINE_VSPACE);
-
-        seedsList.setPosition(left, top);
-        seedsList.setSize(leftWidth, bottom - top - LINE_VSPACE);
 
         // BOTTOM
         //  - new row
@@ -1882,6 +1950,13 @@ public void onScreenReentry() {
 
     @Override
     public void close() {
+        closed = true;
+        if (pendingSeedEditCommit != null) {
+            pendingSeedEditCommit.cancel(false);
+        }
+        if (pendingBiomesListFlush != null) {
+            pendingBiomesListFlush.cancel(false);
+        }
         seedSearchService.close();
         terrainExportController.close();
         closeActiveAnalysisSession();
@@ -2020,7 +2095,9 @@ public void onScreenReentry() {
     }
 
     /**
-     * Opens the advanced seed search screen.
+     * Opens the seed screen, defaulting to the saved-seeds view when no search
+     * is running or has results — the sidebar "Seeds" button's old behavior of
+     * opening the saved-seed list directly.
      *
      * @param biome biome pre-selected in the search screen's picker (nullable)
      * @param structure structure pre-selected as search criterion (nullable)
@@ -2029,9 +2106,19 @@ public void onScreenReentry() {
     public void openSeedSearchScreen(@Nullable BiomesList.BiomeEntry biome,
                                      @Nullable StructuresList.StructureEntry structure,
                                      boolean autoStart) {
+        SeedSearchScreen.View initialView =
+                (isSeedSearchRunning() || lastSeedSearchResult() != null)
+                        ? SeedSearchScreen.View.RESULTS
+                        : SeedSearchScreen.View.SAVED;
+        openSeedSearchScreen(biome, structure, autoStart, initialView);
+    }
+
+    public void openSeedSearchScreen(@Nullable BiomesList.BiomeEntry biome,
+                                     @Nullable StructuresList.StructureEntry structure,
+                                     boolean autoStart, SeedSearchScreen.View initialView) {
         if (!workManager.isSetup()) return;
         minecraft.gui.setScreen(new caeruleusTait.world.preview.client.gui.screens.SeedSearchScreen(
-                parentScreen, this, biome, structure, autoStart));
+                parentScreen, this, biome, structure, autoStart, initialView));
     }
 
     public WorkManager workManager() {
@@ -2062,7 +2149,8 @@ public void onScreenReentry() {
             return;
         }
         Path outputDir = worldPreview.configDir().resolve("terrain_exports");
-        terrainExportController.start(spec, terrainExportSampler, heightProbe(), exportOrigin(), outputDir);
+        terrainExportController.start(spec, terrainExportSampler, heightProbe(), exportOrigin(),
+                workManager.yMin(), workManager.yMax(), outputDir);
     }
 
     /** Real-height probe over the live preview storage; null when unavailable. */

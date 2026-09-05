@@ -64,12 +64,12 @@ public final class ContourRenderer {
      * Modifies the colors array in-place, blending contour pixels onto existing colors.
      * </p>
      *
-     * @param heights Height field, heights[y * width + x]
+     * @param heights Height field, heights[y * width + x], in block-height units
      * @param colors  Color buffer (ABGR), same size as heights, modified in-place
      * @param width   Field width
      * @param height  Field height
      */
-    public void render(byte[] heights, int[] colors, int width, int height) {
+    public void render(short[] heights, int[] colors, int width, int height) {
         if (minorInterval > 0) {
             renderContourLevel(heights, colors, width, height, minorInterval, minorColor, minorAlpha);
         }
@@ -79,7 +79,7 @@ public final class ContourRenderer {
     /**
      * Execute Marching Squares contour drawing for a single interval level.
      */
-    private void renderContourLevel(byte[] heights, int[] colors, int width, int height,
+    private void renderContourLevel(short[] heights, int[] colors, int width, int height,
                                      int interval, int lineColor, int alpha) {
         float invAlpha = 1f - alpha / 255f;
         float alphaF = alpha / 255f;
@@ -91,10 +91,10 @@ public final class ContourRenderer {
                 int idx01 = (y + 1) * width + x;
                 int idx11 = (y + 1) * width + x + 1;
 
-                int h00 = heights[idx00] & 0xFF;
-                int h10 = heights[idx10] & 0xFF;
-                int h01 = heights[idx01] & 0xFF;
-                int h11 = heights[idx11] & 0xFF;
+                int h00 = heights[idx00] & 0xFFFF;
+                int h10 = heights[idx10] & 0xFFFF;
+                int h01 = heights[idx01] & 0xFFFF;
+                int h11 = heights[idx11] & 0xFFFF;
 
                 // Check if this 2x2 cell crosses any contour level
                 int minH = Math.min(Math.min(h00, h10), Math.min(h01, h11));
