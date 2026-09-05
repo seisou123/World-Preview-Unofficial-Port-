@@ -14,6 +14,7 @@ import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
 import caeruleusTait.world.preview.domain.waypoint.Waypoint;
 import caeruleusTait.world.preview.domain.waypoint.WaypointStore;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
@@ -27,14 +28,16 @@ import net.minecraft.resources.Identifier;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
- * Advanced seed search screen: combines biome criteria chosen in a filterable
- * multi-select picker (any-of biome group) with a structure criterion,
- * configures search limits and shows ranked results plus the persistent
- * search history and favorites.
+ * Unified seed screen: enter/randomize/save the world seed, run advanced seed
+ * searches combining biome criteria chosen in a filterable multi-select picker
+ * (any-of biome group) with a structure criterion, and browse ranked results
+ * plus the persistent history, favorites and saved seeds.
  */
 public final class SeedSearchScreen extends Screen implements SearchResultsList.RowActions {
 
@@ -66,8 +69,12 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private Button stopButton;
     private Button compareButton;
     private Button backButton;
-    private CycleButton<View> viewCycle;
+    /** View tabs (results/history/favorites/saved) rendered above the results list. */
+    private final Map<View, Button> viewTabs = new EnumMap<>(View.class);
     private SearchResultsList resultsList;
+    private EditBox seedEdit;
+    private Button randomizeSeedButton;
+    private Button saveSeedButton;
 
     /** Y of the footer action row (Start/Stop/Compare + hits), pinned to the screen bottom. */
     private int actionRowY;
@@ -87,14 +94,15 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private boolean applyBestOnComplete;
     private View currentView = View.RESULTS;
 
-    private enum View { RESULTS, HISTORY, FAVORITES }
+    /** Tabs of the results list; SAVED shows the config's persistent savedSeeds. */
+    enum View { RESULTS, HISTORY, FAVORITES, SAVED }
 
     private enum Anchor { CENTER, ORIGIN }
 
     public SeedSearchScreen(Screen parent, PreviewContainer container,
                             @Nullable BiomesList.BiomeEntry biome,
                             @Nullable StructuresList.StructureEntry structure,
-                            boolean autoStart) {
+                            boolean autoStart, View initialView) {
         super(WorldPreviewComponents.SEARCH_TITLE);
         this.parent = parent;
         this.container = container;
@@ -102,6 +110,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         this.initialStructure = structure;
         this.autoStart = autoStart;
         this.applyBestOnComplete = autoStart;
+        this.currentView = initialView;
         this.structureId = structure != null ? structure.structureId() : null;
         this.structureName = structure != null ? structure.name() : null;
     }
@@ -116,7 +125,6 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         // survives returning to this screen.
         hitRows.clear();
         statusText = "";
-        currentView = View.RESULTS;
 
         // Biome criteria picker (multi-select, any-of group)
         biomePicker = new BiomePickerList(minecraft, container.allBiomes());
@@ -153,16 +161,45 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             .withValues(List.of(Anchor.CENTER, Anchor.ORIGIN))
             .create(0, 0, 160, 20, WorldPreviewComponents.SEARCH_ANCHOR, (btn, value) -> { });
 
-        viewCycle = CycleButton.builder(view -> switch (view) {
-                case RESULTS -> WorldPreviewComponents.SEARCH_VIEW_RESULTS;
-                case HISTORY -> WorldPreviewComponents.SEARCH_VIEW_HISTORY;
-                case FAVORITES -> WorldPreviewComponents.SEARCH_VIEW_FAVORITES;
-            }, View.RESULTS)
-            .withValues(List.of(View.RESULTS, View.HISTORY, View.FAVORITES))
-            .create(0, 0, 110, 20, WorldPreviewComponents.SEARCH_VIEW, (btn, value) -> {
-                currentView = value;
-                refreshList();
-            });
+        // View tabs for the results list: search hits, history, favorites and
+        // the saved seeds.  A visible tab row replaces the former cycle button
+        // buried in the criteria column so the saved-seed manager (the old
+        // seeds sidebar's job) is discoverable again.
+        viewTabs.put(View.RESULTS, Button.builder(WorldPreviewComponents.SEARCH_VIEW_RESULTS,
+                ignored -> selectView(View.RESULTS)).size(60, 20).build());
+        viewTabs.put(View.HISTORY, Button.builder(WorldPreviewComponents.SEARCH_VIEW_HISTORY,
+                ignored -> selectView(View.HISTORY)).size(60, 20).build());
+        viewTabs.put(View.FAVORITES, Button.builder(WorldPreviewComponents.SEARCH_VIEW_FAVORITES,
+                ignored -> selectView(View.FAVORITES)).size(60, 20).build());
+        viewTabs.put(View.SAVED, Button.builder(WorldPreviewComponents.SEARCH_VIEW_SAVED,
+                ignored -> selectView(View.SAVED)).size(60, 20).build());
+
+        // Current-seed section: mirrors the preview seed bar so this screen is
+        // the single place managing seeds. Read-only hosts (in-game) disable
+        // editing; applying/copying still works through the result rows.
+        boolean seedEditable = container.seedIsEditable();
+        seedEdit = new EditBox(font, 0, 0, 200, 20, WorldPreviewComponents.SEED_FIELD);
+        seedEdit.setHint(WorldPreviewComponents.SEED_FIELD);
+        seedEdit.setValue(container.dataProvider().seed());
+        seedEdit.setResponder(container::setSeed);
+        seedEdit.active = seedEditable;
+
+        randomizeSeedButton = Button.builder(WorldPreviewComponents.SEARCH_SEED_RANDOM, ignored -> {
+            // Take the generated seed from the return value: the debounced
+            // commit has not updated dataProvider.seed() yet, so reading it
+            // here would write the stale seed back into the box.
+            seedEdit.setValue(container.randomizeSeed(null));
+        }).size(70, 20).build();
+        randomizeSeedButton.active = seedEditable;
+
+        saveSeedButton = Button.builder(WorldPreviewComponents.SEARCH_SEED_SAVE, ignored -> {
+            // Commit a pending debounced edit first so the saved seed is the
+            // one currently typed (not the previously applied one), then
+            // persist and jump to the saved list to show the new entry.
+            container.commitSeedEdit();
+            container.saveCurrentSeed(null);
+            selectView(View.SAVED);
+        }).size(70, 20).build();
 
         minAreaSlider = new IntSlider(0, 0, 150, 20,
                 WorldPreviewComponents.SEARCH_MIN_AREA, 0, 100, 1,
@@ -197,6 +234,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 .build();
 
         addRenderableWidget(biomePicker);
+        addRenderableWidget(seedEdit);
+        addRenderableWidget(randomizeSeedButton);
+        addRenderableWidget(saveSeedButton);
         addRenderableWidget(filterBox);
         addRenderableWidget(showCavesButton);
         addRenderableWidget(clearBiomesButton);
@@ -210,12 +250,15 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         addRenderableWidget(startButton);
         addRenderableWidget(stopButton);
         addRenderableWidget(compareButton);
-        addRenderableWidget(viewCycle);
+        for (Button tab : viewTabs.values()) {
+            addRenderableWidget(tab);
+        }
         addRenderableWidget(resultsList);
         addRenderableWidget(backButton);
 
         layoutWidgets();
         updateControlState();
+        updateTabState();
         refreshList();
 
         // Take over a search that is still running in the background, or show
@@ -254,7 +297,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void layoutWidgets() {
         int left = 8;
-        int top = 24;
+        int top = 50;
         int leftWidth = Math.max(230, width / 2 - 16);
 
         // Bottom-up layout: the footer (action row + back button) is pinned to
@@ -262,6 +305,15 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         // GUI scales; the biome picker and the results list absorb whatever
         // space remains above.
         actionRowY = height - 32;
+
+        // Seed row directly below the title: seed box + randomize + save.
+        // The box absorbs the spare width so long string seeds fit.
+        int seedButtonW = 70;
+        int seedEditW = Math.max(100, width - 2 * left - 2 * (seedButtonW + 4));
+        seedEdit.setPosition(left, 22);
+        seedEdit.setWidth(seedEditW);
+        randomizeSeedButton.setPosition(left + seedEditW + 4, 22);
+        saveSeedButton.setPosition(left + seedEditW + seedButtonW + 8, 22);
 
         // Three-column grid metrics: three criteria buttons plus 2 gaps fill
         // the full width [left, width - left] exactly; the biome picker is
@@ -291,8 +343,6 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         clearBiomesButton.setWidth(clearW);
         showCavesButton.setPosition(left, top + 34);
         showCavesButton.setWidth(topColW);
-        viewCycle.setPosition(left + topColW, top + 34);
-        viewCycle.setWidth(clearW);
 
         // Picker (1.5 button widths) fills the strip between the compacted
         // left column and the criteria grid; the results list sits beside it,
@@ -304,10 +354,19 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         biomePicker.setY(listTop);
         biomePicker.setWidth(pickerWidth);
         biomePicker.setHeight(Math.max(40, listBottom - listTop));
+        // View tab row directly above the results list; the four tabs share
+        // the list's width so the row always lines up with the list.
+        int tabW = Math.max(1, rightWidth / 4);
+        int tabX = rightX;
+        for (View view : List.of(View.RESULTS, View.HISTORY, View.FAVORITES, View.SAVED)) {
+            viewTabs.get(view).setPosition(tabX, top + 12);
+            viewTabs.get(view).setWidth(tabW);
+            tabX += tabW;
+        }
         resultsList.setX(rightX);
-        resultsList.setY(top + 12);
+        resultsList.setY(top + 34);
         resultsList.setWidth(rightWidth);
-        resultsList.setHeight(Math.max(40, listBottom - (top + 12)));
+        resultsList.setHeight(Math.max(40, listBottom - (top + 34)));
 
         // Criteria grid, three widgets per row across the full width: the
         // structure button, the anchor cycle and structure distance on the
@@ -541,13 +600,48 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     // ===== Result list =====
 
+    /** Switches the results-list view and syncs the tab row selection. */
+    private void selectView(View view) {
+        currentView = view;
+        updateTabState();
+        refreshList();
+    }
+
+    /** Marks the active tab green — vanilla buttons have no selected state. */
+    private void updateTabState() {
+        for (Map.Entry<View, Button> tab : viewTabs.entrySet()) {
+            Component label = switch (tab.getKey()) {
+                case RESULTS -> WorldPreviewComponents.SEARCH_VIEW_RESULTS;
+                case HISTORY -> WorldPreviewComponents.SEARCH_VIEW_HISTORY;
+                case FAVORITES -> WorldPreviewComponents.SEARCH_VIEW_FAVORITES;
+                case SAVED -> WorldPreviewComponents.SEARCH_VIEW_SAVED;
+            };
+            tab.getValue().setMessage(currentView == tab.getKey()
+                    ? label.copy().withStyle(ChatFormatting.GREEN)
+                    : label);
+        }
+    }
+
     private void refreshList() {
         List<SearchResultsList.Row> rows = switch (currentView) {
             case RESULTS -> hitRows;
             case HISTORY -> historyRows(container.worldPreview().seedSearchHistory().byRecency());
             case FAVORITES -> historyRows(container.worldPreview().seedSearchHistory().favorites());
+            case SAVED -> savedRows();
         };
         resultsList.setRows(rows);
+    }
+
+    /** Rows for the saved-seeds view, backed by the config's savedSeeds list. */
+    private List<SearchResultsList.Row> savedRows() {
+        List<SearchResultsList.Row> rows = new ArrayList<>();
+        String currentSeed = container.dataProvider().seed();
+        for (String seed : container.worldPreview().cfg().savedSeeds) {
+            SearchResultsList.Row row = resultsList.createRow(seed, null, 0, false, true);
+            row.current = seed.equals(currentSeed);
+            rows.add(row);
+        }
+        return rows;
     }
 
     private List<SearchResultsList.Row> historyRows(List<SeedSearchHistory.Entry> entries) {
@@ -561,6 +655,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     @Override
     public void onApply(String seed) {
+        if (currentView == View.SAVED) {
+            // Saved seeds are user-entered: no search lineage to verify.
+            applySeed(seed);
+            return;
+        }
         applySeedChecked(seed, requestOf(currentResult));
     }
 
@@ -642,20 +741,29 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     @Override
     public void onToggleFavorite(String seed) {
+        if (currentView == View.SAVED) {
+            return;
+        }
         container.worldPreview().seedSearchHistory().toggleFavorite(seed);
         refreshList();
     }
 
     @Override
     public void onDelete(String seed) {
-        container.worldPreview().seedSearchHistory().remove(seed);
+        if (currentView == View.SAVED) {
+            container.deleteSeed(seed);
+        } else {
+            container.worldPreview().seedSearchHistory().remove(seed);
+        }
         refreshList();
     }
 
     private void applySeed(String seed) {
         if (container.seedIsEditable()) {
             container.setSeed(seed);
+            seedEdit.setValue(seed);
             statusText = WorldPreviewComponents.SEARCH_APPLIED.getString() + seed;
+            refreshList();
         } else {
             if (minecraft != null && minecraft.keyboardHandler != null) {
                 minecraft.keyboardHandler.setClipboard(seed);
@@ -686,7 +794,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
         // Criteria summary (left column): number of selected biomes
         int left = 8;
-        int top = 24;
+        int top = 50;
         graphics.drawString(font,
                 Component.translatable("world_preview.search.biome.selected",
                         biomePicker.getSelectedCount()),

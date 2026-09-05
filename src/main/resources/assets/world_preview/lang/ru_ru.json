@@ -25,7 +25,6 @@
   "world_preview.preview.btn-cycle-noise": "Тип шума",
   "world_preview.preview.btn-cycle.BIOMES": "Биомы",
   "world_preview.preview.btn-cycle.STRUCTURES": "Структуры",
-  "world_preview.preview.btn-cycle.SEEDS": "Ключи",
   "world_preview.preview.btn-cycle.structures.disabled.tooltip": "Выборка структур отключена и может быть включена в настройках",
   "world_preview.preview.error.setup-failed": "§c§lНе удалось выполнить настройку предпросмотра мира!§r\n\nВероятно, это связано с несовместимым модом.\nДля получения дополнительной информации ознакомьтесь с разделом часто задаваемых вопросов:\nhttps://github.com/caeruleusDraconis/world-preview/",
   "world_preview.preview.msg.loading": "§lИнициализация предпросмотра...§r",

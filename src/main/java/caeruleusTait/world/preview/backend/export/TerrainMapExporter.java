@@ -69,38 +69,23 @@ public final class TerrainMapExporter {
     public record ExportContext(String seed, String dimension) {}
 
     /**
-     * Execute terrain map export.
-     *
-     * @param spec       Export specification
-     * @param sampler    Biome sampler (maps block coords to biome Holder)
-     * @param outputDir  Output directory
-     * @param cancelled  Cancellation flag supplier
-     * @param progress   Progress callback (receives completed pixel count)
-     * @return Export result (file path and metadata)
-     */
-    public Result export(
-            TerrainExportSpec spec,
-            BiomeSampler sampler,
-            Path outputDir,
-            BooleanSupplier cancelled,
-            LongConsumer progress
-    ) throws Exception {
-        return export(spec, sampler, outputDir, "", cancelled, progress);
-    }
-
-    /**
      * Execute terrain map export with a filename prefix (used by batch exports to
      * tag each file with its dimension, e.g. {@code terrain_overworld_...}).
+     * Callers pass the per-dimension height range: heights are exported as blocks
+     * above {@code yMin}, so contours and grayscale cover deep and tall dimensions
+     * alike instead of flattening outside 0..255.
      */
     public Result export(
             TerrainExportSpec spec,
             BiomeSampler sampler,
+            int yMin,
+            int yMax,
             Path outputDir,
             String filenamePrefix,
             BooleanSupplier cancelled,
             LongConsumer progress
     ) throws Exception {
-        return export(spec, sampler, null, null, outputDir, filenamePrefix, cancelled, progress);
+        return export(spec, sampler, null, null, yMin, yMax, outputDir, filenamePrefix, cancelled, progress);
     }
 
     /**
@@ -108,12 +93,17 @@ public final class TerrainMapExporter {
      * for the metadata. {@code heightProbe == null} keeps the legacy estimate
      * behavior; when supplied, real heights win and the metadata records the
      * height source per pixel set.
+     *
+     * @param yMin lowest world Y of the dimension; heights are stored relative to it
+     * @param yMax highest world Y of the dimension (exclusive upper sampling bound)
      */
     public Result export(
             TerrainExportSpec spec,
             BiomeSampler sampler,
             @Nullable HeightProbe heightProbe,
             @Nullable ExportContext exportContext,
+            int yMin,
+            int yMax,
             Path outputDir,
             String filenamePrefix,
             BooleanSupplier cancelled,
@@ -123,6 +113,7 @@ public final class TerrainMapExporter {
 
         int width = spec.imageWidth();
         int height = spec.imageHeight();
+        int ySpan = Math.max(1, yMax - yMin);
 
         String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
         String filename = filenamePrefix + "terrain_" + timestamp + "_"
@@ -145,13 +136,13 @@ public final class TerrainMapExporter {
             // Submit all tile tasks
             for (TileTask task : tasks) {
                 final TileTask t = task;
-                futures.add(workers.submit(() -> sampleTile(t, spec, sampler, heightProbe, cancelled, progress)));
+                futures.add(workers.submit(() -> sampleTile(t, spec, sampler, heightProbe, yMin, ySpan, cancelled, progress)));
             }
 
             // Collect results in completion order, write to NativeImage, collect height field
-            byte[] heightField = null;
+            short[] heightField = null;
             if (spec.exportContours()) {
-                heightField = new byte[width * height];
+                heightField = new short[width * height];
             }
 
             // Track how many pixels used real vs estimated heights for metadata.
@@ -188,8 +179,8 @@ public final class TerrainMapExporter {
                         // Pixels already written above; rebuild with terrain classification colors
                         // We already have colors in tile.pixels, but they've been written to image
                         // Generate rough colors from heightField here
-                        int h = heightField[py * width + px] & 0xFF;
-                        int gray = Math.max(0, Math.min(255, h + 64));
+                        int h = heightField[py * width + px] & 0xFFFF;
+                        int gray = grayForOffset(h, ySpan);
                         colorBuffer[py * width + px] = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
                     }
                 }
@@ -253,11 +244,13 @@ public final class TerrainMapExporter {
             TerrainExportSpec spec,
             BiomeSampler sampler,
             @Nullable HeightProbe heightProbe,
+            int yMin,
+            int ySpan,
             BooleanSupplier cancelled,
             LongConsumer progress
     ) {
         int[] pixels = new int[task.tileWidth * task.tileHeight];
-        byte[] heights = new byte[task.tileWidth * task.tileHeight];
+        short[] heights = new short[task.tileWidth * task.tileHeight];
         int realHeightCount = 0;
         int minBlockX = spec.minBlockX();
         int minBlockZ = spec.minBlockZ();
@@ -293,9 +286,9 @@ public final class TerrainMapExporter {
                 }
                 if (realHeight != null) {
                     realHeightCount++;
-                    heights[rowOffset + col] = clampHeightByte(realHeight);
+                    heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
                 } else {
-                    heights[rowOffset + col] = estimateHeight(biomeHolder);
+                    heights[rowOffset + col] = toHeightFieldOffset(estimateHeight(biomeHolder), yMin, ySpan);
                 }
 
                 TerrainCategory category = TerrainClassifier.classify(biomeHolder);
@@ -308,9 +301,18 @@ public final class TerrainMapExporter {
         return new TileResult(task.startX, task.startY, task.tileWidth, task.tileHeight, pixels, heights, realHeightCount);
     }
 
-    /** Real heights can be negative or exceed 255; the byte height field is a 0-255 contour source. */
-    private static byte clampHeightByte(int height) {
-        return (byte) Math.max(0, Math.min(255, height));
+    /**
+     * Export height-field unit: blocks above yMin, clamped into [0, ySpan].
+     * World Y spans the whole dimension (overworld -64..320), so a 0-255 byte
+     * field would flatten everything above yMin+255 and below it.
+     */
+    static short toHeightFieldOffset(int worldY, int yMin, int ySpan) {
+        return (short) Math.max(0, Math.min(ySpan, worldY - yMin));
+    }
+
+    /** Grayscale base for the contour overlay: offset 0 (yMin) is black, ySpan (yMax) is white. */
+    static int grayForOffset(int offset, int ySpan) {
+        return (offset * 255) / ySpan;
     }
 
     /**
@@ -456,7 +458,7 @@ public final class TerrainMapExporter {
     private record TileTask(int startX, int startY, int tileWidth, int tileHeight) {}
 
     /** Tile sampling result. */
-    private record TileResult(int startX, int startY, int tileWidth, int rowCount, int[] pixels, byte[] heights,
+    private record TileResult(int startX, int startY, int tileWidth, int rowCount, int[] pixels, short[] heights,
                               int realHeightCount) {}
 
     /** Export thread factory. */

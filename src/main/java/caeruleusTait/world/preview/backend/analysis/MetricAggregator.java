@@ -1,5 +1,7 @@
 package caeruleusTait.world.preview.backend.analysis;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -20,6 +22,13 @@ public final class MetricAggregator {
     private double heightM2;
     private String unavailableReason = "";
 
+    // Memoized snapshot: the analysis UI polls result()/progress() every tick
+    // (20/s) while workers keep mutating the counts; without the dirty flag
+    // each poll re-sorted every height sample and rebuilt a large boxed map
+    // on the client thread. Callers already synchronize on this instance.
+    @Nullable private RegionMetrics snapshotCache;
+    private boolean snapshotDirty = true;
+
     public MetricAggregator(long expectedSamples) {
         this(expectedSamples, 1);
     }
@@ -39,11 +48,29 @@ public final class MetricAggregator {
         for (Sample sample : samples) addSample(sample.x(), sample.z(), sample.biome(), sample.height());
     }
 
+    /**
+     * Cheap count of samples with biome or height data, without building a
+     * {@link RegionMetrics} snapshot. Safe under the same monitor that guards
+     * {@link #addSample}.
+     */
+    public long presentSampleCount() {
+        return presentSamples;
+    }
+
+    /**
+     * Cheap test for "has data worth exporting", without building a
+     * {@link RegionMetrics} snapshot.
+     */
+    public boolean hasExportableData() {
+        return presentSamples > 0 && !biomeCounts.isEmpty();
+    }
+
     public void addSample(int x, int z, short biome, short height) {
         boolean biomePresent = biome != Short.MIN_VALUE;
         boolean heightPresent = height != Short.MIN_VALUE;
         if (biomePresent) biomeCounts.merge(biome, 1L, Long::sum);
         if (biomePresent || heightPresent) presentSamples++;
+        snapshotDirty = true;
         if (heightPresent) {
             validHeightSamples.add(new Sample(x, z, biome, height));
             heightCount++;
@@ -56,6 +83,7 @@ public final class MetricAggregator {
 
     public void markUnavailable(String reason) {
         unavailableReason = reason == null ? "" : reason;
+        snapshotDirty = true;
     }
 
     public void reset() {
@@ -66,9 +94,14 @@ public final class MetricAggregator {
         heightMean = 0;
         heightM2 = 0;
         unavailableReason = "";
+        snapshotCache = null;
+        snapshotDirty = true;
     }
 
     public RegionMetrics snapshot() {
+        if (!snapshotDirty) {
+            return snapshotCache;
+        }
         List<Sample> heightSamples = validHeightSamples;
         OptionalInt min = OptionalInt.empty();
         OptionalInt max = OptionalInt.empty();
@@ -127,12 +160,14 @@ public final class MetricAggregator {
         } else {
             state = AnalysisDataState.SAMPLED;
         }
-        return new RegionMetrics(state, expectedSamples, presentSamples, biomeCounts,
+        snapshotCache = new RegionMetrics(state, expectedSamples, presentSamples, biomeCounts,
                 min, max,
                 heightCount == 0 ? OptionalDouble.empty() : OptionalDouble.of(heightMean),
                 median,
                 heightCount == 0 ? OptionalDouble.empty() : OptionalDouble.of(Math.sqrt(heightM2 / heightCount)),
                 meanSlope, maxSlope, flatRatio, unavailableReason);
+        snapshotDirty = false;
+        return snapshotCache;
     }
 
     private static long pack(int x, int z) {

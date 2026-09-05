@@ -40,6 +40,12 @@ public abstract class WorkUnit implements Task {
     // executing and wasting CPU cycles.
     private volatile boolean isCanceled;
 
+    // Set when the unit was canceled before or during sampling, meaning its
+    // collected results may be partial.  WorkBatch only grants the completed
+    // bit to units that were NOT interrupted; interrupted units keep their
+    // idempotent partial writes and are re-sampled in full on a later pass.
+    private volatile boolean wasInterrupted;
+
     // Task interface support
     private final TaskId taskId = TaskId.generate();
     private final AtomicReference<TaskState> taskState = new AtomicReference<>(TaskState.QUEUED);
@@ -102,11 +108,18 @@ public abstract class WorkUnit implements Task {
         }
         if (isCanceled) {
             taskState.set(TaskState.CANCELLED);
+            markInterrupted();
             return List.of();
         }
         taskState.set(TaskState.RUNNING);
         try {
             List<WorkResult> result = doWork();
+            if (isCanceled()) {
+                // Conservative: the unit was canceled while doWork() ran, so
+                // treat its results as possibly partial even if the sampling
+                // loops happened to finish their final iteration.
+                markInterrupted();
+            }
             taskState.set(TaskState.COMPLETED);
             taskResult.set(TaskResult.success(result));
             return result;
@@ -135,6 +148,16 @@ public abstract class WorkUnit implements Task {
 
     public boolean isCanceled() {
         return isCanceled;
+    }
+
+    /** Marks this unit as canceled before/during sampling; its results are partial. */
+    protected final void markInterrupted() {
+        wasInterrupted = true;
+    }
+
+    /** True when the unit did not run to completion, i.e. must not receive the completed bit. */
+    public boolean wasInterrupted() {
+        return wasInterrupted;
     }
 
     // ---- Task interface: isCancelled() delegates to isCanceled() ----

@@ -34,6 +34,7 @@ public class SlowHeightmapWorkUnit extends WorkUnit {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (int[] xz : HeightSampleSpec.blockPositionsInChunk(chunkPos.x, chunkPos.z, sampler.blockStride())) {
             if (isCanceled()) {
+                markInterrupted();
                 break;
             }
             pos.set(xz[0], y, xz[1]);
