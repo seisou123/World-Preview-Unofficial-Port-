@@ -174,9 +174,12 @@ public final class BiomeSharePanel extends AbstractWidget {
         int barX = getX() + 6;
         int barW = Math.max(0, width - 12);
 
-        // (a) 100% stacked bar of the top <=10 biomes; the remainder slot stays
-        // in the gray background fill.
+        // (a) 100% stacked bar of the top <=10 biomes: the gray slot fill is
+        // the remainder — everything beyond the top-10 (and any samples that
+        // carry no biome id) stays gray.
         int biomeBarY = getY() + 32;
+        int barRight = barX + barW;
+        graphics.fill(barX, biomeBarY, barRight, biomeBarY + 8, REMAINDER_COLOR);
         if (totalSamples > 0 && barW > 0) {
             long cum = 0;
             int segments = Math.min(STACKED_BAR_ROWS, rows.size());
@@ -184,7 +187,7 @@ public final class BiomeSharePanel extends AbstractWidget {
                 ShareRow row = rows.get(i);
                 long next = cum + row.count();
                 int x0 = barX + (int) (cum * barW / totalSamples);
-                int x1 = barX + (int) (next * barW / totalSamples);
+                int x1 = Math.min(barRight, barX + (int) (next * barW / totalSamples));
                 if (x1 > x0) {
                     graphics.fill(x0, biomeBarY, x1, biomeBarY + 8, row.argbColor());
                 }
@@ -192,9 +195,11 @@ public final class BiomeSharePanel extends AbstractWidget {
             }
         }
 
-        // (b) Terrain-category stacked bar + one legend row of chips.
+        // (b) Terrain-category stacked bar + one legend row of chips. Same
+        // remainder-slot treatment for rounding gaps / unclassified samples.
         if (insights != null) {
             int terrainBarY = getY() + 44;
+            graphics.fill(barX, terrainBarY, barRight, terrainBarY + 8, REMAINDER_COLOR);
             long classified = insights.classifiedSamples();
             if (classified > 0 && barW > 0) {
                 long cum = 0;
@@ -205,7 +210,7 @@ public final class BiomeSharePanel extends AbstractWidget {
                     }
                     long next = cum + count;
                     int x0 = barX + (int) (cum * barW / classified);
-                    int x1 = barX + (int) (next * barW / classified);
+                    int x1 = Math.min(barRight, barX + (int) (next * barW / classified));
                     if (x1 > x0) {
                         graphics.fill(x0, terrainBarY, x1, terrainBarY + 8, entry.getKey().argbColor());
                     }
