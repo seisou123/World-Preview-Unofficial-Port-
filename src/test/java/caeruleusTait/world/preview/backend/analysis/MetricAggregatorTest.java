@@ -185,4 +185,44 @@ class MetricAggregatorTest {
         assertEquals(67.0, expected, 1e-12); // sanity on the local reference
         assertEquals(expected, metrics.medianHeight().getAsDouble(), 1e-9);
     }
+
+    @Test
+    void evenCountMedianWithNegativeHeightsMatchesSortedArrayParity() {
+        // -1 was previously both a valid height and the "unset" sentinel, so a
+        // negative lower-middle bin corrupted the lo pointer. Even counts with
+        // negative heights must interpolate like the old sorted implementation:
+        // [-1,0] → -0.5, [-64,-10,0,5] → -5.0.
+        short[][] cases = {{-1, 0}, {-64, -10, 0, 5}};
+        double[] expected = {-0.5, -5.0};
+        for (int c = 0; c < cases.length; c++) {
+            MetricAggregator agg = new MetricAggregator(cases[c].length, 1);
+            for (int i = 0; i < cases[c].length; i++) {
+                agg.addSample(i * 8, 0, (short) 1, cases[c][i]);
+            }
+
+            RegionMetrics metrics = agg.snapshot();
+
+            short[] sorted = cases[c].clone();
+            java.util.Arrays.sort(sorted);
+            double reference = (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0;
+            assertEquals(expected[c], reference, 1e-12); // sanity on the local reference
+            assertEquals(reference, metrics.medianHeight().getAsDouble(), 1e-9,
+                    "case " + java.util.Arrays.toString(cases[c]));
+        }
+    }
+
+    @Test
+    void resetPreservesSeaLevelConfiguration() {
+        // seaLevel is configuration, not sampled data: a fresh run after
+        // reset() (AnalysisSession.start) must keep counting water.
+        MetricAggregator agg = new MetricAggregator(1, 1);
+        agg.setSeaLevel(63);
+        agg.addSample(0, 0, (short) 1, (short) 62); // water
+        agg.reset();
+        agg.addSample(0, 0, (short) 1, (short) 60); // still below sea level after reset
+
+        RegionMetrics metrics = agg.snapshot();
+
+        assertEquals(1.0, metrics.waterShare(), 1e-12);
+    }
 }

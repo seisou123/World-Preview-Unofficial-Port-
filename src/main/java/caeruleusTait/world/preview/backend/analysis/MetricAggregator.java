@@ -147,7 +147,8 @@ public final class MetricAggregator {
         Arrays.fill(heightHistogram, 0);
         histMinY = Integer.MAX_VALUE;
         histMaxY = Integer.MIN_VALUE;
-        seaLevel = null;
+        // seaLevel is configuration, not sampled data: a fresh run after
+        // reset() (AnalysisSession.start) must keep counting water.
         presentSamples = 0;
         heightCount = 0;
         waterSamples = 0;
@@ -172,14 +173,20 @@ public final class MetricAggregator {
             // Median with parity to the old sorted-array implementation:
             // lo = smallest y reaching half the samples, hi = smallest y reaching
             // half plus one; exact middle value for odd counts, (lo + hi) / 2
-            // (interpolated) for even counts.
+            // (interpolated) for even counts. Flags instead of a numeric sentinel:
+            // every short value, including negatives, is a valid height.
             long seen = 0;
-            long lo = -1, hi = -1;
+            long lo = 0, hi = 0;
+            boolean loSet = false, hiSet = false;
             for (int y = histMinY; y <= histMaxY; y++) {
                 seen += heightHistogram[y & 0xFFFF];
-                if (lo < 0 && seen * 2 >= heightCount) lo = y;
-                if (seen * 2 >= heightCount + 1) {
+                if (!loSet && seen * 2 >= heightCount) {
+                    lo = y;
+                    loSet = true;
+                }
+                if (!hiSet && seen * 2 >= heightCount + 1) {
                     hi = y;
+                    hiSet = true;
                     break;
                 }
             }
