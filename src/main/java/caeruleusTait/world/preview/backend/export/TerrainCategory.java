@@ -57,6 +57,12 @@ public enum TerrainCategory {
         return rgb;
     }
 
+    /** ARGB for GuiGraphics.fill (r<<16|g<<8|b) — pixelColor() is ABGR for NativeImage. */
+    public int argbColor() {
+        int r = rgb & 0xFF, g = (rgb >> 8) & 0xFF, b = (rgb >> 16) & 0xFF;
+        return (0xFF << 24) | (r << 16) | (g << 8) | b;
+    }
+
     /**
      * Returns the RGB hex string (e.g. "#1B3A5C") for this terrain category, used in metadata JSON.
      */
