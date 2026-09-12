@@ -20,6 +20,8 @@ import caeruleusTait.world.preview.backend.export.TerrainCategory;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.PanelRenderer;
 import caeruleusTait.world.preview.client.gui.widgets.AnalysisOverviewPanel;
+import caeruleusTait.world.preview.client.gui.widgets.BiomeSharePanel;
+import caeruleusTait.world.preview.client.gui.widgets.HeightHistogramChart;
 import caeruleusTait.world.preview.client.gui.widgets.ProfileChart;
 import caeruleusTait.world.preview.client.gui.widgets.RegionSelector;
 import caeruleusTait.world.preview.client.gui.widgets.TranslucentButton;
@@ -77,6 +79,9 @@ public final class WorldAnalysisScreen extends Screen {
     /** Region side presets cycled by the size button, in blocks. */
     private static final int[] REGION_PRESETS = {256, 512, 1024, 2048, 4096};
 
+    /** Right-panel chart tabs (the widgets toggled by the tab row). */
+    private enum ChartTab { PROFILE, HEIGHT, BIOMES }
+
     /**
      * Structure types probed for the "nearest structures" section. A
      * LinkedHashSet keeps the probe request (and thus result insertion) order
@@ -99,7 +104,13 @@ public final class WorldAnalysisScreen extends Screen {
     private final RegionSelector regionSelector;
     private final AnalysisOverviewPanel overviewPanel;
     private final ProfileChart profileChart;
+    private final HeightHistogramChart histogramChart;
+    private final BiomeSharePanel sharePanel;
     private final List<AbstractWidget> selectorFields;
+    /** The three chart tab buttons, left of the direction button in the tab band. */
+    private final TranslucentButton tabProfileButton;
+    private final TranslucentButton tabHeightButton;
+    private final TranslucentButton tabBiomesButton;
     /**
      * Non-final: starting the analysis on a changed region swaps in a fresh
      * session (the old one is closed by the container's restart).
@@ -120,6 +131,14 @@ public final class WorldAnalysisScreen extends Screen {
 
     /** Profile line preset cycled by {@link #directionButton} (label shows the current one). */
     private ProfileChart.Direction profileDirection = ProfileChart.Direction.DIAGONAL;
+
+    /** Visible right-panel chart; initial tab is the profile chart. */
+    private ChartTab activeTab = ChartTab.PROFILE;
+    /** Terrain/biome-diversity insights for the share panel, at most 1s stale while its tab is visible. */
+    @Nullable private RegionInsights shareInsights;
+    private long lastInsightsMillis;
+    /** Last metrics snapshot pushed to the chart tabs (input for on-demand insights). */
+    @Nullable private RegionMetrics lastMetrics;
 
     private boolean closed;
     /** True once the worldgen context this session belongs to has been replaced. */
@@ -164,6 +183,9 @@ public final class WorldAnalysisScreen extends Screen {
                 initialRegion, this::setRegion);
         this.overviewPanel = new AnalysisOverviewPanel(0, 0, 260, 140);
         this.profileChart = new ProfileChart(0, 0, 360, 170);
+        this.histogramChart = new HeightHistogramChart(0, 0, 360, 170);
+        this.sharePanel = new BiomeSharePanel(0, 0, 360, 170);
+        this.sharePanel.setRowAction(this::onShareRowClick);
         this.selectorFields = new ArrayList<>(regionSelector.fields());
         Font font = Minecraft.getInstance().font;
         this.startButton = new TranslucentButton(font, 0, 0, 78, 20,
@@ -184,6 +206,15 @@ public final class WorldAnalysisScreen extends Screen {
                 WorldPreviewComponents.ANALYSIS_ACTION_LOCATE, ignored -> { });
         this.directionButton = new TranslucentButton(font, 0, 0, 90, 20,
                 profileDirectionLabel(), ignored -> cycleProfileDirection());
+        this.tabProfileButton = new TranslucentButton(font, 0, 0, 60, 20,
+                Component.translatable("world_preview.analysis.tab.profile"),
+                ignored -> switchToTab(ChartTab.PROFILE));
+        this.tabHeightButton = new TranslucentButton(font, 0, 0, 60, 20,
+                Component.translatable("world_preview.analysis.tab.height"),
+                ignored -> switchToTab(ChartTab.HEIGHT));
+        this.tabBiomesButton = new TranslucentButton(font, 0, 0, 60, 20,
+                Component.translatable("world_preview.analysis.tab.biomes"),
+                ignored -> switchToTab(ChartTab.BIOMES));
         this.exportReportButton = new TranslucentButton(font, 0, 0, 90, 20,
                 WorldPreviewComponents.ANALYSIS_EXPORT_REPORT, ignored -> exportReport());
         this.exportReportButton.active = false;
@@ -261,6 +292,7 @@ public final class WorldAnalysisScreen extends Screen {
         // A fresh run invalidates the previously computed spawn/top-biome data.
         overviewPanel.setSpawn(null, null, List.of());
         topBiomes = List.of();
+        clearChartTabs();
         rebuildProfile();
         refreshStructures();
         profileRefreshCooldown = 0;
@@ -597,6 +629,91 @@ public final class WorldAnalysisScreen extends Screen {
         return lookup;
     }
 
+    /** Biome entry for an int-biome-id callback (share panel data wiring). */
+    private BiomesList.BiomeEntry biomeEntryFor(int id) {
+        return biomeIdLookup().get((short) id);
+    }
+
+    // ===== Chart tabs (profile / heights / biomes) =====
+
+    /** Row click on the share panel: highlight the biome on the map and keep the table in sync. */
+    private void onShareRowClick(@Nullable Short biomeId) {
+        previewContainer.previewDisplay().setSelectedBiomeId(
+                biomeId == null ? (short) -1 : biomeId);
+        sharePanel.setSelected(biomeId);
+    }
+
+    /** Shows only the active tab's chart widget. */
+    private void applyTabVisibility() {
+        profileChart.visible = activeTab == ChartTab.PROFILE;
+        histogramChart.visible = activeTab == ChartTab.HEIGHT;
+        sharePanel.visible = activeTab == ChartTab.BIOMES;
+    }
+
+    private TranslucentButton activeTabButton() {
+        return switch (activeTab) {
+            case PROFILE -> tabProfileButton;
+            case HEIGHT -> tabHeightButton;
+            case BIOMES -> tabBiomesButton;
+        };
+    }
+
+    private void switchToTab(ChartTab tab) {
+        if (activeTab == tab) {
+            return;
+        }
+        activeTab = tab;
+        applyTabVisibility();
+        if (tab == ChartTab.BIOMES) {
+            // Compute the insights for the data already on screen instead of
+            // waiting for the next throttled metrics refresh.
+            refreshShareInsights();
+            sharePanel.setData(lastMetrics, this::biomeEntryFor, shareInsights);
+        }
+    }
+
+    /** Pushes a metrics snapshot into the visible chart widgets. */
+    private void refreshChartTabs(RegionMetrics metrics) {
+        lastMetrics = metrics;
+        histogramChart.setData(metrics);
+        // The RegionAnalyzer pass (biome id → holder resolution + terrain
+        // classification) runs only while its tab is visible, at most 1/s.
+        if (activeTab == ChartTab.BIOMES) {
+            refreshShareInsights();
+        }
+        sharePanel.setData(metrics, this::biomeEntryFor, shareInsights);
+    }
+
+    /** Recomputes {@link #shareInsights} from the last metrics, throttled to one call per second. */
+    private void refreshShareInsights() {
+        RegionMetrics metrics = lastMetrics;
+        if (metrics == null || metrics.biomeCounts().isEmpty() || metrics.presentSamples() <= 0) {
+            shareInsights = null;
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastInsightsMillis < 1000L) {
+            return;
+        }
+        lastInsightsMillis = now;
+        shareInsights = RegionAnalyzer.fromBiomeCounts(metrics.biomeCounts(),
+                id -> {
+                    BiomesList.BiomeEntry entry = biomeIdLookup().get((short) id);
+                    return entry != null ? entry.entry() : null;
+                });
+    }
+
+    /** Clears the tab charts and the map's biome highlight (fresh analysis run). */
+    private void clearChartTabs() {
+        lastMetrics = null;
+        shareInsights = null;
+        lastInsightsMillis = 0L;
+        histogramChart.setData(null);
+        sharePanel.setData(null, this::biomeEntryFor, null);
+        sharePanel.setSelected(null);
+        previewContainer.previewDisplay().setSelectedBiomeId((short) -1);
+    }
+
     @Override
     protected void init() {
         // Clear and rebuild so buttons are always at the end of the click order.
@@ -605,6 +722,8 @@ public final class WorldAnalysisScreen extends Screen {
         selectorFields.forEach(this::addRenderableWidget);
         addRenderableWidget(overviewPanel);
         addRenderableWidget(profileChart);
+        addRenderableWidget(histogramChart);
+        addRenderableWidget(sharePanel);
         addRenderableWidget(previewContainer.previewDisplay());
         addRenderableWidget(startButton);
         addRenderableWidget(pauseButton);
@@ -614,11 +733,15 @@ public final class WorldAnalysisScreen extends Screen {
         addRenderableWidget(alignViewportButton);
         addRenderableWidget(presetButton);
         addRenderableWidget(directionButton);
+        addRenderableWidget(tabProfileButton);
+        addRenderableWidget(tabHeightButton);
+        addRenderableWidget(tabBiomesButton);
         addRenderableWidget(exportReportButton);
         closeButton = new TranslucentButton(Minecraft.getInstance().font, 0, 0, 90, 20,
                 CommonComponents.GUI_BACK, ignored -> onClose());
         addRenderableWidget(closeButton);
         layoutWidgets();
+        applyTabVisibility();
         updateControlState();
         // Biome colors/names for the profile bands + tooltip come from the
         // biome list lookup (built lazily, main thread); unknown ids fall back
@@ -694,15 +817,32 @@ public final class WorldAnalysisScreen extends Screen {
         int mapH = Math.max(120, (int) ((panelBottom - panelsTop) * 0.45));
         previewContainer.previewDisplay().setPosition(rightX, panelsTop);
         previewContainer.previewDisplay().setSize(rightW, mapH);
-        // The chart tab row will sit at tabsY (inserted by the chart task);
-        // the profile chart starts 22px below it. The direction button takes
-        // the right end of the reserved tab-row band until then.
+        // Chart tab row in the reserved band: three tab buttons LEFT of the
+        // direction preset button, which keeps the band's right end.
         int tabsY = panelsTop + mapH + 4;
-        place(directionButton, Math.max(rightX, rightX + rightW - 90), tabsY, 90, 20);
+        int directionX = Math.max(rightX, rightX + rightW - 90);
+        place(directionButton, directionX, tabsY, 90, 20);
+        int tabGap = 4;
+        // 42px floor keeps the widest label ("Heights" / 4 CJK chars) readable.
+        int tabW = Math.max(42, Math.min(64, (directionX - tabGap - rightX - 2 * tabGap) / 3));
+        place(tabProfileButton, rightX, tabsY, tabW, 20);
+        place(tabHeightButton, rightX + tabW + tabGap, tabsY, tabW, 20);
+        place(tabBiomesButton, rightX + 2 * (tabW + tabGap), tabsY, tabW, 20);
+        // The three chart widgets share one rectangle; visibility decides
+        // which one is drawn (applyTabVisibility).
+        int chartH = Math.max(60, panelBottom - tabsY - 22);
         profileChart.setX(rightX);
         profileChart.setY(tabsY + 22);
         profileChart.setWidth(rightW);
-        profileChart.setHeight(Math.max(60, panelBottom - tabsY - 22));
+        profileChart.setHeight(chartH);
+        histogramChart.setX(rightX);
+        histogramChart.setY(tabsY + 22);
+        histogramChart.setWidth(rightW);
+        histogramChart.setHeight(chartH);
+        sharePanel.setX(rightX);
+        sharePanel.setY(tabsY + 22);
+        sharePanel.setWidth(rightW);
+        sharePanel.setHeight(chartH);
 
         place(exportReportButton, width - 190, footerTop, 90, 20);
         if (closeButton != null) {
@@ -775,6 +915,7 @@ public final class WorldAnalysisScreen extends Screen {
                         ? Component.translatable("world_preview.analysis.error", progress.error())
                         : null);
                 refreshSpawnAndBiomePanels(metrics);
+                refreshChartTabs(metrics);
                 profileRefreshCooldown = 20;
             }
             return;
@@ -799,6 +940,7 @@ public final class WorldAnalysisScreen extends Screen {
         // metrics — the old screen computed them only once, so the score and
         // the biome shares never updated while the analysis ran.
         refreshSpawnAndBiomePanels(metrics);
+        refreshChartTabs(metrics);
         if (progress.status() == AnalysisStatus.RUNNING
                 || progress.status() == AnalysisStatus.QUEUED
                 || metrics.state() == AnalysisDataState.PENDING) {
@@ -819,6 +961,8 @@ public final class WorldAnalysisScreen extends Screen {
                 session.request().y(), session.request().sampleStep());
         graphics.drawString(font, viewInfo, Math.max(0, width - 8 - font.width(viewInfo)), TOOLBAR_TOP + 6, 0xFF999999);
         super.render(graphics, mouseX, mouseY, partialTick);
+        // Green selection line under the active chart tab (SeedSearchScreen pattern).
+        PanelRenderer.tabSelectionLine(graphics, activeTabButton());
         // Shared status line (region validation / clamping / export), 6s expiry.
         // Task 10 draws its box-select hint bar above the map here when active.
         if (statusMessage != null && System.currentTimeMillis() < statusUntil) {
@@ -860,6 +1004,8 @@ public final class WorldAnalysisScreen extends Screen {
     public void onClose() {
         if (closed) return;
         closed = true;
+        // The biome highlight picked in the share panel does not outlive the screen.
+        previewContainer.previewDisplay().setSelectedBiomeId((short) -1);
         // Always leave the screen first so a slow cleanup cannot freeze navigation.
         if (minecraft != null) {
             minecraft.setScreen(parent);

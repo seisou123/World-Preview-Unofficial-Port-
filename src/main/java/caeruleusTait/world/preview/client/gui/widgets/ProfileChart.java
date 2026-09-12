@@ -82,7 +82,9 @@ public final class ProfileChart extends AbstractWidget {
         graphics.fill(getX(), getY(), getX() + width, getY() + height, 0xAA101418);
         graphics.drawString(Minecraft.getInstance().font, Component.translatable("world_preview.analysis.profile"), getX() + 6, getY() + 6, 0xFFFFFFFF);
         if (result == null) {
-            graphics.drawString(Minecraft.getInstance().font, Component.translatable("world_preview.analysis.pending"), getX() + 6, getY() + 22, 0xFFE0E4E8);
+            // No profile yet at all (screen opened / fresh run) — dedicated
+            // empty-state hint rather than the generic pending text.
+            graphics.drawString(Minecraft.getInstance().font, Component.translatable("world_preview.analysis.empty.profile"), getX() + 6, getY() + 22, 0xFFE0E4E8);
             return;
         }
         List<ProfilePoint> points = result.points();
