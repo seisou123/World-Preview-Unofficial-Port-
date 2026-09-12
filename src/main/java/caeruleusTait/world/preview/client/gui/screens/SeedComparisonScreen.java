@@ -31,8 +31,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Compares the current seed with the saved seeds by sampling the biome
  * composition in a square around the world origin (radius 512, step 16, y=64).
  * For every seed it reports the biome diversity, water share, most common
- * biome and a spawn score; non-numeric seeds and seeds sampled without a
- * worldgen context are marked unavailable.
+ * biome and a spawn score; seeds sampled without a worldgen context are
+ * marked unavailable.
  *
  * <p>Sampling runs on a single-threaded daemon executor owned by this screen.
  * The worker publishes an immutable snapshot list per finished seed;
@@ -284,12 +284,9 @@ public final class SeedComparisonScreen extends Screen {
      */
     @Nullable
     private ComparisonRow evaluateSeed(SeedLine line, @Nullable SeedSearchService.SeedContextFactory factory) {
-        long seedLong;
-        try {
-            seedLong = Long.parseLong(line.seed().trim());
-        } catch (NumberFormatException e) {
-            return ComparisonRow.unavailable(line);
-        }
+        // Same parsing as the preview's own seed bar: text seeds hash to a
+        // long, so they compare against the worldgen the preview showed.
+        long seedLong = SeedSearchScreen.parseSeed(line.seed());
         if (factory == null) {
             return ComparisonRow.unavailable(line);
         }

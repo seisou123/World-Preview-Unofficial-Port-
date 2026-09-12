@@ -68,9 +68,11 @@ public class VanillaChunkGeneratorAdapter implements ChunkGeneratorAdapter {
 
                     var result2 = utils.doSample(new BlockPos(blockX, blockY, blockZ));
                     if (result2 != null && result2.biome() != null) {
-                        ResourceKey<Biome> biomeKey = result2.biome();
-                        // Map biome key to a short ID (simplified)
-                        result[localX][localZ] = (short) (biomeKey.hashCode() & 0xFFFF);
+                        ResourceKey<Biome> biomeKey = result2.biome().unwrapKey().orElse(null);
+                        if (biomeKey != null) {
+                            // Map biome key to a short ID (simplified)
+                            result[localX][localZ] = (short) (biomeKey.hashCode() & 0xFFFF);
+                        }
                     }
                 }
             }

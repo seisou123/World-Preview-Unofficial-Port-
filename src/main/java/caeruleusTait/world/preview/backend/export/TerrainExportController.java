@@ -52,16 +52,17 @@ public final class TerrainExportController implements AutoCloseable {
     }
 
     /**
-     * Start a terrain export task with an optional real-height probe and world
-     * lineage for the metadata. {@code yMin}/{@code yMax} bound the dimension's
-     * world Y range and anchor the exported height field. Returns false if a
-     * task is already running.
+     * Start a terrain export task with an optional real-height probe, world
+     * lineage for the metadata, and optional storage-backed biome facts.
+     * {@code yMin}/{@code yMax} bound the dimension's world Y range and anchor
+     * the exported height field. Returns false if a task is already running.
      */
     public synchronized boolean start(
             TerrainExportSpec spec,
             TerrainMapExporter.BiomeSampler sampler,
             @Nullable TerrainMapExporter.HeightProbe heightProbe,
             @Nullable TerrainMapExporter.ExportContext exportContext,
+            @Nullable TerrainMapExporter.BiomeFacts biomeFacts,
             int yMin,
             int yMax,
             Path outputDir
@@ -86,6 +87,7 @@ public final class TerrainExportController implements AutoCloseable {
                         sampler,
                         heightProbe,
                         exportContext,
+                        biomeFacts,
                         yMin,
                         yMax,
                         outputDir,

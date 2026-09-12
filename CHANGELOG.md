@@ -1,3 +1,20 @@
+## 1.5.2
+
+### Improvements
+
+- Opening the settings screen or switching preview tabs no longer discards sampled map data - returning is now instant instead of a full rebuild, and changing only the seed no longer reloads game resources
+- Preview maps render noticeably faster, especially worlds loaded from the cache and in terrain-height mode; idle frames now do almost no work
+- Sampling is faster, seed searches with multiple criteria finish sooner, and multi-dimension terrain export is much quicker
+- Waypoint and hover-tooltip rendering cost per frame reduced
+- The seed search screen has been redesigned: a grouped criteria panel with full-height biome color bars on the left, a tabbed results panel with empty-state hints on the right, and a new More Search Options sub-screen for the advanced parameters
+
+### Fixes
+
+- Fixed seed history and favorites rows drawing the seed twice with overlapping text for entries recorded without a search label
+- Fixed list rows rendering displaced and clipped until the first scroll (affected the biome picker, search results and other shared lists)
+- Seed comparison no longer marks text (non-numeric) seeds as unavailable
+- Fixed the structure picker showing no icons for texture-based structures (only the two item-based ones appeared)
+
 ## 1.5.1
 
 ### New Features

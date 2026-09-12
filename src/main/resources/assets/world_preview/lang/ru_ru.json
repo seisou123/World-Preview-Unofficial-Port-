@@ -154,5 +154,21 @@
   "world_preview.settings.general.preload_radius": "Радиус предварительной загрузки",
   "world_preview.settings.general.preload_radius.tooltip": "Количество блоков за пределами видимой области для предварительной загрузки\n\n§cБольшее значение загружает больше областей, но расходует больше ресурсов§r",
   "world_preview.settings.biomes.open": "Открыть редактор биомов",
-  "world_preview.settings.biomes.open.desc": "Открыть полный редактор цветов биомов (список, фильтры и HSV-палитра)."
+  "world_preview.settings.biomes.open.desc": "Открыть полный редактор цветов биомов (список, фильтры и HSV-палитра).",
+  "world_preview.search.criteria_title": "Критерии поиска",
+  "world_preview.search.more_options": "Ещё параметры…",
+  "world_preview.search.more_options.summary": "Ещё параметры: %s",
+  "world_preview.search.more_options.anchor": "Якорь: %s",
+  "world_preview.search.anchor.origin.short": "0, 0",
+  "world_preview.search.more_options.min_area": "Мин. площадь %s",
+  "world_preview.search.more_options.biome_distance": "Дистанция %s",
+  "world_preview.search.more_options.structure_distance": "Дист. структур %s",
+  "world_preview.search.more_options.attempts": "Попыток %s",
+  "world_preview.search.more_options.hits": "Результатов %s",
+  "world_preview.search.options_title": "Дополнительные параметры поиска",
+  "world_preview.search.empty.results": "Задайте критерии слева и нажмите «Начать поиск»",
+  "world_preview.search.empty.history": "История поиска пока пуста",
+  "world_preview.search.empty.favorites": "Нет избранных сидов",
+  "world_preview.search.empty.saved": "Пока нет сохранённых сидов — введите сид выше и нажмите «Сохранить»",
+  "world_preview.search.biome.show_caves.short": "Пещерные биомы"
 }

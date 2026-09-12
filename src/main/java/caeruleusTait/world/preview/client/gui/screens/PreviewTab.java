@@ -25,6 +25,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.WorldLoader;
 import net.minecraft.server.packs.repository.PackRepository;
+import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.level.levelgen.WorldDimensions;
@@ -38,6 +39,7 @@ import org.jetbrains.annotations.NotNull;
 
 import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -83,6 +85,11 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
     }
     private final Minecraft minecraft;
 
+    // Cached sandbox world-creation context and its fingerprint.
+    // See previewWorldCreationContext() for the caching/lifecycle contract.
+    private volatile WorldCreationContext cachedSandboxContext;
+    private volatile SandboxFingerprint cachedSandboxFingerprint;
+
     public PreviewTab(CreateWorldScreen screen, Minecraft _minecraft) {
         createWorldScreen = screen;
         uiState = screen.getUiState();
@@ -110,19 +117,93 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
 
     @Override
     public void close() {
+        cachedSandboxContext = null;
+        cachedSandboxFingerprint = null;
         previewContainer.close();
     }
 
+    /**
+     * Clears the preview cache files (default behavior) and additionally the
+     * process-wide decoded-icon cache.
+     */
+    @Override
+    public void clearCache() {
+        PreviewContainerDataProvider.super.clearCache();
+        IconCache.invalidate();
+    }
+
+    /**
+     * Cache key for the sandbox {@link WorldCreationContext}: everything the
+     * full {@link WorldLoader#load} result depends on besides the options
+     * (seed) component. Per-element {@link List} equality is used because
+     * {@link net.minecraft.world.level.DataPackConfig} does not implement
+     * value equality.
+     */
+    private record SandboxFingerprint(List<String> enabledPacks, List<String> disabledPacks,
+                                      FeatureFlagSet enabledFeatures, String presetId) {
+    }
+
+    private SandboxFingerprint currentFingerprint(WorldDataConfiguration dataConfig) {
+        String presetId;
+        try {
+            presetId = uiState.getWorldType().preset().unwrapKey()
+                    .map(key -> key.identifier().toString()).orElse("<fallback>");
+        } catch (RuntimeException e) {
+            presetId = "<fallback>";
+        }
+        return new SandboxFingerprint(
+                List.copyOf(dataConfig.dataPacks().getEnabled()),     // order-sensitive: pack priority affects the registries
+                List.copyOf(dataConfig.dataPacks().getDisabled()),
+                dataConfig.enabledFeatures(),
+                presetId);
+    }
 
     /**
      * Create a playground for mods to do their thing while minimizing the risk
      * to the real world creation stuff.
+     *
+     * <p>The expensive datapack/registry reload result is cached per
+     * {@link PreviewTab} instance (i.e. per CreateWorldScreen instance, held
+     * by the mixin). The cache key is a {@link SandboxFingerprint} of
+     * everything the loaded context actually depends on: the enabled/disabled
+     * datapack lists (order-sensitive, pack priority affects the registries),
+     * the enabled feature flags and the selected world preset. A fingerprint
+     * mismatch (e.g. the user toggled datapacks or changed the world type)
+     * automatically misses and triggers a full reload. The seed lives only in
+     * the options component, so seed changes are served from the cache via
+     * {@link WorldCreationContext#withOptions(WorldCreationContext.OptionsModifier)}
+     * with zero reloads. The cache dies with this PreviewTab instance (nulled
+     * in {@link #close()}); the InGamePreviewScreen path is unaffected (its
+     * previewWorldCreationContext() is a separate null-returning implementation
+     * in that class).
      */
     @Override
     public @Nullable WorldCreationContext previewWorldCreationContext() {
-        WorldCreationContext wcContext = uiState.getSettings();
-        WorldDataConfiguration worldDataConfiguration = wcContext.dataConfiguration();
+        WorldCreationContext uiSettings = uiState.getSettings();
+        WorldDataConfiguration worldDataConfiguration = uiSettings.dataConfiguration();
 
+        SandboxFingerprint fingerprint = currentFingerprint(worldDataConfiguration);
+        WorldCreationContext cached = cachedSandboxContext;
+        if (cached != null && fingerprint.equals(cachedSandboxFingerprint)) {
+            try {
+                return cached.withOptions(o -> uiSettings.options());
+            } catch (RuntimeException e) {
+                WorldPreview.LOGGER.warn("Sandbox context reuse failed, falling back to full load", e);
+            }
+        }
+
+        WorldCreationContext fresh = loadSandboxContext(worldDataConfiguration);
+        cachedSandboxContext = fresh;
+        cachedSandboxFingerprint = fingerprint;
+        return fresh;
+    }
+
+    /**
+     * Full sandbox load, unchanged from the original previewWorldCreationContext()
+     * body. The result only depends on the datapack configuration plus the
+     * world type preset; the seed is just an options component.
+     */
+    private WorldCreationContext loadSandboxContext(WorldDataConfiguration worldDataConfiguration) {
         record Cookie(WorldGenSettings worldGenSettings) {}
 
         PackRepository packRepository = ((CreateWorldScreenAccessor) createWorldScreen).invokeGetDataPackSelectionSettings(worldDataConfiguration).getSecond();
@@ -142,7 +223,7 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
                         // Otherwise, create the dimensions using the world data (necessary if re-creating a world)
                         worldDimensions = WorldPresets.createNormalWorldDimensions(dataLoadContext.datapackWorldgen());
                     }
-                    WorldGenSettings worldGenSettings = new WorldGenSettings(wcContext.options(), worldDimensions);
+                    WorldGenSettings worldGenSettings = new WorldGenSettings(uiState.getSettings().options(), worldDimensions);
                     return new WorldLoader.DataLoadOutput<>(
                             new Cookie(worldGenSettings),
                             dataLoadContext.datapackDimensions()

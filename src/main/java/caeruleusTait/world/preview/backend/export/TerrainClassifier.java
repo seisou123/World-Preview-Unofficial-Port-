@@ -39,6 +39,21 @@ public final class TerrainClassifier {
     private TerrainClassifier() {}
 
     /**
+     * Tag check that tolerates stand-alone holders. Stand-alone
+     * {@code Holder.Reference}s (biomes known to the biome source but absent
+     * from the registry, used e.g. by the biome list) have no bound tags and
+     * {@link Holder.Reference#is(TagKey)} throws for them; treat that as "no
+     * tag match" so classification falls through to the id-keyword heuristics.
+     */
+    private static boolean is(Holder<Biome> biomeHolder, TagKey<Biome> tagKey) {
+        try {
+            return biomeHolder.is(tagKey);
+        } catch (IllegalStateException unboundTags) {
+            return false;
+        }
+    }
+
+    /**
      * Classify a biome Holder into a terrain category.
      *
      * @param biomeHolder Biome Holder
@@ -56,34 +71,34 @@ public final class TerrainClassifier {
         String namespace = idOpt.map(Identifier::getNamespace).orElse("").toLowerCase();
 
         // Check water biomes first
-        if (biomeHolder.is(IS_OCEAN)) {
+        if (is(biomeHolder, IS_OCEAN)) {
             return path.contains("deep") ? TerrainCategory.DEEP_OCEAN : TerrainCategory.OCEAN;
         }
-        if (biomeHolder.is(IS_RIVER)) {
+        if (is(biomeHolder, IS_RIVER)) {
             return TerrainCategory.RIVER;
         }
-        if (biomeHolder.is(IS_BEACH)) {
+        if (is(biomeHolder, IS_BEACH)) {
             return TerrainCategory.BEACH;
         }
 
         // Mountain biomes
-        if (biomeHolder.is(IS_MOUNTAIN)) {
+        if (is(biomeHolder, IS_MOUNTAIN)) {
             return path.contains("peak") || path.contains("snowy_peaks")
                     ? TerrainCategory.PEAK : TerrainCategory.MOUNTAIN;
         }
 
         // Hills
-        if (biomeHolder.is(IS_HILL)) {
+        if (is(biomeHolder, IS_HILL)) {
             return TerrainCategory.HILLS;
         }
 
         // Forest
-        if (biomeHolder.is(IS_FOREST)) {
+        if (is(biomeHolder, IS_FOREST)) {
             return TerrainCategory.FOREST;
         }
 
         // Default land classification
-        if (biomeHolder.is(IS_OVERWORLD)) {
+        if (is(biomeHolder, IS_OVERWORLD)) {
             return TerrainCategory.PLAINS;
         }
 
@@ -147,5 +162,28 @@ public final class TerrainClassifier {
         }
 
         return TerrainCategory.UNKNOWN;
+    }
+
+    /**
+     * Rough per-category surface height estimate, in blocks above the
+     * dimension's yMin anchor (the levels the terrain export visualization
+     * uses for its estimated-height fallback).
+     *
+     * @param cat terrain category
+     * @return estimated surface height as a byte
+     */
+    public static byte categoryHeight(TerrainCategory cat) {
+        return switch (cat) {
+            case DEEP_OCEAN -> (byte) 30;
+            case OCEAN -> (byte) 50;
+            case RIVER -> (byte) 55;
+            case BEACH -> (byte) 63;
+            case PLAINS -> (byte) 70;
+            case FOREST -> (byte) 75;
+            case HILLS -> (byte) 90;
+            case MOUNTAIN -> (byte) 120;
+            case PEAK -> (byte) 160;
+            case UNKNOWN -> (byte) 70;
+        };
     }
 }
