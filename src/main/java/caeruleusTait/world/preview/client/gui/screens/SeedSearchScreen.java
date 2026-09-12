@@ -15,9 +15,7 @@ import caeruleusTait.world.preview.domain.waypoint.Waypoint;
 import caeruleusTait.world.preview.domain.waypoint.WaypointStore;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.ChatFormatting;
-import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
@@ -30,7 +28,6 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -38,11 +35,27 @@ import java.util.Map;
  * searches combining biome criteria chosen in a filterable multi-select picker
  * (any-of biome group) with a structure criterion, and browse ranked results
  * plus the persistent history, favorites and saved seeds.
+ *
+ * Layout: the criteria live in a left panel (filter row, biome picker,
+ * structure button and a "More Options" button summarizing the advanced
+ * values), the results/history/favorites/saved views share a right panel with
+ * a tab row; the advanced sliders themselves moved to the
+ * {@link SeedSearchOptionsScreen} sub-page.
  */
 public final class SeedSearchScreen extends Screen implements SearchResultsList.RowActions {
 
     /** Maximum number of biomes that may be combined into one group criterion. */
     private static final int MAX_BIOMES_PER_SEARCH = 4;
+
+    /** Y where the two panels start (below the seed row). */
+    private static final int PANELS_TOP = 46;
+    /** Inner padding of the panels. */
+    private static final int PANEL_PAD = 6;
+    /** Panel background and 1px outline colors. */
+    private static final int PANEL_BG = 0xF01A1A24;
+    private static final int PANEL_BORDER = 0xFF3A3A4A;
+    /** Accent green of the active tab's selection line. */
+    private static final int ACCENT_GREEN = 0xFF55FF55;
 
     private final Screen parent;
     private final PreviewContainer container;
@@ -59,12 +72,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private Button showCavesButton;
     private Button clearBiomesButton;
     private Button structureButton;
-    private CycleButton<Anchor> anchorCycle;
-    private IntSlider minAreaSlider;
-    private IntSlider biomeDistanceSlider;
-    private IntSlider structureDistanceSlider;
-    private IntSlider attemptsSlider;
-    private IntSlider hitsSlider;
+    /** Opens the options sub-page; its label summarizes the non-default advanced values. */
+    private Button optionsButton;
     private Button startButton;
     private Button stopButton;
     private Button compareButton;
@@ -76,8 +85,15 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private Button randomizeSeedButton;
     private Button saveSeedButton;
 
-    /** Y of the footer action row (Start/Stop/Compare + hits), pinned to the screen bottom. */
+    /** Y of the footer action row (Start/Stop/Compare), pinned to the screen bottom. */
     private int actionRowY;
+    /** Bottom edge shared by both panels, 8px above the footer action row. */
+    private int panelBottom;
+    /** Left ("search criteria") and right (results) panel geometry, set by layoutWidgets. */
+    private int leftPanelX;
+    private int leftPanelW;
+    private int rightPanelX;
+    private int rightPanelW;
 
     private boolean showCaves = false;
     private final List<SearchResultsList.Row> hitRows = new ArrayList<>();
@@ -93,11 +109,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     /** When the screen was opened with a quick search (right-click), the best hit is applied automatically. */
     private boolean applyBestOnComplete;
     private View currentView = View.RESULTS;
+    /** True when the current view has no rows (drives the centered empty-state hint). */
+    private boolean resultsEmpty = true;
 
     /** Tabs of the results list; SAVED shows the config's persistent savedSeeds. */
     enum View { RESULTS, HISTORY, FAVORITES, SAVED }
-
-    private enum Anchor { CENTER, ORIGIN }
 
     public SeedSearchScreen(Screen parent, PreviewContainer container,
                             @Nullable BiomesList.BiomeEntry biome,
@@ -146,20 +162,22 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             biomePicker.setShowCaves(showCaves);
         }).size(150, 20).build();
 
-        clearBiomesButton = Button.builder(WorldPreviewComponents.SEARCH_CLEAR_BIOME, btn -> biomePicker.clearSelection())
-                .size(70, 20).build();
+        // Narrow clear button; the full "Clear" wording stays available as its
+        // tooltip so the ✕ glyph stays unambiguous.
+        clearBiomesButton = Button.builder(Component.literal("\u2715"), btn -> biomePicker.clearSelection())
+                .size(20, 20).build();
+        clearBiomesButton.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_CLEAR_BIOME));
 
         // Structure criterion: opens the filterable structure picker screen
         // (None row + one row per structure with item icons).
         structureButton = Button.builder(structureButtonLabel(), ignored -> openStructureSelect())
                 .size(160, 20).build();
 
-        anchorCycle = CycleButton.builder(anchor -> switch (anchor) {
-                case CENTER -> WorldPreviewComponents.SEARCH_ANCHOR_CENTER;
-                case ORIGIN -> WorldPreviewComponents.SEARCH_ANCHOR_ORIGIN;
-            }, Anchor.CENTER)
-            .withValues(List.of(Anchor.CENTER, Anchor.ORIGIN))
-            .create(0, 0, 160, 20, WorldPreviewComponents.SEARCH_ANCHOR, (btn, value) -> { });
+        // Advanced options live on a sub-page; the button's label carries a
+        // compact summary of the non-default values (vanilla "More World
+        // Options…" pattern).
+        optionsButton = Button.builder(optionsButtonLabel(), ignored -> openOptions())
+                .size(160, 20).build();
 
         // View tabs for the results list: search hits, history, favorites and
         // the saved seeds.  A visible tab row replaces the former cycle button
@@ -201,22 +219,6 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             selectView(View.SAVED);
         }).size(70, 20).build();
 
-        minAreaSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_MIN_AREA, 0, 100, 1,
-                container.worldPreview().cfg().searchMinAreaPercent);
-        // Config wiring: searchMaxDistance (previously stored but unread)
-        // pre-seeds the biome distance slider; 0 keeps the unlimited default.
-        biomeDistanceSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_BIOME_DISTANCE, 0, 4096, 64,
-                Math.max(0, container.worldPreview().cfg().searchMaxDistance));
-        biomeDistanceSlider.setTooltip(Tooltip.create(WorldPreviewComponents.SEARCH_BIOME_DISTANCE_TOOLTIP));
-        structureDistanceSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_STRUCTURE_DISTANCE, 128, 8192, 128, 512);
-        attemptsSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_ATTEMPTS, 10, 500, 10, 100);
-        hitsSlider = new IntSlider(0, 0, 150, 20,
-                WorldPreviewComponents.SEARCH_HITS, 1, 10, 1, 1);
-
         startButton = Button.builder(WorldPreviewComponents.SEARCH_START, ignored -> startSearch())
                 .size(70, 20).build();
         stopButton = Button.builder(WorldPreviewComponents.SEARCH_STOP, ignored -> stopSearch())
@@ -241,12 +243,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         addRenderableWidget(showCavesButton);
         addRenderableWidget(clearBiomesButton);
         addRenderableWidget(structureButton);
-        addRenderableWidget(anchorCycle);
-        addRenderableWidget(minAreaSlider);
-        addRenderableWidget(biomeDistanceSlider);
-        addRenderableWidget(structureDistanceSlider);
-        addRenderableWidget(attemptsSlider);
-        addRenderableWidget(hitsSlider);
+        addRenderableWidget(optionsButton);
         addRenderableWidget(startButton);
         addRenderableWidget(stopButton);
         addRenderableWidget(compareButton);
@@ -297,14 +294,13 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void layoutWidgets() {
         int left = 8;
-        int top = 50;
-        int leftWidth = Math.max(230, width / 2 - 16);
 
-        // Bottom-up layout: the footer (action row + back button) is pinned to
-        // the screen bottom so Start/Stop/Compare stay visible even on small
-        // GUI scales; the biome picker and the results list absorb whatever
-        // space remains above.
+        // Bottom-up layout: the footer action row is pinned to the screen
+        // bottom so Start/Stop/Compare stay visible even on small GUI scales;
+        // the two panels reach down to just above it (8px breathing space) so
+        // the biome picker and the results list absorb the leftover height.
         actionRowY = height - 32;
+        panelBottom = actionRowY - 8;
 
         // Seed row directly below the title: seed box + randomize + save.
         // The box absorbs the spare width so long string seeds fit.
@@ -315,83 +311,71 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         randomizeSeedButton.setPosition(left + seedEditW + 4, 22);
         saveSeedButton.setPosition(left + seedEditW + seedButtonW + 8, 22);
 
-        // Three-column grid metrics: three criteria buttons plus 2 gaps fill
-        // the full width [left, width - left] exactly; the biome picker is
-        // 1.5 button widths wide and the strip right of it holds the results
-        // list.
-        int gap = 6;
-        int buttonW = (width - 2 * left - 2 * gap) / 3;
-        int pickerWidth = (3 * buttonW) / 2;
+        // Two-panel geometry: the criteria panel on the left (36% of the
+        // width, at least 240px) and the results panel taking the rest.
+        leftPanelX = left;
+        leftPanelW = Math.max(240, (int) (width * 0.36f));
+        rightPanelX = leftPanelX + leftPanelW + 8;
+        rightPanelW = Math.max(1, (width - left) - (rightPanelX - left) - 8);
+        int innerX = leftPanelX + PANEL_PAD;
+        int leftInnerW = leftPanelW - 2 * PANEL_PAD;
 
-        // Compacted top-left column: the filter box and the show-caves toggle
-        // are narrowed to 112px; the clear button keeps its right edge and its
-        // left edge moves flush to the filter box's right edge, and the view
-        // switch (exactly the clear button's size) sits directly below it, so
-        // the two buttons share the right half of the top rows.
-        int topColW = 112;                            // filter + show-caves width (was 150)
-        int clearRight = left + 224;                  // clear button's right edge is unchanged
-        int clearW = clearRight - (left + topColW);   // == 112
-        int rightX = Math.max(left + pickerWidth + gap, clearRight + gap);
-        int rightWidth = (width - left) - rightX;
+        // Filter row at the top of the criteria panel: flexible filter box, a
+        // narrow clear button and the cave-biomes toggle (widths sized to the
+        // localized toggle label so its text never clips).
+        int filterY = PANELS_TOP + 16;
+        int clearW = clearBiomesButton.getWidth();
+        int cavesW = Math.max(60, Math.min(leftInnerW - clearW - 8 - 60,
+                font.width(showCavesButton.getMessage()) + 10));
+        int filterW = Math.max(40, leftInnerW - clearW - cavesW - 8);
+        filterBox.setPosition(innerX, filterY);
+        filterBox.setWidth(filterW);
+        clearBiomesButton.setPosition(innerX + filterW + 4, filterY);
+        showCavesButton.setPosition(innerX + filterW + clearW + 8, filterY);
+        showCavesButton.setWidth(cavesW);
 
-        // Filter row + cave toggle at the top of the left column; the
-        // "Biomes: n" summary line is drawn by render() right above the
-        // filter row.
-        filterBox.setPosition(left, top + 12);
-        filterBox.setWidth(topColW);
-        clearBiomesButton.setPosition(left + topColW, top + 12);
-        clearBiomesButton.setWidth(clearW);
-        showCavesButton.setPosition(left, top + 34);
-        showCavesButton.setWidth(topColW);
+        // The fixed criteria rows: the "more options" button hugs the panel
+        // bottom (6px inner padding) and the structure button sits 3px above
+        // it; the biome picker absorbs everything between itself and the
+        // structure row.
+        int optionsY = panelBottom - PANEL_PAD - 20;
+        int structureY = optionsY - 3 - 20;
+        int listTop = filterY + 20 + 4;
+        int listBottom = structureY - 4;
+        structureButton.setPosition(innerX, structureY);
+        structureButton.setWidth(leftInnerW);
+        optionsButton.setPosition(innerX, optionsY);
+        optionsButton.setWidth(leftInnerW);
+        // The options summary is truncated to the button's width so a long
+        // list of non-default values never spills over the panel edge.
+        optionsButton.setMessage(fitLabelToWidth(optionsButtonLabel(), leftInnerW));
 
-        // Picker (1.5 button widths) fills the strip between the compacted
-        // left column and the criteria grid; the results list sits beside it,
-        // its top edge level with the clear button's top edge. Both lists end
-        // 4px above the upper criteria row so they never touch the grid.
-        int listTop = top + 56;
-        int listBottom = actionRowY - 52;
-        biomePicker.setX(left);
+        biomePicker.setX(innerX);
         biomePicker.setY(listTop);
-        biomePicker.setWidth(pickerWidth);
-        biomePicker.setHeight(Math.max(40, listBottom - listTop));
-        // View tab row directly above the results list; the four tabs share
-        // the list's width so the row always lines up with the list.
-        int tabW = Math.max(1, rightWidth / 4);
-        int tabX = rightX;
+        biomePicker.setWidth(leftInnerW);
+        biomePicker.setHeight(Math.max(60, listBottom - listTop));
+
+        // View tab row inside the top of the results panel; the four tabs
+        // share the panel's inner width evenly and the results list fills the
+        // rest of the panel below the tab row.
+        int tabY = PANELS_TOP + 6;
+        int tabW = Math.max(1, (rightPanelW - 2 * PANEL_PAD) / 4);
+        int tabX = rightPanelX + PANEL_PAD;
         for (View view : List.of(View.RESULTS, View.HISTORY, View.FAVORITES, View.SAVED)) {
-            viewTabs.get(view).setPosition(tabX, top + 12);
+            viewTabs.get(view).setPosition(tabX, tabY);
             viewTabs.get(view).setWidth(tabW);
             tabX += tabW;
         }
-        resultsList.setX(rightX);
-        resultsList.setY(top + 34);
-        resultsList.setWidth(rightWidth);
-        resultsList.setHeight(Math.max(40, listBottom - (top + 34)));
+        resultsList.setX(rightPanelX + PANEL_PAD);
+        resultsList.setY(tabY + 24);
+        resultsList.setWidth(rightPanelW - 2 * PANEL_PAD);
+        resultsList.setHeight(Math.max(40, (panelBottom - PANEL_PAD) - resultsList.getY()));
 
-        // Criteria grid, three widgets per row across the full width: the
-        // structure button, the anchor cycle and structure distance on the
-        // upper row, min area + biome distance and attempts on the lower row.
-        int upperRowY = actionRowY - 48;
-        int lowerRowY = actionRowY - 24;
-        structureButton.setPosition(left, upperRowY);
-        structureButton.setWidth(buttonW);
-        anchorCycle.setPosition(left + buttonW + gap, upperRowY);
-        anchorCycle.setWidth(buttonW);
-        structureDistanceSlider.setPosition(left + 2 * (buttonW + gap), upperRowY);
-        structureDistanceSlider.setWidth(buttonW);
-        minAreaSlider.setPosition(left, lowerRowY);
-        minAreaSlider.setWidth(buttonW);
-        biomeDistanceSlider.setPosition(left + buttonW + gap, lowerRowY);
-        biomeDistanceSlider.setWidth(buttonW);
-        attemptsSlider.setPosition(left + 2 * (buttonW + gap), lowerRowY);
-        attemptsSlider.setWidth(buttonW);
-
-        // Footer action row; the hits slider shares the row with the buttons.
+        // Footer action row; the Start button is widened as the primary action.
         startButton.setPosition(left, actionRowY);
-        stopButton.setPosition(left + 74, actionRowY);
-        compareButton.setPosition(left + 150, actionRowY);
-        hitsSlider.setPosition(left + 224, actionRowY);
-        hitsSlider.setWidth(Math.max(90, leftWidth - 224));
+        startButton.setWidth(110);
+        stopButton.setPosition(left + 114, actionRowY);
+        compareButton.setPosition(left + 188, actionRowY);
 
         // Back button in the footer, right-aligned (same spot as
         // WorldAnalysisScreen's close button).
@@ -408,8 +392,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             statusText = WorldPreviewComponents.SEARCH_RUNNING.getString();
             return;
         }
+        var options = container.seedSearchOptions();
         var viewport = container.currentSearchViewport();
-        BlockPos anchor = anchorCycle.getValue() == Anchor.ORIGIN
+        BlockPos anchor = options.anchor == SeedSearchOptions.Anchor.ORIGIN
                 ? new BlockPos(0, viewport.center().getY(), 0)
                 : viewport.center();
 
@@ -419,11 +404,11 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             // The picker selection becomes a single ANY-of group criterion; a
             // distance cap of 0 disables the biome proximity requirement.
             criteria.add(new SearchCriterion.BiomeGroup(
-                    selectedBiomes, minAreaSlider.currentValue(), biomeDistanceSlider.currentValue()));
+                    selectedBiomes, options.minAreaPercent, options.biomeMaxDistance));
         }
         if (structureId != null) {
             criteria.add(new SearchCriterion.Structure(
-                    structureId, structureDistanceSlider.currentValue()));
+                    structureId, options.structureDistance));
         }
         if (criteria.isEmpty()) {
             statusText = WorldPreviewComponents.SEARCH_NO_CRITERIA.getString();
@@ -437,9 +422,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 viewport.viewMinX(), viewport.viewMaxX(), viewport.viewMinZ(), viewport.viewMaxZ(),
                 viewport.sampleStep(),
                 viewport.contextFingerprint(),
-                attemptsSlider.currentValue(),
+                options.attempts,
                 criteria,
-                hitsSlider.currentValue()
+                options.hits
         );
 
         boolean started = container.startSeedSearch(request, criteriaLabel(), this::onComplete, this::onProgress);
@@ -502,6 +487,67 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         }
     }
 
+    /** Opens the advanced options sub-page; the shared options object is edited in place. */
+    private void openOptions() {
+        if (minecraft != null) {
+            minecraft.setScreen(new SeedSearchOptionsScreen(this, container, container.seedSearchOptions()));
+        }
+    }
+
+    /**
+     * Label of the more-options button: plain "More Options…" while every
+     * advanced option is at its default, otherwise a compact summary listing
+     * exactly the non-default values.
+     */
+    private Component optionsButtonLabel() {
+        SeedSearchOptions options = container.seedSearchOptions();
+        List<Component> parts = new ArrayList<>();
+        if (options.anchor == SeedSearchOptions.Anchor.ORIGIN) {
+            parts.add(Component.translatable("world_preview.search.more_options.anchor",
+                    Component.translatable("world_preview.search.anchor.origin.short")));
+        }
+        if (options.minAreaPercent != 0) {
+            // The percent sign rides in the argument: vanilla's translation
+            // format would render a literal "%%" in the format string.
+            parts.add(Component.translatable("world_preview.search.more_options.min_area", options.minAreaPercent + "%"));
+        }
+        if (options.biomeMaxDistance != 0) {
+            parts.add(Component.translatable("world_preview.search.more_options.biome_distance", options.biomeMaxDistance));
+        }
+        if (options.structureDistance != 512) {
+            parts.add(Component.translatable("world_preview.search.more_options.structure_distance", options.structureDistance));
+        }
+        if (options.attempts != 100) {
+            parts.add(Component.translatable("world_preview.search.more_options.attempts", options.attempts));
+        }
+        if (options.hits != 1) {
+            parts.add(Component.translatable("world_preview.search.more_options.hits", options.hits));
+        }
+        if (parts.isEmpty()) {
+            return WorldPreviewComponents.SEARCH_MORE_OPTIONS;
+        }
+        StringBuilder joined = new StringBuilder();
+        for (Component part : parts) {
+            if (joined.length() > 0) {
+                joined.append(", ");
+            }
+            joined.append(part.getString());
+        }
+        return Component.translatable("world_preview.search.more_options.summary", joined.toString());
+    }
+
+    /** Fits the label text into the given width, appending an ellipsis when truncated. */
+    private Component fitLabelToWidth(Component label, int maxWidth) {
+        String text = label.getString();
+        if (font.width(text) <= maxWidth) {
+            return label;
+        }
+        while (text.length() > 1 && font.width(text + "…") > maxWidth) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return Component.literal(text + "…");
+    }
+
     /** Applies a structure picked in {@link StructureSelectScreen} (null = None). */
     void structurePicked(@Nullable Identifier id, @Nullable String name) {
         structureId = id;
@@ -511,7 +557,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void onProgress(int attempts) {
         statusText = Component.translatable(
-                "world_preview.search.progress", attempts, attemptsSlider.currentValue()).getString();
+                "world_preview.search.progress", attempts, container.seedSearchOptions().attempts).getString();
     }
 
     private void onComplete(SeedSearchResult result) {
@@ -595,7 +641,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     /** Label for the cave-biomes toggle with an [x]/[  ] prefix showing the state. */
     private Component showCavesLabel() {
         return Component.literal((showCaves ? "[x] " : "[  ]")
-                + WorldPreviewComponents.SEARCH_BIOME_SHOW_CAVES.getString());
+                + WorldPreviewComponents.SEARCH_BIOME_SHOW_CAVES_SHORT.getString());
     }
 
     // ===== Result list =====
@@ -629,6 +675,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             case FAVORITES -> historyRows(container.worldPreview().seedSearchHistory().favorites());
             case SAVED -> savedRows();
         };
+        resultsEmpty = rows.isEmpty();
         resultsList.setRows(rows);
     }
 
@@ -647,8 +694,10 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private List<SearchResultsList.Row> historyRows(List<SeedSearchHistory.Entry> entries) {
         List<SearchResultsList.Row> rows = new ArrayList<>();
         for (SeedSearchHistory.Entry entry : entries) {
+            // Raw label (may be blank): passing displayLabel() here would feed
+            // the seed back as the label and render it twice per row.
             rows.add(resultsList.createRow(
-                    entry.seed, entry.displayLabel(), 0, entry.favorite, true));
+                    entry.seed, entry.label, 0, entry.favorite, true));
         }
         return rows;
     }
@@ -731,7 +780,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 name, structurePos.getX(), structurePos.getZ()).getString();
     }
 
-    private static long parseSeed(String seed) {
+    /** Numeric seeds parse directly; text seeds hash like vanilla's own seed parsing. */
+    static long parseSeed(String seed) {
         try {
             return Long.parseLong(seed.trim());
         } catch (NumberFormatException e) {
@@ -792,16 +842,71 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         graphics.fill(0, 0, width, height, 0xFF101018);
         graphics.centeredText(font, title, width / 2, 8, 0xFFFFFFFF);
 
-        // Criteria summary (left column): number of selected biomes
-        int left = 8;
-        int top = 50;
-        graphics.text(font,
-                Component.translatable("world_preview.search.biome.selected",
-                        biomePicker.getSelectedCount()),
-                left, top + 3, 0xFFCCCCCC);
+        renderPanels(graphics);
 
         super.extractRenderState(graphics, mouseX, mouseY, partialTick);
 
+        // Drawn on top of the widgets: the active tab's selection line, the
+        // empty-state hint and the status bar.
+        renderTabSelection(graphics);
+        renderEmptyState(graphics);
+        renderStatusBar(graphics);
+    }
+
+    /** Draws both panel backgrounds plus the criteria panel's header line. */
+    private void renderPanels(GuiGraphicsExtractor graphics) {
+        renderPanelBackground(graphics, leftPanelX, PANELS_TOP, leftPanelW, panelBottom - PANELS_TOP);
+        renderPanelBackground(graphics, rightPanelX, PANELS_TOP, rightPanelW, panelBottom - PANELS_TOP);
+
+        // Criteria header: panel title on the left, gray biome count on the
+        // right (the former standalone count line, folded into the header).
+        graphics.text(font, WorldPreviewComponents.SEARCH_CRITERIA_TITLE,
+                leftPanelX + PANEL_PAD, PANELS_TOP + 5, 0xFFFFFFFF);
+        Component count = Component.translatable("world_preview.search.biome.selected",
+                biomePicker.getSelectedCount());
+        graphics.text(font, count,
+                leftPanelX + leftPanelW - PANEL_PAD - font.width(count), PANELS_TOP + 5, 0xFF999999);
+    }
+
+    /** One panel: dark fill plus a 1px outline. */
+    private void renderPanelBackground(GuiGraphicsExtractor graphics, int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        graphics.fill(x, y, x + w, y + h, PANEL_BG);
+        graphics.fill(x, y, x + w, y + 1, PANEL_BORDER);
+        graphics.fill(x, y + h - 1, x + w, y + h, PANEL_BORDER);
+        graphics.fill(x, y, x + 1, y + h, PANEL_BORDER);
+        graphics.fill(x + w - 1, y, x + w, y + h, PANEL_BORDER);
+    }
+
+    /** Draws the 2px green selection line under the active view tab. */
+    private void renderTabSelection(GuiGraphicsExtractor graphics) {
+        Button tab = viewTabs.get(currentView);
+        if (tab != null) {
+            graphics.fill(tab.getX(), tab.getY() + tab.getHeight() - 2,
+                    tab.getX() + tab.getWidth(), tab.getY() + tab.getHeight(), ACCENT_GREEN);
+        }
+    }
+
+    /** Draws a centered gray hint when the current view has no rows. */
+    private void renderEmptyState(GuiGraphicsExtractor graphics) {
+        if (!resultsEmpty) {
+            return;
+        }
+        Component empty = switch (currentView) {
+            case RESULTS -> WorldPreviewComponents.SEARCH_EMPTY_RESULTS;
+            case HISTORY -> WorldPreviewComponents.SEARCH_EMPTY_HISTORY;
+            case FAVORITES -> WorldPreviewComponents.SEARCH_EMPTY_FAVORITES;
+            case SAVED -> WorldPreviewComponents.SEARCH_EMPTY_SAVED;
+        };
+        graphics.centeredText(font, empty,
+                resultsList.getX() + resultsList.getWidth() / 2,
+                resultsList.getY() + resultsList.getHeight() / 2 - 4,
+                0xFF808080);
+    }
+
+    private void renderStatusBar(GuiGraphicsExtractor graphics) {
         if (statusText != null && !statusText.isEmpty()) {
             // Draw in the strip below the footer action row so the status can
             // never cover the Start/Stop/Compare buttons or the back button.
@@ -821,44 +926,5 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             return true;
         }
         return false;
-    }
-
-    // ===== Widgets =====
-
-    /** Continuous slider snapping to whole values within [min, max]. */
-    private static final class IntSlider extends AbstractSliderButton {
-        private final Component caption;
-        private final int min;
-        private final int max;
-        private final int step;
-
-        private IntSlider(int x, int y, int w, int h, Component caption, int min, int max, int step, int initialValue) {
-            super(x, y, w, h, Component.empty(), toSlider(initialValue, min, max));
-            this.caption = caption;
-            this.min = min;
-            this.max = max;
-            this.step = Math.max(1, step);
-            updateMessage();
-        }
-
-        private static double toSlider(int value, int min, int max) {
-            return max <= min ? 0.0 : Math.min(1.0, Math.max(0.0, (value - min) / (double) (max - min)));
-        }
-
-        public int currentValue() {
-            int span = max - min;
-            int snapped = Math.round((float) value * span / step) * step;
-            return Math.max(min, Math.min(max, min + snapped));
-        }
-
-        @Override
-        protected void updateMessage() {
-            setMessage(caption.copy().append(": " + String.format(Locale.ROOT, "%d", currentValue())));
-        }
-
-        @Override
-        protected void applyValue() {
-            updateMessage();
-        }
     }
 }

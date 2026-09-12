@@ -66,6 +66,42 @@ class WaypointStoreTest {
     }
 
     @Test
+    @DisplayName("Revision counter tracks list mutations (load/add/remove) but not save")
+    void revisionTracksMutations() {
+        Path file = tempDir.resolve("waypoints.json");
+        WaypointStore store = new WaypointStore(file);
+        assertEquals(0, store.revision());
+
+        store.add(Waypoint.create("a", 0, 64, 0, DIM, 0xFFFFFFFF, SEED));
+        final long afterFirstAdd = store.revision();
+        assertEquals(1, afterFirstAdd);
+
+        store.save();
+        assertEquals(afterFirstAdd, store.revision(), "save() must not bump revision");
+
+        store.add(Waypoint.create("b", 10, 64, 10, DIM, 0xFFFFFFFF, SEED));
+        assertEquals(afterFirstAdd + 1, store.revision());
+
+        Waypoint removed = store.removeNearest(SEED, DIM, 1, 1, 16);
+        assertNotNull(removed);
+        assertEquals("a", removed.name(), "nearest waypoint to (1,1) is 'a'");
+        assertEquals(afterFirstAdd + 2, store.revision(), "removeNearest hit must bump revision once");
+
+        assertNull(store.removeNearest(SEED, DIM, 0, 0, 1));
+        assertEquals(afterFirstAdd + 2, store.revision(), "removeNearest miss must not bump revision");
+
+        List<Waypoint> remaining = store.forSeedDimension(SEED, DIM);
+        assertEquals(1, remaining.size());
+        assertTrue(store.remove(remaining.get(0).id()));
+        assertEquals(afterFirstAdd + 3, store.revision());
+        assertFalse(store.remove(remaining.get(0).id()));
+        assertEquals(afterFirstAdd + 3, store.revision());
+
+        store.load();
+        assertEquals(afterFirstAdd + 4, store.revision(), "load() must bump revision");
+    }
+
+    @Test
     @DisplayName("Corrupt file yields an empty store and recovers on next save")
     void corruptFileTolerated() throws Exception {
         Path file = tempDir.resolve("waypoints.json");

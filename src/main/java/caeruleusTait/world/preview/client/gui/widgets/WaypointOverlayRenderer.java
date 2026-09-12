@@ -11,6 +11,7 @@ import net.minecraft.core.BlockPos;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -27,6 +28,12 @@ public class WaypointOverlayRenderer implements PreviewDisplay.WaypointRenderer 
     private final Supplier<Long> seedSupplier;
     private final Supplier<@Nullable String> dimensionSupplier;
 
+    // Three-key cache for currentWaypoints(): revision + seed + dimension.
+    private long cachedRevision = -1;
+    private long cachedSeed;
+    private String cachedDimension;
+    private List<Waypoint> cachedWaypoints = List.of();
+
     public WaypointOverlayRenderer(PreviewDisplay display, WaypointStore store,
                                    Supplier<Long> seedSupplier,
                                    Supplier<@Nullable String> dimensionSupplier) {
@@ -42,7 +49,15 @@ public class WaypointOverlayRenderer implements PreviewDisplay.WaypointRenderer 
         if (seed == null || dimension == null) {
             return List.of();
         }
-        return store.forSeedDimension(seed, dimension);
+        final long rev = store.revision();
+        if (rev != cachedRevision || seed != cachedSeed || !Objects.equals(dimension, cachedDimension)) {
+            cachedRevision = rev;
+            cachedSeed = seed;
+            cachedDimension = dimension;
+            // Store never mutates Waypoint (immutable record) nor a returned list in place.
+            cachedWaypoints = store.forSeedDimension(seed, dimension);
+        }
+        return cachedWaypoints;
     }
 
     /** Screen position (GUI px) of a block coordinate, or null when off the map. */

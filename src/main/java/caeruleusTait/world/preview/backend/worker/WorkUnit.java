@@ -12,7 +12,7 @@ import caeruleusTait.world.preview.domain.task.TaskId;
 import caeruleusTait.world.preview.domain.task.TaskProgress;
 import caeruleusTait.world.preview.domain.task.TaskResult;
 import caeruleusTait.world.preview.domain.task.TaskState;
-import net.minecraft.resources.ResourceKey;
+import net.minecraft.core.Holder;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.biome.Biome;
@@ -62,12 +62,11 @@ public abstract class WorkUnit implements Task {
         this.y = y;
     }
 
-    public short biomeIdFrom(ResourceKey<Biome> resourceKey) {
-        final short id = BiomeIdLookup.idFrom(previewData, resourceKey);
+    public short biomeIdFrom(Holder<Biome> holder) {
+        final short id = BiomeIdLookup.idFrom(previewData, holder, workManager.biomeHolderIdCache());
         if (id < 0) {
-            LOGGER.warn("Biome not found in biome2Id map: {} — it will be rendered as black. " +
-                    "This usually means the biome was not in the registry when the preview data was built.",
-                    resourceKey.identifier());
+            LOGGER.warn("Biome not found in biome2Id map: {} - it will be rendered as black.",
+                    holder.unwrapKey().map(key -> key.identifier()).orElse(null));
         }
         return id;
     }

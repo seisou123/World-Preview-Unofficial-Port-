@@ -2,10 +2,13 @@ package caeruleusTait.world.preview.backend.analysis;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.biome.Biome;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -16,7 +19,9 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
@@ -372,6 +377,14 @@ public class SeedSearchService implements AutoCloseable {
 
     /**
      * Evaluates every criterion of the request against the candidate seed.
+     * <p>
+     * Biome criteria are compiled up front and their match statistics are
+     * collected in a single pass over the sample grid (one biome lookup per
+     * point) whenever the sampler supports holder sampling; string-only
+     * samplers fall back to one grid pass per criterion. The criteria are then
+     * scored in request order: the first failure aborts the seed and skips
+     * every remaining criterion (including structure probes).
+     * </p>
      *
      * @return the seed's score when all criteria pass, or {@code null} when any fails
      */
@@ -385,118 +398,199 @@ public class SeedSearchService implements AutoCloseable {
         try (var sampler = task.contextFactory.createSampler(seed)) {
             if (task.cancelled.get()) return null;
 
-            double score = 0.0;
-            BlockPos structurePos = null;
+            List<CompiledBiome> compiled = compileBiomeCriteria(request.criteria(), sampler);
+            collectBiomeMatches(compiled, request, samplePoints, sampler, task.cancelled::get);
 
-            for (SearchCriterion criterion : request.criteria()) {
+            // Score in request order; contributions are summed in the same
+            // order once every criterion has passed (float addition is not
+            // commutative, so the order is part of the semantics).
+            List<SearchCriterion> criteria = request.criteria();
+            double[] contributions = new double[criteria.size()];
+            BlockPos structurePos = null;
+            int biomeIdx = 0;
+
+            for (int i = 0; i < criteria.size(); i++) {
                 if (task.cancelled.get()) return null;
-                switch (criterion) {
+                switch (criteria.get(i)) {
                     case SearchCriterion.Biome biome -> {
-                        Double criterionScore = evaluateBiome(biome, request, samplePoints, sampler);
+                        Double criterionScore = scoreBiome(compiled.get(biomeIdx++), samplePoints.length);
                         if (criterionScore == null) return null;
-                        score += criterionScore;
+                        contributions[i] = criterionScore;
                     }
                     case SearchCriterion.BiomeGroup biomeGroup -> {
-                        Double criterionScore = evaluateBiomeGroup(biomeGroup, request, samplePoints, sampler);
+                        Double criterionScore = scoreBiome(compiled.get(biomeIdx++), samplePoints.length);
                         if (criterionScore == null) return null;
-                        score += criterionScore;
+                        contributions[i] = criterionScore;
                     }
                     case SearchCriterion.Structure structure -> {
                         StructureEvaluation evaluation = evaluateStructure(structure, request, sampler);
                         if (evaluation == null) return null;
-                        score += evaluation.score();
+                        contributions[i] = evaluation.score();
                         structurePos = evaluation.position();
                     }
                 }
             }
 
+            double score = 0.0;
+            for (double contribution : contributions) {
+                score += contribution;
+            }
             return new SeedEvaluation(seed, score, structurePos);
         }
     }
 
     /**
-     * Checks a biome criterion: area coverage and center distance.
-     *
-     * @return score contribution, or {@code null} when the criterion fails
+     * Compiles every biome/biome-group criterion of the request into a
+     * matcher over biome holders. When all targets of a criterion resolve
+     * against the sampler's possible biomes, an identity set of holders is
+     * used (fast path); otherwise the matcher compares the resolved key
+     * identifier against the target set (the same semantics as the
+     * identifier-based sampling).
      */
-    @Nullable
-    private static Double evaluateBiome(SearchCriterion.Biome criterion, SeedSearchRequest request,
-                                        BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
-        return evaluateBiomeMatches(Set.of(criterion.biome()), false,
-                criterion.minAreaPercent(), criterion.maxDistance(), request, samplePoints, sampler);
-    }
-
-    /**
-     * Checks a biome group criterion: any-of matching across the group, with
-     * area coverage and center distance computed over group matches.
-     *
-     * @return score contribution, or {@code null} when the criterion fails
-     */
-    @Nullable
-    private static Double evaluateBiomeGroup(SearchCriterion.BiomeGroup criterion, SeedSearchRequest request,
-                                             BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
-        return evaluateBiomeMatches(Set.copyOf(criterion.biomes()), true,
-                criterion.minAreaPercent(), criterion.maxDistance(), request, samplePoints, sampler);
-    }
-
-    /**
-     * Shared biome evaluation for single-biome and biome-group criteria:
-     * counts matching sample points, checks the area percentage and distance
-     * requirement and scores coverage plus a proximity bonus.
-     *
-     * @param matchTargets   biome identifiers considered matching
-     * @param anyOf          true: a point matches when any target matches
-     *                       ({@link BiomeSampler#sampleContainsAny});
-     *                       false: the single target must match exactly
-     * @param minAreaPercent minimum required coverage of the viewport (0-100)
-     * @param maxDistance    distance cap from the anchor for the nearest match (0 = unlimited)
-     * @return score contribution, or {@code null} when the criterion fails
-     */
-    @Nullable
-    private static Double evaluateBiomeMatches(Set<Identifier> matchTargets, boolean anyOf,
-                                               int minAreaPercent, int maxDistance,
-                                               SeedSearchRequest request,
-                                               BlockPos[] samplePoints, BiomeSampler sampler) throws Exception {
-        int matchCount = 0;
-        double minDistance = Double.MAX_VALUE;
-        BlockPos center = request.center();
-        Identifier singleTarget = anyOf ? null : matchTargets.iterator().next();
-
-        for (int i = 0; i < samplePoints.length; i++) {
-            var pos = samplePoints[i];
-            boolean matches = anyOf
-                    ? sampler.sampleContainsAny(pos.getX(), pos.getY(), pos.getZ(), matchTargets)
-                    : sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), singleTarget);
-            if (matches) {
-                matchCount++;
-                // Calculate distance from screen center
-                double dx = pos.getX() - center.getX();
-                double dz = pos.getZ() - center.getZ();
-                double distance = Math.sqrt(dx * dx + dz * dz);
-                minDistance = Math.min(minDistance, distance);
+    private static List<CompiledBiome> compileBiomeCriteria(List<SearchCriterion> criteria,
+                                                            BiomeSampler sampler) throws Exception {
+        List<CompiledBiome> compiled = new ArrayList<>();
+        int order = 0;
+        for (SearchCriterion criterion : criteria) {
+            switch (criterion) {
+                case SearchCriterion.Biome biome ->
+                        compiled.add(compileBiome(order++, Set.of(biome.biome()), false,
+                                biome.minAreaPercent(), biome.maxDistance(), sampler));
+                case SearchCriterion.BiomeGroup biomeGroup ->
+                        compiled.add(compileBiome(order++, Set.copyOf(biomeGroup.biomes()), true,
+                                biomeGroup.minAreaPercent(), biomeGroup.maxDistance(), sampler));
+                case SearchCriterion.Structure structure -> { }
             }
         }
+        return compiled;
+    }
 
+    private static CompiledBiome compileBiome(int order, Set<Identifier> targets, boolean anyOf,
+                                              int minAreaPercent, int maxDistance,
+                                              BiomeSampler sampler) throws Exception {
+        Identifier singleTarget = anyOf ? null : targets.iterator().next();
+        Predicate<Holder<Biome>> matcher = null;
+        if (sampler.supportsHolderSampling()) {
+            Set<Holder<Biome>> identityTargets = new HashSet<>();
+            boolean allResolved = true;
+            for (Identifier target : targets) {
+                Holder<Biome> holder = findPossibleBiome(sampler.possibleBiomes(), target);
+                if (holder == null) {
+                    allResolved = false;
+                    break;
+                }
+                identityTargets.add(holder);
+            }
+            if (allResolved) {
+                matcher = identityTargets::contains;
+            }
+        }
+        if (matcher == null) {
+            // Identifier fallback: a point matches when the sampled holder's
+            // key is one of the targets (null holders never match).
+            matcher = holder -> holder != null
+                    && holder.unwrapKey().map(key -> targets.contains(key.identifier())).orElse(false);
+        }
+        return new CompiledBiome(order, matcher, anyOf, targets, singleTarget, minAreaPercent, maxDistance);
+    }
+
+    /** Finds the possible-biomes holder whose key matches {@code target}, or null. */
+    @Nullable
+    private static Holder<Biome> findPossibleBiome(Collection<Holder<Biome>> possible, Identifier target) {
+        for (Holder<Biome> holder : possible) {
+            if (holder != null
+                    && holder.unwrapKey().map(key -> key.identifier().equals(target)).orElse(false)) {
+                return holder;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Collects the match statistics (match count and nearest-match distance)
+     * of every compiled biome criterion. Holder-capable samplers run one pass
+     * over the grid with a single {@link BiomeSampler#biomeHolderAt} lookup
+     * per point; identifier-only samplers run one pass per criterion via
+     * {@link BiomeSampler#sampleContains}/{@link BiomeSampler#sampleContainsAny}.
+     */
+    private static void collectBiomeMatches(List<CompiledBiome> compiled, SeedSearchRequest request,
+                                            BlockPos[] samplePoints, BiomeSampler sampler,
+                                            BooleanSupplier cancelled) throws Exception {
+        if (compiled.isEmpty()) {
+            return;
+        }
+        BlockPos center = request.center();
+        if (sampler.supportsHolderSampling()) {
+            for (CompiledBiome c : compiled) {
+                c.matchCount = 0;
+                c.minDistance = Double.MAX_VALUE;
+            }
+            for (BlockPos pos : samplePoints) {
+                if (cancelled.getAsBoolean()) return;
+                Holder<Biome> holder = sampler.biomeHolderAt(pos.getX(), pos.getY(), pos.getZ());
+                for (CompiledBiome c : compiled) {
+                    if (c.matcher.test(holder)) {
+                        c.matchCount++;
+                        // Calculate distance from screen center
+                        double dx = pos.getX() - center.getX();
+                        double dz = pos.getZ() - center.getZ();
+                        double distance = Math.sqrt(dx * dx + dz * dz);
+                        c.minDistance = Math.min(c.minDistance, distance);
+                    }
+                }
+            }
+        } else {
+            for (CompiledBiome c : compiled) {
+                if (cancelled.getAsBoolean()) return;
+                c.matchCount = 0;
+                c.minDistance = Double.MAX_VALUE;
+                for (BlockPos pos : samplePoints) {
+                    boolean matches = c.anyOf
+                            ? sampler.sampleContainsAny(pos.getX(), pos.getY(), pos.getZ(), c.targets)
+                            : sampler.sampleContains(pos.getX(), pos.getY(), pos.getZ(), c.singleTarget);
+                    if (matches) {
+                        c.matchCount++;
+                        // Calculate distance from screen center
+                        double dx = pos.getX() - center.getX();
+                        double dz = pos.getZ() - center.getZ();
+                        double distance = Math.sqrt(dx * dx + dz * dz);
+                        c.minDistance = Math.min(c.minDistance, distance);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies a compiled biome criterion's thresholds and scoring to the
+     * statistics collected by {@link #collectBiomeMatches}. Mirrors the
+     * previous per-criterion evaluation exactly: area check, then distance
+     * check (strict {@code >}), then the at-least-one-match requirement.
+     *
+     * @return score contribution, or {@code null} when the criterion fails
+     */
+    @Nullable
+    private static Double scoreBiome(CompiledBiome c, int samplePointCount) {
         // Check area percentage
-        double areaPercent = (samplePoints.length > 0) ? (matchCount * 100.0 / samplePoints.length) : 0;
-        if (areaPercent < minAreaPercent) {
+        double areaPercent = (samplePointCount > 0) ? (c.matchCount * 100.0 / samplePointCount) : 0;
+        if (areaPercent < c.minAreaPercent) {
             return null;
         }
 
         // Check distance requirement
-        if (maxDistance > 0 && minDistance > maxDistance) {
+        if (c.maxDistance > 0 && c.minDistance > c.maxDistance) {
             return null;
         }
 
         // At least one matching point is required for a hit
-        if (matchCount == 0) {
+        if (c.matchCount == 0) {
             return null;
         }
 
         // Base score: coverage. When a distance cap is set, reward proximity to the center.
         double score = areaPercent;
-        if (maxDistance > 0) {
-            score += 50.0 * (1.0 - Math.min(1.0, minDistance / maxDistance));
+        if (c.maxDistance > 0) {
+            score += 50.0 * (1.0 - Math.min(1.0, c.minDistance / c.maxDistance));
         }
         return score;
     }
@@ -527,6 +621,37 @@ public class SeedSearchService implements AutoCloseable {
 
     /** Structure criterion outcome: score contribution plus located position. */
     private record StructureEvaluation(double score, BlockPos position) {}
+
+    /**
+     * A biome/biome-group criterion compiled for evaluation: a matcher over
+     * biome holders plus the mutable per-candidate statistics (match count and
+     * nearest-match distance) filled in by {@link #collectBiomeMatches}.
+     */
+    private static final class CompiledBiome {
+        /** Position of the criterion within the request's criteria list. */
+        final int order;
+        final Predicate<Holder<Biome>> matcher;
+        /** true: any-of group matching; false: exact single-biome matching. */
+        final boolean anyOf;
+        final Set<Identifier> targets;
+        @Nullable final Identifier singleTarget;
+        final int minAreaPercent;
+        final int maxDistance;
+        int matchCount;
+        double minDistance = Double.MAX_VALUE;
+
+        CompiledBiome(int order, Predicate<Holder<Biome>> matcher, boolean anyOf,
+                      Set<Identifier> targets, @Nullable Identifier singleTarget,
+                      int minAreaPercent, int maxDistance) {
+            this.order = order;
+            this.matcher = matcher;
+            this.anyOf = anyOf;
+            this.targets = targets;
+            this.singleTarget = singleTarget;
+            this.minAreaPercent = minAreaPercent;
+            this.maxDistance = maxDistance;
+        }
+    }
 
     /**
      * Generate sample point list based on the current viewport.
@@ -697,6 +822,37 @@ public class SeedSearchService implements AutoCloseable {
         @Nullable
         default Identifier biomeAt(int x, int y, int z) throws Exception {
             return null;
+        }
+
+        /**
+         * Whether this sampler exposes biome holders directly
+         * ({@link #biomeHolderAt}). That lets the search service evaluate every
+         * biome criterion in one pass with a single biome lookup per sample
+         * point; otherwise the per-criterion identifier-based path is used.
+         */
+        default boolean supportsHolderSampling() {
+            return false;
+        }
+
+        /**
+         * Return the biome holder at the given coordinates, or {@code null}
+         * when the biome cannot be resolved. Only called when
+         * {@link #supportsHolderSampling()} is true.
+         */
+        @Nullable
+        default Holder<Biome> biomeHolderAt(int x, int y, int z) throws Exception {
+            return null;
+        }
+
+        /**
+         * Return every biome this sampler can ever produce. Used to build
+         * identity matchers for the single-pass path; the collection must
+         * contain the same holder instances that {@link #biomeHolderAt}
+         * returns. Samplers without holder support may return an empty
+         * collection.
+         */
+        default Collection<Holder<Biome>> possibleBiomes() {
+            return List.of();
         }
 
         @Override

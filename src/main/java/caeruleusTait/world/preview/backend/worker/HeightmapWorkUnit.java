@@ -40,10 +40,6 @@ public class HeightmapWorkUnit extends WorkUnit {
         this.numChunks = numChunks;
     }
 
-    private record XZPair(int x, double dX, int z, double dZ) {
-        // record
-    }
-
     @Override
     protected List<WorkResult> doWork() {
         final WorkResult res = new WorkResult(this, QuartPos.fromBlock(0), primarySection, new ArrayList<>(numChunks * numChunks * 4 * 4), List.of());
@@ -71,7 +67,15 @@ public class HeightmapWorkUnit extends WorkUnit {
         final int minBlockZ = chunkPos.getMinBlockZ();
         final int cellCountXZ = (16 * numChunks) / cellWidth;
         final int cellStrideXZ = Math.max(1, sampler.blockStride() / cellWidth);
-        final int todoArraySize = Math.max(1, cellWidth / sampler.blockStride()) * Math.max(1, cellWidth / sampler.blockStride());
+
+        // Per-unit scratch buffers for the X/Z lattice (reused for every cell, no per-cell allocation).
+        final int stride = Math.min(sampler.blockStride(), cellWidth);
+        final int cap = Math.max(1, (cellWidth + stride - 1) / stride)
+                * Math.max(1, (cellWidth + stride - 1) / stride);
+        final int[] xs = new int[cap];
+        final int[] zs = new int[cap];
+        final double[] dXs = new double[cap];
+        final double[] dZs = new double[cap];
 
         final Predicate<BlockState> predicate = Heightmap.Types.OCEAN_FLOOR_WG.isOpaque();
 
@@ -84,30 +88,28 @@ public class HeightmapWorkUnit extends WorkUnit {
 
                 for(int cellZ = 0; cellZ < cellCountXZ && !isCanceled(); cellZ += cellStrideXZ) {
 
-                    List<XZPair> positions = new ArrayList<>(todoArraySize);
+                    int count = 0;
                     for (int xInCell = 0; xInCell < cellWidth; xInCell += sampler.blockStride()) {
                         for (int zInCell = 0; zInCell < cellWidth; zInCell += sampler.blockStride()) {
-                            int x = minBlockX + cellX * cellWidth + xInCell;
-                            int z = minBlockZ + cellZ * cellWidth + zInCell;
-                            positions.add(new XZPair(
-                                    x, (double) xInCell / (double) cellWidth,
-                                    z, (double) zInCell / (double) cellWidth
-                            ));
+                            xs[count] = minBlockX + cellX * cellWidth + xInCell;
+                            zs[count] = minBlockZ + cellZ * cellWidth + zInCell;
+                            dXs[count] = (double) xInCell / (double) cellWidth;
+                            dZs[count] = (double) zInCell / (double) cellWidth;
+                            ++count;
                         }
                     }
 
-                    for(int cellY = cellCountY - 1; cellY >= 0 && !positions.isEmpty() && !isCanceled(); --cellY) {
+                    for(int cellY = cellCountY - 1; cellY >= 0 && count > 0 && !isCanceled(); --cellY) {
                         noiseChunk.selectCellYZ(cellY + cellOffsetY, cellZ);
 
                         // Iterate over block in cell Y X Z
-                        for (int yInCell = cellHeight - 1; yInCell >= 0 && !positions.isEmpty(); --yInCell) {
+                        for (int yInCell = cellHeight - 1; yInCell >= 0 && count > 0; --yInCell) {
                             final int y = (cellMinY + cellY) * cellHeight + yInCell;
                             noiseChunk.updateForY(y, (double) yInCell / (double) cellHeight);
 
-                            for (int idx = 0; idx < positions.size(); ++idx) {
-                                XZPair curr = positions.get(idx);
-                                noiseChunk.updateForX(curr.x, curr.dX);
-                                noiseChunk.updateForZ(curr.z, curr.dZ);
+                            for (int idx = 0; idx < count; ++idx) {
+                                noiseChunk.updateForX(xs[idx], dXs[idx]);
+                                noiseChunk.updateForZ(zs[idx], dZs[idx]);
 
                                 BlockState blockState = ((NoiseChunkAccessor) noiseChunk).invokeGetInterpolatedState();
                                 if (blockState == null) {
@@ -115,9 +117,16 @@ public class HeightmapWorkUnit extends WorkUnit {
                                 }
 
                                 if (predicate.test(blockState)) {
-                                    mutableBlockPos.set(curr.x, 0, curr.z);
+                                    mutableBlockPos.set(xs[idx], 0, zs[idx]);
                                     sampler.expandRaw(mutableBlockPos, (short) (y + 1), res);
-                                    positions.remove(idx--);
+                                    // Ordered compaction: shift everything right of idx one slot left
+                                    // (same element order as the previous ArrayList.remove).
+                                    System.arraycopy(xs, idx + 1, xs, idx, count - idx - 1);
+                                    System.arraycopy(zs, idx + 1, zs, idx, count - idx - 1);
+                                    System.arraycopy(dXs, idx + 1, dXs, idx, count - idx - 1);
+                                    System.arraycopy(dZs, idx + 1, dZs, idx, count - idx - 1);
+                                    --count;
+                                    --idx;
                                 }
                             }
                         }
