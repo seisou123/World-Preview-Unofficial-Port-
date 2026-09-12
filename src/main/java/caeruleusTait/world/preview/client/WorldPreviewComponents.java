@@ -112,6 +112,8 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_STALE = Component.translatable("world_preview.search.stale");
     public static final Component SEARCH_BIOME_FILTER = Component.translatable("world_preview.search.biome_filter");
     public static final Component SEARCH_BIOME_SHOW_CAVES = Component.translatable("world_preview.search.biome.show_caves");
+    /** Short label for the cave-biomes toggle in the criteria panel. */
+    public static final Component SEARCH_BIOME_SHOW_CAVES_SHORT = Component.translatable("world_preview.search.biome.show_caves.short");
     public static final Component SEARCH_BIOME_MAX = Component.translatable("world_preview.search.biome.max");
     public static final Component SEARCH_BIOME_CAVE_TAG = Component.translatable("world_preview.search.biome.cave_tag");
     public static final Component SEARCH_BIOME_DISTANCE = Component.translatable("world_preview.search.biome_distance");
@@ -120,6 +122,19 @@ public class WorldPreviewComponents {
     public static final Component SEARCH_STRUCTURE_VALUE = Component.translatable("world_preview.search.structure.value");
     public static final Component SEARCH_STRUCTURE_PICK = Component.translatable("world_preview.search.structure.pick");
     public static final Component SEARCH_STRUCTURE_FILTER = Component.translatable("world_preview.search.structure.filter");
+
+    // === Seed search panelized layout (criteria/results panels + options sub-page) ===
+    /** Title of the criteria panel header. */
+    public static final Component SEARCH_CRITERIA_TITLE = Component.translatable("world_preview.search.criteria_title");
+    /** More-options button (plain label while every advanced option is at its default). */
+    public static final Component SEARCH_MORE_OPTIONS = Component.translatable("world_preview.search.more_options");
+    /** Title of the options sub-page. */
+    public static final Component SEARCH_OPTIONS_TITLE = Component.translatable("world_preview.search.options_title");
+    /** Empty-state hints per results-list view. */
+    public static final Component SEARCH_EMPTY_RESULTS = Component.translatable("world_preview.search.empty.results");
+    public static final Component SEARCH_EMPTY_HISTORY = Component.translatable("world_preview.search.empty.history");
+    public static final Component SEARCH_EMPTY_FAVORITES = Component.translatable("world_preview.search.empty.favorites");
+    public static final Component SEARCH_EMPTY_SAVED = Component.translatable("world_preview.search.empty.saved");
 
     // === Terrain map export ===
     public static final Component TERRAIN_EXPORT_TITLE = Component.translatable("world_preview.terrain_export.title");

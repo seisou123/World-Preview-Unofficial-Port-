@@ -69,6 +69,60 @@ public final class TerrainMapExporter {
     public record ExportContext(String seed, String dimension) {}
 
     /**
+     * Optional storage-backed probe for biome ids. Returns the preview
+     * storage's biome id for a block column when its chunk completed sampling
+     * in the same worldgen context, or {@code null} when unsampled, partially
+     * sampled, or otherwise unavailable. Backed by the live
+     * {@code PreviewStorage}; strictly read-only.
+     */
+    @FunctionalInterface
+    public interface BiomeIdProbe {
+        /** Storage hit returns the biome id; unsampled or guarded returns null. */
+        @Nullable Short biomeIdAt(int blockX, int blockZ) throws Exception;
+    }
+
+    /**
+     * Per-id view over the storage biome-id space. {@link #known} guards the
+     * storage-id to preview-data misalignment (out-of-range or unregistered
+     * ids fall back to sampling), {@link #category} mirrors
+     * {@code TerrainClassifier#classify} for the id, and
+     * {@link #estimatedHeight} mirrors the exporter's biome-based estimate.
+     */
+    public interface BiomeIdResolver {
+        boolean known(short id);
+
+        TerrainCategory category(short id);
+
+        byte estimatedHeight(short id);
+    }
+
+    /** Storage-backed biome facts: probe plus per-id resolver pair. */
+    public record BiomeFacts(BiomeIdProbe probe, BiomeIdResolver resolver) {}
+
+    /**
+     * Table-backed {@link BiomeIdResolver}: {@code byId[id] == null} marks an
+     * unknown or unregistered id. Category and estimated-height tables are
+     * precomputed once from the preview biome list, so the export hot path
+     * performs no holder or tag lookups.
+     */
+    public record IdTableResolver(TerrainCategory[] byId, byte[] estById) implements BiomeIdResolver {
+        @Override
+        public boolean known(short id) {
+            return id >= 0 && id < byId.length && byId[id] != null;
+        }
+
+        @Override
+        public TerrainCategory category(short id) {
+            return known(id) ? byId[id] : TerrainCategory.UNKNOWN;
+        }
+
+        @Override
+        public byte estimatedHeight(short id) {
+            return known(id) ? estById[id] : TerrainClassifier.categoryHeight(TerrainCategory.UNKNOWN);
+        }
+    }
+
+    /**
      * Execute terrain map export with a filename prefix (used by batch exports to
      * tag each file with its dimension, e.g. {@code terrain_overworld_...}).
      * Callers pass the per-dimension height range: heights are exported as blocks
@@ -85,14 +139,18 @@ public final class TerrainMapExporter {
             BooleanSupplier cancelled,
             LongConsumer progress
     ) throws Exception {
-        return export(spec, sampler, null, null, yMin, yMax, outputDir, filenamePrefix, cancelled, progress);
+        return export(spec, sampler, null, null, null, yMin, yMax, outputDir, filenamePrefix, cancelled, progress);
     }
 
     /**
-     * Full export entry: optional real-height probe and optional world lineage
-     * for the metadata. {@code heightProbe == null} keeps the legacy estimate
-     * behavior; when supplied, real heights win and the metadata records the
-     * height source per pixel set.
+     * Full export entry: optional real-height probe, optional world lineage
+     * for the metadata, and optional storage-backed biome facts.
+     * {@code heightProbe == null} keeps the legacy estimate behavior; when
+     * supplied, real heights win and the metadata records the height source
+     * per pixel set. {@code biomeFacts == null} keeps the pure noise-sampling
+     * behavior; when supplied, pixels whose chunk completed preview sampling
+     * reuse the storage's biome id instead of re-sampling (fact hits count as
+     * estimated heights in the metadata, matching the estimate fallback).
      *
      * @param yMin lowest world Y of the dimension; heights are stored relative to it
      * @param yMax highest world Y of the dimension (exclusive upper sampling bound)
@@ -102,6 +160,7 @@ public final class TerrainMapExporter {
             BiomeSampler sampler,
             @Nullable HeightProbe heightProbe,
             @Nullable ExportContext exportContext,
+            @Nullable BiomeFacts biomeFacts,
             int yMin,
             int yMax,
             Path outputDir,
@@ -136,10 +195,11 @@ public final class TerrainMapExporter {
             // Submit all tile tasks
             for (TileTask task : tasks) {
                 final TileTask t = task;
-                futures.add(workers.submit(() -> sampleTile(t, spec, sampler, heightProbe, yMin, ySpan, cancelled, progress)));
+                futures.add(workers.submit(() ->
+                        sampleTile(t, spec, sampler, heightProbe, biomeFacts, yMin, ySpan, cancelled, progress)));
             }
 
-            // Collect results in completion order, write to NativeImage, collect height field
+            // Collect results in completion order, write to NativeImage, collect height data
             short[] heightField = null;
             if (spec.exportContours()) {
                 heightField = new short[width * height];
@@ -147,6 +207,10 @@ public final class TerrainMapExporter {
 
             // Track how many pixels used real vs estimated heights for metadata.
             AtomicInteger realHeightPixels = new AtomicInteger();
+
+            // In contour mode every pixel is repainted by the grayscale + contour
+            // pass below, so the terrain color write is skipped entirely.
+            final boolean writeTerrainColors = heightField == null;
 
             for (Future<TileResult> future : futures) {
                 checkCancelled(cancelled);
@@ -157,11 +221,13 @@ public final class TerrainMapExporter {
                     int y = tile.startY + row;
                     if (y >= height) break;
                     int rowOffset = row * tile.tileWidth;
-                    for (int col = 0; col < tile.tileWidth; col++) {
-                        int x = tile.startX + col;
-                        if (x >= width) break;
-                        image.fillRect(x, y, 1, 1, tile.pixels[rowOffset + col]);
-                        if (heightField != null) {
+                    if (writeTerrainColors) {
+                        fillRowRuns(image, tile.pixels, rowOffset, tile.startX, y, tile.tileWidth, width);
+                    }
+                    if (heightField != null) {
+                        for (int col = 0; col < tile.tileWidth; col++) {
+                            int x = tile.startX + col;
+                            if (x >= width) break;
                             heightField[y * width + x] = tile.heights[rowOffset + col];
                         }
                     }
@@ -187,9 +253,7 @@ public final class TerrainMapExporter {
                 ContourRenderer cr = new ContourRenderer(spec.contourInterval(), true, 0xC08B4513, 0x608B6914);
                 cr.render(heightField, colorBuffer, width, height);
                 for (int py = 0; py < height; py++) {
-                    for (int px = 0; px < width; px++) {
-                        image.fillRect(px, py, 1, 1, colorBuffer[py * width + px]);
-                    }
+                    fillRowRuns(image, colorBuffer, py * width, 0, py, width, width);
                 }
             }
 
@@ -244,6 +308,7 @@ public final class TerrainMapExporter {
             TerrainExportSpec spec,
             BiomeSampler sampler,
             @Nullable HeightProbe heightProbe,
+            @Nullable BiomeFacts biomeFacts,
             int yMin,
             int ySpan,
             BooleanSupplier cancelled,
@@ -268,14 +333,9 @@ public final class TerrainMapExporter {
                 int pixelX = task.startX + col;
                 int blockX = minBlockX + pixelX * bpp;
 
-                Holder<Biome> biomeHolder;
-                try {
-                    biomeHolder = sampler.sample(blockX, blockZ);
-                } catch (Exception e) {
-                    biomeHolder = null;
-                }
-
                 // Real sampled height wins; estimation is the explicit fallback.
+                // Probed before the biome lookup so the storage fast path below
+                // can still honor real heights.
                 Integer realHeight = null;
                 if (heightProbe != null) {
                     try {
@@ -284,6 +344,40 @@ public final class TerrainMapExporter {
                         realHeight = null;
                     }
                 }
+
+                // Storage fast path: reuse the preview storage's biome id for
+                // this column when its chunk completed sampling for the same
+                // worldgen context. The resolver rejects unknown ids; anything
+                // else (unsampled chunk, misaligned id) falls through to the
+                // noise sampler unchanged. Fact hits count as estimated heights
+                // in the metadata, matching the estimate fallback below.
+                if (biomeFacts != null) {
+                    Short stored = null;
+                    try {
+                        stored = biomeFacts.probe().biomeIdAt(blockX, blockZ);
+                    } catch (Exception ignored) {
+                        stored = null;
+                    }
+                    if (stored != null && biomeFacts.resolver().known(stored)) {
+                        if (realHeight != null) {
+                            realHeightCount++;
+                            heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
+                        } else {
+                            heights[rowOffset + col] = toHeightFieldOffset(
+                                    biomeFacts.resolver().estimatedHeight(stored), yMin, ySpan);
+                        }
+                        pixels[rowOffset + col] = biomeFacts.resolver().category(stored).pixelColor();
+                        continue;
+                    }
+                }
+
+                Holder<Biome> biomeHolder;
+                try {
+                    biomeHolder = sampler.sample(blockX, blockZ);
+                } catch (Exception e) {
+                    biomeHolder = null;
+                }
+
                 if (realHeight != null) {
                     realHeightCount++;
                     heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
@@ -316,9 +410,47 @@ public final class TerrainMapExporter {
     }
 
     /**
+     * Paints one row of {@code cols} pixels with horizontal run merging:
+     * consecutive pixels sharing the same color are emitted as a single
+     * {@code fillRect} instead of one call per pixel. Output is identical to
+     * per-pixel filling because {@link NativeImage#fillRect} overwrites (no
+     * blending) and runs are emitted left-to-right in order.
+     */
+    private static void fillRowRuns(NativeImage image, int[] pixels, int rowOffset,
+                                    int startX, int y, int cols, int imageWidth) {
+        fillRowRuns(image::fillRect, pixels, rowOffset, startX, y, cols, imageWidth);
+    }
+
+    /** Sink abstraction over {@code NativeImage#fillRect} so run merging is unit-testable. */
+    @FunctionalInterface
+    interface RectSink {
+        void fillRect(int x, int y, int width, int height, int color);
+    }
+
+    /** Run-merging core; package-private so the drawing-matrix equivalence is testable. */
+    static void fillRowRuns(RectSink sink, int[] pixels, int rowOffset,
+                            int startX, int y, int cols, int imageWidth) {
+        // Edge tiles can overrun the image's right border; clip exactly like
+        // the per-pixel loops this replaces.
+        final int usable = Math.min(cols, imageWidth - startX);
+        int runStart = 0;
+        for (int i = 1; i <= usable; i++) {
+            if (i == usable || pixels[rowOffset + i] != pixels[rowOffset + runStart]) {
+                sink.fillRect(startX + runStart, y, i - runStart, 1, pixels[rowOffset + runStart]);
+                runStart = i;
+            }
+        }
+    }
+
+    /**
      * Draws the block-coordinate grid overlay. A pixel lies on a grid line when
      * its block coordinate modulo the grid interval falls within one pixel step;
      * floorMod keeps negative world coordinates aligned to the same grid.
+     * <p>
+     * Painted as full-row / full-column fills instead of per-pixel rects:
+     * {@code fillRect} overwrites (no blending) and the grid color is constant,
+     * so drawing a line once per row/column produces exactly the same pixels as
+     * the per-pixel pass (line intersections repaint the same color).
      */
     private static void drawGridOverlay(NativeImage image, TerrainExportSpec spec, int width, int height) {
         int bpp = spec.blocksPerPixel();
@@ -328,12 +460,14 @@ public final class TerrainMapExporter {
 
         for (int py = 0; py < height; py++) {
             int blockZ = minBlockZ + py * bpp;
-            boolean onHorizontalLine = Math.floorMod(blockZ, interval) < bpp;
-            for (int px = 0; px < width; px++) {
-                int blockX = minBlockX + px * bpp;
-                if (onHorizontalLine || Math.floorMod(blockX, interval) < bpp) {
-                    image.fillRect(px, py, 1, 1, GRID_COLOR);
-                }
+            if (Math.floorMod(blockZ, interval) < bpp) {
+                image.fillRect(0, py, width, 1, GRID_COLOR);
+            }
+        }
+        for (int px = 0; px < width; px++) {
+            int blockX = minBlockX + px * bpp;
+            if (Math.floorMod(blockX, interval) < bpp) {
+                image.fillRect(px, 0, 1, height, GRID_COLOR);
             }
         }
     }
@@ -343,19 +477,7 @@ public final class TerrainMapExporter {
      */
     private static byte estimateHeight(Holder<Biome> biomeHolder) {
         if (biomeHolder == null) return 0;
-        TerrainCategory cat = TerrainClassifier.classify(biomeHolder);
-        return switch (cat) {
-            case DEEP_OCEAN -> (byte) 30;
-            case OCEAN -> (byte) 50;
-            case RIVER -> (byte) 55;
-            case BEACH -> (byte) 63;
-            case PLAINS -> (byte) 70;
-            case FOREST -> (byte) 75;
-            case HILLS -> (byte) 90;
-            case MOUNTAIN -> (byte) 120;
-            case PEAK -> (byte) 160;
-            case UNKNOWN -> (byte) 70;
-        };
+        return TerrainClassifier.categoryHeight(TerrainClassifier.classify(biomeHolder));
     }
 
     private static TileResult await(Future<TileResult> future) throws Exception {

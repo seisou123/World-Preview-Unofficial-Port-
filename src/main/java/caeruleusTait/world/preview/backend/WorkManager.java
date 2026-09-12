@@ -19,6 +19,7 @@ import caeruleusTait.world.preview.backend.worker.*;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
 import net.minecraft.core.LayeredRegistryAccess;
 import net.minecraft.core.QuartPos;
 import net.minecraft.server.MinecraftServer;
@@ -27,6 +28,7 @@ import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.WorldDataConfiguration;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.dimension.DimensionType;
@@ -42,6 +44,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.SplittableRandom;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -84,6 +87,14 @@ public class WorkManager {
     private WorldgenContext worldgenContext;
 
     private PreviewData previewData;
+    /**
+     * Identity cache from preview biome holders to their biome2Id ids for the
+     * current previewData. Holder.Reference uses identity equals (registry
+     * singletons), so this is a pure lookup accelerator: it is rebuilt
+     * whenever the worldgen state changes and never shares entries across
+     * previewData instances.
+     */
+    private volatile Map<Holder<Biome>, Short> biomeHolderIdCache = null;
     private PreviewStorage previewStorage;
     private PreviewStorageCacheManager previewStorageCacheManager;
     private final RenderSettings renderSettings;
@@ -115,6 +126,17 @@ public class WorkManager {
     // by the queue thread.
     private volatile boolean queueIsRunning = false;
     private volatile boolean shouldEarlyAbortQueuing = false;
+
+    /**
+     * True while sampling is suspended (worker pools torn down but the worldgen
+     * state -- previewStorage/worldgenContext/sampleUtils/previewData/epoch --
+     * preserved for a cheap resume).  See {@link #suspend()}.
+     */
+    private volatile boolean suspended = false;
+
+    public boolean isSuspended() {
+        return suspended;
+    }
 
     /** Bumped on cancel/shutdown so in-flight queue work can detect obsolescence. */
     private final AtomicLong sessionEpoch = new AtomicLong(0);
@@ -160,6 +182,7 @@ public class WorkManager {
         previewStorageCacheManager = _previewStorageCacheManager;
         chunkSampler = renderSettings.samplerType.create(renderSettings.quartStride());
         previewData = _previewData;
+        biomeHolderIdCache = new ConcurrentHashMap<>();
 
         try {
             worldgenContext = new WorldgenContext(
@@ -252,7 +275,10 @@ public class WorkManager {
     }
 
     public void cancel() {
-shutdownExecutors();
+        // Resuming from a suspended state must go through the full teardown
+        // (this method), so clear the flag before anything else.
+        suspended = false;
+        shutdownExecutors();
 
         RuntimeException closeError = null;
         try {
@@ -301,6 +327,7 @@ shutdownExecutors();
             sampleUtils = null;
             worldgenContext = null;
             previewStorage = null;
+            biomeHolderIdCache = null;
             lastQueuedTopLeft = null;
             lastQueuedBotRight = null;
             lastY = Integer.MIN_VALUE;
@@ -317,6 +344,108 @@ shutdownExecutors();
         if (closeError != null) {
             throw closeError;
         }
+    }
+
+    /**
+     * Suspend sampling: stop new work, kill the worker pools, but keep the
+     * worldgen state (previewStorage / worldgenContext / sampleUtils /
+     * previewData / biomeHolderIdCache / sessionEpoch) intact so the preview can
+     * be resumed cheaply via {@link #resumeAfterSuspend()} instead of going
+     * through a full {@link #cancel()} + worldgen rebuild.
+     *
+     * <p>Deliberately does NOT bump {@link #sessionEpoch()}: analysis session
+     * lineage, terrain export provenance and cache fingerprints stay valid
+     * across the suspension.  While suspended, {@link #queueRange} is a no-op
+     * (no executor), so nothing writes to the retained previewStorage.</p>
+     */
+    public synchronized void suspend() {
+        if (executorService == null) {
+            // Already in the torn-down state (cancel() ran, or a previous
+            // suspend).  Just mark suspended so resume paths know to check
+            // the worldgen state.
+            suspended = true;
+            return;
+        }
+
+        shouldEarlyAbortQueuing = true;
+        pendingTopLeft = null;
+        pendingBottomRight = null;
+
+        // Cooperative early-out for units still running: they observe
+        // WorkUnit#isPaused() and abort at the next boundary.
+        pause();
+
+        synchronized (currentBatches) {
+            currentBatches.forEach(WorkBatch::cancel);
+            currentBatches.clear();
+        }
+
+        List<Future<?>> allFutures = new ArrayList<>();
+        synchronized (futures) {
+            allFutures.addAll(queueFutures);
+            allFutures.addAll(futures);
+            queueFutures.clear();
+            futures.clear();
+        }
+        for (Future<?> f : allFutures) {
+            f.cancel(true);
+        }
+
+        executorService.shutdownNow();
+        queueChunksService.shutdownNow();
+
+        boolean interrupted = false;
+        try {
+            if (!executorService.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                LOGGER.warn("suspend: executorService did not terminate within {}s", SHUTDOWN_TIMEOUT_SECONDS);
+            }
+            if (!queueChunksService.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                LOGGER.warn("suspend: queueChunksService did not terminate within {}s", SHUTDOWN_TIMEOUT_SECONDS);
+            }
+        } catch (InterruptedException e) {
+            interrupted = true;
+            LOGGER.warn("Interrupted while awaiting executor termination during suspend");
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        // The queue thread is dead: reset the queueIsRunning handshake so the
+        // render thread never waits on a pass that can never finish.
+        queueIsRunning = false;
+        executorService = null;
+        queueChunksService = null;
+        suspended = true;
+    }
+
+    /**
+     * Resume sampling after {@link #suspend()}.  The worker pools are rebuilt
+     * exactly like {@link #postChangeWorldGenState()} does; the retained
+     * previewStorage and worldgen context are reused as-is.
+     *
+     * @return false when there is no resumable worldgen state (the caller
+     *         should fall back to a full settings update / rebuild).
+     */
+    public synchronized boolean resumeAfterSuspend() {
+        suspended = false;
+        if (sampleUtils == null || worldgenContext == null) {
+            return false;
+        }
+
+        // Pool construction mirrors postChangeWorldGenState (fixed pool +
+        // single-thread queue service, core threads pre-started).
+        executorService = Executors.newFixedThreadPool(config.numThreads());
+        queueChunksService = Executors.newSingleThreadExecutor();
+        if (executorService instanceof ThreadPoolExecutor tpe) {
+            tpe.prestartAllCoreThreads();
+        }
+
+        shouldEarlyAbortQueuing = false;
+        queueIsRunning = false;
+        lastQueuedTopLeft = null;
+        lastQueuedBotRight = null;
+        return true;
     }
 
     private boolean requeueOnYOnlyChange() {
@@ -818,6 +947,15 @@ shutdownExecutors();
 
     public SampleUtils sampleUtils() {
         return sampleUtils;
+    }
+
+    /**
+     * Identity cache of biome holder to biome2Id id for the current
+     * {@link PreviewData}, or {@code null} while no worldgen state is active.
+     * Read-only for consumers; lifecycle is owned by changeWorldGenState/cancel.
+     */
+    public @Nullable Map<Holder<Biome>, Short> biomeHolderIdCache() {
+        return biomeHolderIdCache;
     }
 
     public WorldgenContext worldgenContext() {

@@ -71,6 +71,13 @@ class PreviewRenderEngine {
     private float hillshadeAmbient = Float.NaN;
     private float hillshadeExaggeration = Float.NaN;
     private byte[] hillshadeBuffer;
+    // Cached contour state: rebuilt only when the config parameters change.
+    // ContourRenderer is stateless (all fields final, render() side-effect-free
+    // apart from blending into the caller's color buffer), so the instance can
+    // be reused across heavy renders instead of allocating one per pass.
+    private ContourRenderer contourRenderer;
+    private int contourIntervalCache = -1;
+    private boolean contourMinorLinesCache;
     private int heightFieldWidth;
     private int heightFieldHeight;
     private Short2LongMap visibleBiomes;
@@ -630,22 +637,53 @@ class PreviewRenderEngine {
         }
 
         if (config.enableContours) {
-            ContourRenderer contourRenderer = new ContourRenderer(
-                    config.contourInterval, config.contourMinorLines,
-                    0xC08B4513, 0x608B6914);
+            // Cached like hillshadeRenderer above: rebuild only when the
+            // contour config changes instead of allocating a new renderer
+            // (and re-deriving its intervals/alphas) on every heavy render.
+            if (contourRenderer == null
+                    || contourIntervalCache != config.contourInterval
+                    || contourMinorLinesCache != config.contourMinorLines) {
+                contourRenderer = new ContourRenderer(
+                        config.contourInterval, config.contourMinorLines,
+                        0xC08B4513, 0x608B6914);
+                contourIntervalCache = config.contourInterval;
+                contourMinorLinesCache = config.contourMinorLines;
+            }
             contourRenderer.render(heightFieldBuffer, heightFieldColors, fw, fh);
         }
 
+        // (C3) Write the post-processed colors back to the texture via
+        // horizontal run merging: consecutive full-width cells of the same
+        // non-zero color in a row collapse into a single fillRect (pixel-for-
+        // pixel identical output, far fewer JNI calls than one call per
+        // quart sample).  Transparent cells are still skipped, and a trailing
+        // partial-width column (texture size not a multiple of quartExpand)
+        // is drawn separately exactly as before.
+        final int fullFw = Math.min(fw, texWidth / quartExpand);
         for (int fy = 0; fy < fh; fy++) {
-            for (int fx = 0; fx < fw; fx++) {
-                int color = heightFieldColors[fy * fw + fx];
-                if (color == 0x00000000) continue;
-                int px = fx * quartExpand;
-                int py = fy * quartExpand;
-                int w = Math.min(quartExpand, texWidth - px);
-                int h = Math.min(quartExpand, texHeight - py);
-                if (w > 0 && h > 0) {
-                    previewImg.fillRect(px, py, w, h, color);
+            final int py = fy * quartExpand;
+            final int h = Math.min(quartExpand, texHeight - py);
+            if (h <= 0) continue;
+            final int rowBase = fy * fw;
+            int runStart = -1;
+            int runColor = 0;
+            for (int fx = 0; fx <= fullFw; fx++) {
+                final int color = fx < fullFw ? heightFieldColors[rowBase + fx] : 0;
+                if (fx == fullFw || color == 0x00000000 || color != runColor) {
+                    if (runStart >= 0 && fx > runStart) {
+                        previewImg.fillRect(runStart * quartExpand, py,
+                                (fx - runStart) * quartExpand, h, runColor);
+                    }
+                    runStart = (fx < fullFw && color != 0x00000000) ? fx : -1;
+                    runColor = color;
+                }
+            }
+            if (fullFw < fw) {
+                final int color = heightFieldColors[rowBase + fullFw];
+                if (color != 0x00000000) {
+                    final int px = fullFw * quartExpand;
+                    final int w = Math.min(quartExpand, texWidth - px);
+                    if (w > 0) previewImg.fillRect(px, py, w, h, color);
                 }
             }
         }

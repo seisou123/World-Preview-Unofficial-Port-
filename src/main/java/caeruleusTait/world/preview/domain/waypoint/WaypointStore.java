@@ -44,6 +44,13 @@ public class WaypointStore {
     private final List<Waypoint> waypoints = new ArrayList<>();
     private final Path file;
 
+    private long revision;
+
+    /** Monotonic mutation counter; bumped by every waypoint list mutation (load/add/remove). */
+    public long revision() {
+        return revision;
+    }
+
     public WaypointStore(Path file) {
         this.file = file;
     }
@@ -69,6 +76,8 @@ public class WaypointStore {
             }
         } catch (Exception e) {
             waypoints.clear();
+        } finally {
+            revision++;
         }
     }
 
@@ -111,6 +120,7 @@ public class WaypointStore {
         }
         waypoints.add(waypoint);
         save();
+        revision++;
         return waypoint;
     }
 
@@ -119,6 +129,7 @@ public class WaypointStore {
         boolean removed = waypoints.removeIf(waypoint -> waypoint.id().equals(id));
         if (removed) {
             save();
+            revision++;
         }
         return removed;
     }
