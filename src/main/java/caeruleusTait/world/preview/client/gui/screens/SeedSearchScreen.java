@@ -7,6 +7,7 @@ import caeruleusTait.world.preview.backend.analysis.SeedSearchHistory;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
+import caeruleusTait.world.preview.client.gui.PanelRenderer;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomePickerList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.SearchResultsList;
@@ -49,13 +50,6 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     /** Y where the two panels start (below the seed row). */
     private static final int PANELS_TOP = 46;
-    /** Inner padding of the panels. */
-    private static final int PANEL_PAD = 6;
-    /** Panel background and 1px outline colors. */
-    private static final int PANEL_BG = 0xF01A1A24;
-    private static final int PANEL_BORDER = 0xFF3A3A4A;
-    /** Accent green of the active tab's selection line. */
-    private static final int ACCENT_GREEN = 0xFF55FF55;
 
     private final Screen parent;
     private final PreviewContainer container;
@@ -317,8 +311,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         leftPanelW = Math.max(240, (int) (width * 0.36f));
         rightPanelX = leftPanelX + leftPanelW + 8;
         rightPanelW = Math.max(1, (width - left) - (rightPanelX - left) - 8);
-        int innerX = leftPanelX + PANEL_PAD;
-        int leftInnerW = leftPanelW - 2 * PANEL_PAD;
+        int innerX = leftPanelX + PanelRenderer.PANEL_PAD;
+        int leftInnerW = leftPanelW - 2 * PanelRenderer.PANEL_PAD;
 
         // Filter row at the top of the criteria panel: flexible filter box, a
         // narrow clear button and the cave-biomes toggle (widths sized to the
@@ -338,7 +332,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         // bottom (6px inner padding) and the structure button sits 3px above
         // it; the biome picker absorbs everything between itself and the
         // structure row.
-        int optionsY = panelBottom - PANEL_PAD - 20;
+        int optionsY = panelBottom - PanelRenderer.PANEL_PAD - 20;
         int structureY = optionsY - 3 - 20;
         int listTop = filterY + 20 + 4;
         int listBottom = structureY - 4;
@@ -359,17 +353,17 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         // share the panel's inner width evenly and the results list fills the
         // rest of the panel below the tab row.
         int tabY = PANELS_TOP + 6;
-        int tabW = Math.max(1, (rightPanelW - 2 * PANEL_PAD) / 4);
-        int tabX = rightPanelX + PANEL_PAD;
+        int tabW = Math.max(1, (rightPanelW - 2 * PanelRenderer.PANEL_PAD) / 4);
+        int tabX = rightPanelX + PanelRenderer.PANEL_PAD;
         for (View view : List.of(View.RESULTS, View.HISTORY, View.FAVORITES, View.SAVED)) {
             viewTabs.get(view).setPosition(tabX, tabY);
             viewTabs.get(view).setWidth(tabW);
             tabX += tabW;
         }
-        resultsList.setX(rightPanelX + PANEL_PAD);
+        resultsList.setX(rightPanelX + PanelRenderer.PANEL_PAD);
         resultsList.setY(tabY + 24);
-        resultsList.setWidth(rightPanelW - 2 * PANEL_PAD);
-        resultsList.setHeight(Math.max(40, (panelBottom - PANEL_PAD) - resultsList.getY()));
+        resultsList.setWidth(rightPanelW - 2 * PanelRenderer.PANEL_PAD);
+        resultsList.setHeight(Math.max(40, (panelBottom - PanelRenderer.PANEL_PAD) - resultsList.getY()));
 
         // Footer action row; the Start button is widened as the primary action.
         startButton.setPosition(left, actionRowY);
@@ -848,45 +842,23 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
         // Drawn on top of the widgets: the active tab's selection line, the
         // empty-state hint and the status bar.
-        renderTabSelection(graphics);
+        PanelRenderer.tabSelectionLine(graphics, viewTabs.get(currentView));
         renderEmptyState(graphics);
-        renderStatusBar(graphics);
+        PanelRenderer.statusBar(graphics, font, width, actionRowY,
+                statusText.isEmpty() ? null : Component.literal(statusText));
     }
 
     /** Draws both panel backgrounds plus the criteria panel's header line. */
     private void renderPanels(GuiGraphics graphics) {
-        renderPanelBackground(graphics, leftPanelX, PANELS_TOP, leftPanelW, panelBottom - PANELS_TOP);
-        renderPanelBackground(graphics, rightPanelX, PANELS_TOP, rightPanelW, panelBottom - PANELS_TOP);
+        PanelRenderer.panelBackground(graphics, leftPanelX, PANELS_TOP, leftPanelW, panelBottom - PANELS_TOP);
+        PanelRenderer.panelBackground(graphics, rightPanelX, PANELS_TOP, rightPanelW, panelBottom - PANELS_TOP);
 
         // Criteria header: panel title on the left, gray biome count on the
         // right (the former standalone count line, folded into the header).
-        graphics.drawString(font, WorldPreviewComponents.SEARCH_CRITERIA_TITLE,
-                leftPanelX + PANEL_PAD, PANELS_TOP + 5, 0xFFFFFFFF);
         Component count = Component.translatable("world_preview.search.biome.selected",
                 biomePicker.getSelectedCount());
-        graphics.drawString(font, count,
-                leftPanelX + leftPanelW - PANEL_PAD - font.width(count), PANELS_TOP + 5, 0xFF999999);
-    }
-
-    /** One panel: dark fill plus a 1px outline. */
-    private void renderPanelBackground(GuiGraphics graphics, int x, int y, int w, int h) {
-        if (w <= 0 || h <= 0) {
-            return;
-        }
-        graphics.fill(x, y, x + w, y + h, PANEL_BG);
-        graphics.fill(x, y, x + w, y + 1, PANEL_BORDER);
-        graphics.fill(x, y + h - 1, x + w, y + h, PANEL_BORDER);
-        graphics.fill(x, y, x + 1, y + h, PANEL_BORDER);
-        graphics.fill(x + w - 1, y, x + w, y + h, PANEL_BORDER);
-    }
-
-    /** Draws the 2px green selection line under the active view tab. */
-    private void renderTabSelection(GuiGraphics graphics) {
-        Button tab = viewTabs.get(currentView);
-        if (tab != null) {
-            graphics.fill(tab.getX(), tab.getY() + tab.getHeight() - 2,
-                    tab.getX() + tab.getWidth(), tab.getY() + tab.getHeight(), ACCENT_GREEN);
-        }
+        PanelRenderer.panelHeader(graphics, font, leftPanelX, PANELS_TOP, leftPanelW,
+                WorldPreviewComponents.SEARCH_CRITERIA_TITLE, count);
     }
 
     /** Draws a centered gray hint when the current view has no rows. */
@@ -900,20 +872,10 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             case FAVORITES -> WorldPreviewComponents.SEARCH_EMPTY_FAVORITES;
             case SAVED -> WorldPreviewComponents.SEARCH_EMPTY_SAVED;
         };
-        graphics.drawCenteredString(font, empty,
+        PanelRenderer.emptyHint(graphics, font,
                 resultsList.getX() + resultsList.getWidth() / 2,
                 resultsList.getY() + resultsList.getHeight() / 2 - 4,
-                0xFF808080);
-    }
-
-    private void renderStatusBar(GuiGraphics graphics) {
-        if (statusText != null && !statusText.isEmpty()) {
-            // Draw in the strip below the footer action row so the status can
-            // never cover the Start/Stop/Compare buttons or the back button.
-            int statusY = height - 11;
-            graphics.fill(0, actionRowY + 20, width, height, 0xAA000000);
-            graphics.drawString(font, statusText, 8, statusY, 0xFFFFFF55);
-        }
+                empty);
     }
 
     @Override
