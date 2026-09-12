@@ -228,8 +228,11 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
         queueGeneration();
     }
 
-    /** Maps a block coordinate to widget-relative screen coords (GUI px), or null when off the map. */
-    @Nullable
+    /**
+     * Maps a block coordinate to widget-relative screen coords (GUI px).
+     * Never returns null: blocks outside the map simply project outside the
+     * widget bounds and are clipped by the caller's scissor.
+     */
     BlockPos blockToScreen(int blockX, int blockZ) {
         final BlockPos center = center();
         final int guiScale = (int) minecraft.getWindow().getGuiScale();
@@ -600,10 +603,9 @@ resizeImage();
         if (a == null) {
             return;
         }
+        // blockToScreen never returns null (off-map blocks just project
+        // outside the widget bounds; the scissor clips them).
         BlockPos sa = blockToScreen(a.getX(), a.getZ());
-        if (sa == null) {
-            return;
-        }
         drawMeasureMarker(guiGraphics, sa, 0xFF29B6F6);
 
         BlockPos b = interaction.measurePointB();
@@ -611,9 +613,6 @@ resizeImage();
             return;
         }
         BlockPos sb = blockToScreen(b.getX(), b.getZ());
-        if (sb == null) {
-            return;
-        }
 
         // Line between the two markers (Bresenham via 1px fills)
         int dx = sb.getX() - sa.getX();
