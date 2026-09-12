@@ -218,6 +218,7 @@
   "world_preview.analysis.action.preset": "Size: %s",
   "world_preview.analysis.action.boxselect": "Select on Map",
   "world_preview.analysis.action.locate": "Go to Center",
+  "world_preview.analysis.boxselect.hint": "Drag on the map to select the analysis region. Right-click cancels.",
   "world_preview.analysis.region.invalid": "Region coordinates are invalid — using the last valid region",
   "world_preview.analysis.region.clamped": "Region shrunk to %s x %s blocks (step %s)",
   "world_preview.analysis.restart_failed": "Could not restart the analysis for the new region",

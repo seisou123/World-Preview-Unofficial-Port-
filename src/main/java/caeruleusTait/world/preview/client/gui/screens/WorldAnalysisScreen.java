@@ -198,12 +198,10 @@ public final class WorldAnalysisScreen extends Screen {
                 WorldPreviewComponents.ANALYSIS_ACTION_ALIGN, ignored -> alignViewport());
         this.presetButton = new TranslucentButton(font, 0, 0, 82, 20,
                 presetLabel(), ignored -> cyclePreset());
-        // Box-select / locate MODE wiring lands with the map-interaction task;
-        // the buttons exist so the layout is final.
         this.boxSelectButton = new TranslucentButton(font, 0, 0, 90, 20,
-                WorldPreviewComponents.ANALYSIS_ACTION_BOXSELECT, ignored -> { });
+                WorldPreviewComponents.ANALYSIS_ACTION_BOXSELECT, ignored -> toggleBoxSelect());
         this.locateButton = new TranslucentButton(font, 0, 0, 90, 20,
-                WorldPreviewComponents.ANALYSIS_ACTION_LOCATE, ignored -> { });
+                WorldPreviewComponents.ANALYSIS_ACTION_LOCATE, ignored -> locateCenter());
         this.directionButton = new TranslucentButton(font, 0, 0, 90, 20,
                 profileDirectionLabel(), ignored -> cycleProfileDirection());
         this.tabProfileButton = new TranslucentButton(font, 0, 0, 60, 20,
@@ -275,6 +273,40 @@ public final class WorldAnalysisScreen extends Screen {
         presetButton.setMessage(presetLabel());
     }
 
+    // ===== Map box-select / locate (Task 10) =====
+
+    /** Toggles the map box-select mode; the button highlight follows the live mode flag. */
+    private void toggleBoxSelect() {
+        var display = previewContainer.previewDisplay();
+        display.setRegionSelectMode(!display.isRegionSelectMode());
+        syncBoxSelectState();
+    }
+
+    /** Keeps the box-select button highlight in sync with the display's live mode flag. */
+    private void syncBoxSelectState() {
+        boxSelectButton.setSelected(previewContainer.previewDisplay().isRegionSelectMode());
+    }
+
+    /**
+     * Box-select completion: fill the region fields, exit the mode and unlight
+     * the button. Runs on the mouse-release path (render thread).
+     */
+    private void onRegionBoxSelected(Region region) {
+        regionSelector.setRegion(region);
+        setRegion(region);
+        previewContainer.previewDisplay().setRegionSelectMode(false);
+        syncBoxSelectState();
+    }
+
+    /** Centers the map on the current region's center at the analysis Y layer. */
+    private void locateCenter() {
+        Region target = regionSelector.currentRegion().orElse(region);
+        previewContainer.previewDisplay().locateTo(new BlockPos(
+                (target.minX() + target.maxX()) / 2,
+                session.request().y(),
+                (target.minZ() + target.maxZ()) / 2));
+    }
+
     private void startAnalysis() {
         if (stale) {
             return;
@@ -289,6 +321,8 @@ public final class WorldAnalysisScreen extends Screen {
             return;
         }
         session.start();
+        // Show the analyzed region as a green rectangle on the map.
+        previewContainer.previewDisplay().setAnalysisRegionOverlay(session.request().region());
         // A fresh run invalidates the previously computed spawn/top-biome data.
         overviewPanel.setSpawn(null, null, List.of());
         topBiomes = List.of();
@@ -752,6 +786,14 @@ public final class WorldAnalysisScreen extends Screen {
         // Force the preview display to re-render on this screen instead of
         // reusing stale cached render data from the previous screen.
         previewContainer.previewDisplay().invalidateRenderCache();
+        // The preview display is a shared widget: reset box-select state that
+        // may have leaked from a previous screen visit, (re)register the
+        // region callback and show this session's region on the map.
+        var display = previewContainer.previewDisplay();
+        display.setRegionSelectMode(false);
+        boxSelectButton.setSelected(false);
+        display.setRegionSelectCallback(this::onRegionBoxSelected);
+        display.setAnalysisRegionOverlay(session.request().region());
     }
 
     /** ARGB band color for a short biome id; null (chart falls back to gray) when unknown. */
@@ -953,6 +995,10 @@ public final class WorldAnalysisScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // Box-select highlight follows the live mode flag every frame: the mode
+        // can also exit via callback completion or a right-click on the map
+        // (handled inside MapInteractionController).
+        syncBoxSelectState();
         // Draw directly to avoid triggering the screen blur more than once per frame.
         graphics.fill(0, 0, width, height, 0xFF101018);
         graphics.drawCenteredString(font, WorldPreviewComponents.ANALYSIS_TITLE, width / 2, 8, 0xFFFFFFFF);
@@ -964,7 +1010,8 @@ public final class WorldAnalysisScreen extends Screen {
         // Green selection line under the active chart tab (SeedSearchScreen pattern).
         PanelRenderer.tabSelectionLine(graphics, activeTabButton());
         // Shared status line (region validation / clamping / export), 6s expiry.
-        // Task 10 draws its box-select hint bar above the map here when active.
+        // The box-select hint bar is drawn by PreviewDisplay (renderRegionOverlay)
+        // while the mode is active, so it stays clipped to the map area.
         if (statusMessage != null && System.currentTimeMillis() < statusUntil) {
             if (statusColor == STATUS_INFO) {
                 PanelRenderer.statusBar(graphics, font, width, footerRowY, statusMessage);
@@ -1006,6 +1053,12 @@ public final class WorldAnalysisScreen extends Screen {
         closed = true;
         // The biome highlight picked in the share panel does not outlive the screen.
         previewContainer.previewDisplay().setSelectedBiomeId((short) -1);
+        // Neither does the box-select state nor the analysis region overlay:
+        // the preview display is shared with the main preview screen.
+        var display = previewContainer.previewDisplay();
+        display.setRegionSelectMode(false);
+        display.setRegionSelectCallback(null);
+        display.setAnalysisRegionOverlay(null);
         // Always leave the screen first so a slow cleanup cannot freeze navigation.
         if (minecraft != null) {
             minecraft.setScreen(parent);

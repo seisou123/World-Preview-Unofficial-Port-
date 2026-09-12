@@ -218,6 +218,7 @@
   "world_preview.analysis.action.preset": "尺寸：%s",
   "world_preview.analysis.action.boxselect": "地图框选",
   "world_preview.analysis.action.locate": "定位中心",
+  "world_preview.analysis.boxselect.hint": "在地图上拖拽以框选分析区域，右键取消。",
   "world_preview.analysis.region.invalid": "区域坐标无效——已使用上次有效区域",
   "world_preview.analysis.region.clamped": "区域已收缩到 %s × %s 方块（步长 %s）",
   "world_preview.analysis.restart_failed": "无法为新区域重启分析",
