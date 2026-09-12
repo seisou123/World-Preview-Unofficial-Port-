@@ -15,7 +15,7 @@ import java.util.Objects;
 public final class RegionAnalyzer {
     private RegionAnalyzer() {}
 
-    /** 纯函数：unique biome 数量级（几百），渲染线程可安全调用。 */
+    /** 纯函数：unique biome 数量级（几百），渲染线程可安全调用。零/负计数条目被忽略（0·ln 0 会产生 NaN）。 */
     public static RegionInsights fromBiomeCounts(Map<Short, Long> counts,
                                                  java.util.function.IntFunction<Holder<Biome>> holderResolver) {
         Objects.requireNonNull(counts, "counts");
@@ -24,13 +24,17 @@ public final class RegionAnalyzer {
         LinkedHashMap<TerrainCategory, Long> terrain = new LinkedHashMap<>();
         for (TerrainCategory c : TerrainCategory.values()) terrain.put(c, 0L);
         for (Map.Entry<Short, Long> e : counts.entrySet()) {
+            Long count = e.getValue();
+            if (count == null || count <= 0) {
+                continue; // contributes nothing to shannon or terrain counts; 0 * ln 0 would be NaN
+            }
             if (total > 0) {
-                double p = e.getValue() / (double) total;
+                double p = count / (double) total;
                 shannon -= p * Math.log(p);
             }
             Holder<Biome> holder = holderResolver.apply(e.getKey());
             TerrainCategory cat = holder != null ? TerrainClassifier.classify(holder) : TerrainCategory.UNKNOWN;
-            terrain.merge(cat, e.getValue(), Long::sum);
+            terrain.merge(cat, count, Long::sum);
         }
         return new RegionInsights(shannon, total > 0 ? Math.exp(shannon) : 0.0, terrain, total);
     }
