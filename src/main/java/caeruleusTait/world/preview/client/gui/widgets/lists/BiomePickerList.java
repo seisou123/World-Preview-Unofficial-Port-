@@ -24,9 +24,10 @@ import static caeruleusTait.world.preview.WorldPreview.nativeColor;
 
 /**
  * Multi-select biome picker list used by the seed search screen: each row is
- * a biome with its color chip, a check mark when selected and a gray
- * {@code [cave]} badge for cave biomes. Rows are filtered by a case-insensitive
- * text filter (display name or identifier path) and cave biomes can be hidden.
+ * a biome with a full-height color bar on its left edge, a check mark when
+ * selected and a gray {@code [cave]} badge for cave biomes. Rows are filtered
+ * by a case-insensitive text filter (display name or identifier path) and cave
+ * biomes can be hidden.
  * <p>
  * Selection is tracked by identifier and survives filter/toggle rebuilds;
  * the maximum number of selected biomes is enforced here and reported to the
@@ -129,6 +130,31 @@ public class BiomePickerList extends BaseObjectSelectionList<BiomePickerList.Row
         }
     }
 
+    // ===== Vanilla selection suppression =====
+
+    /**
+     * This picker expresses selection purely through the self-drawn green
+     * check-mark prefix, so the vanilla "selected row" state is never
+     * recorded.  {@link net.minecraft.client.gui.components.AbstractSelectionList#setSelected
+     * AbstractSelectionList.setSelected} is invoked for the pressed row on
+     * every click (the container focuses the pressed entry, which marks it
+     * selected) — including the mouse-down that starts a drag scroll — and
+     * the vanilla list would then keep painting that row with its selection
+     * highlight forever after.  Keeping the vanilla state empty leaves the
+     * rows clean no matter how the list is clicked or dragged.
+     */
+    @Override
+    public void setSelected(@Nullable Row entry) {
+        // Deliberately empty: the vanilla selection stays unset.
+    }
+
+    /** Suppresses the vanilla selected-row background; safety net for {@link #setSelected}. */
+    @Override
+    protected void extractSelection(@NotNull GuiGraphicsExtractor guiGraphics, @NotNull Row entry, int color) {
+        // Deliberately empty: no vanilla selection background/outline.
+    }
+
+
     // ===== Row management =====
 
     /** Rebuilds the visible rows from the filter and cave toggle, preserving selection. */
@@ -188,8 +214,10 @@ public class BiomePickerList extends BaseObjectSelectionList<BiomePickerList.Row
         public void extractContent(@NotNull GuiGraphicsExtractor guiGraphics, int mouseX, int mouseY, boolean hovered, float partialTick) {
             int top = getContentY();
             int left = getContentX();
-            guiGraphics.fill(left + 3, top + 1, left + 13, top + 11, nativeColor(entry.color()));
-            guiGraphics.text(BiomePickerList.this.minecraft.font, rowText(), left + 16, top + 2, 0xFFFFFFFF);
+            // Full-height color bar on the row's left edge + biome name (the bar
+            // replaces the old 10x10 chip; selection is still the green check prefix).
+            guiGraphics.fill(left, top + 2, left + 2, top + 14, nativeColor(entry.color()));
+            guiGraphics.text(BiomePickerList.this.minecraft.font, rowText(), left + 5, top + 4, 0xFFFFFFFF);
         }
 
         @Override

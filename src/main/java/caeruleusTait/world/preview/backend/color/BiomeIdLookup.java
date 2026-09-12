@@ -1,10 +1,13 @@
 package caeruleusTait.world.preview.backend.color;
 
 import it.unimi.dsi.fastutil.objects.Object2ShortMap;
+import net.minecraft.core.Holder;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.biome.Biome;
+import org.jetbrains.annotations.Nullable;
 
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -30,6 +33,26 @@ public final class BiomeIdLookup {
     public static short idFrom(Object2ShortMap<String> biome2Id, ResourceKey<Biome> resourceKey) {
         Objects.requireNonNull(resourceKey, "resourceKey");
         return idFrom(biome2Id, resourceKey.identifier());
+    }
+
+    /** Identity-cache hit returns directly; miss falls back to the string path and backfills. cache may be null. */
+    public static short idFrom(PreviewData previewData, Holder<Biome> holder,
+                               @Nullable Map<Holder<Biome>, Short> cache) {
+        Objects.requireNonNull(previewData, "previewData");
+        if (holder == null) return -1;
+        if (cache != null) {
+            Short cached = cache.get(holder);
+            if (cached != null) return cached;
+        }
+        short id = holder.unwrapKey()
+                .map(key -> previewData.biome2Id().getShort(key.identifier().toString()))
+                .orElse((short) -1);
+        if (cache != null) cache.putIfAbsent(holder, id);
+        return id;
+    }
+
+    public static short idFrom(PreviewData previewData, Holder<Biome> holder) {
+        return idFrom(previewData, holder, null);
     }
 
     public static short idFrom(PreviewData previewData, String biomeId) {

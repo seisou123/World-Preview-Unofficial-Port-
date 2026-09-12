@@ -64,6 +64,25 @@ class HoverInspector {
     private HoverInfo cachedHoverInfo = null;
     private List<StructHoverHelperEntry> cachedStructInfos = null;
 
+    // (C4) Level-2 tooltip cache: identity of everything that determines the
+    // rendered tooltip panel.  kind 1 = biome hover, kind 2 = structure hover
+    // (coords/name come from the first hovered structure).  The raw name is
+    // stored pre-formatting, so a name edit changes the key; language and
+    // showControls are part of the key so translation/controls switches
+    // rebuild automatically; textWidth is the panel wrap width so a widget
+    // resize (different GUI scale / panel size) also rebuilds.
+    private record TooltipKey(int kind, int x, int y, int z, int height,
+                              String name, boolean showControls, String language, int textWidth) {}
+
+    // Fully resolved tooltip: built text plus its final panel layout
+    // (newline split + font wrapping + panel sizing).  The cursor
+    // positioning is per-frame and lives in renderHoverPanel.
+    private record ResolvedTooltip(String text, List<FormattedCharSequence> lines,
+                                   int panelWidth, int panelHeight) {}
+
+    private TooltipKey lastTooltipKey = null;
+    private ResolvedTooltip cachedTooltip = null;
+
     HoverInspector(PreviewDisplay host) {
         this.host = host;
     }
@@ -96,8 +115,8 @@ class HoverInspector {
         ));
     }
 
-    /** Drops cached hover results so the next frame re-queries storage. */
-    void invalidateCache() {
+    /** Drops the Level-1 hover query cache so the next frame re-queries storage. */
+    void invalidateQueryCache() {
         lastMouseX = -1;
         lastMouseZ = -1;
         lastHoverCenterX = Integer.MIN_VALUE;
@@ -105,6 +124,18 @@ class HoverInspector {
         lastHoverCenterZ = Integer.MIN_VALUE;
         cachedHoverInfo = null;
         cachedStructInfos = null;
+    }
+
+    /**
+     * Drops both cache levels: the hover query cache and the resolved tooltip
+     * (Level-2).  Use when the data feeding the tooltip itself changed (e.g.
+     * the structure hover grid was rebuilt), not merely when cached query
+     * results may be stale.
+     */
+    void invalidateAll() {
+        invalidateQueryCache();
+        lastTooltipKey = null;
+        cachedTooltip = null;
     }
 
     /**
@@ -310,9 +341,71 @@ class HoverInspector {
             return;
         }
 
+        // (C4) Level-2 cache: build the tooltip identity key and reuse the
+        // fully resolved tooltip (text + wrapping + panel size) while it is
+        // unchanged.  Component.translatable resolution, String.format,
+        // nameFormatter and the font split used to run every frame; now they
+        // only run on a key miss.  Cursor positioning / flipping / clamping
+        // in renderHoverPanel still runs every frame.
+        final WorldPreviewConfig config = host.config();
+        final TooltipKey key = buildTooltipKey(structuresInfos, hoverInfo, config);
+        final ResolvedTooltip resolved;
+        if (key.equals(lastTooltipKey) && cachedTooltip != null) {
+            resolved = cachedTooltip;
+        } else {
+            resolved = layoutTooltip(buildTooltipText(structuresInfos, hoverInfo, config));
+            lastTooltipKey = key;
+            cachedTooltip = resolved;
+        }
+
+        // Draw the hover data bar ourselves. Minecraft's tooltip renderer uses
+        // the full screen as its layout surface, so a widget scissor does not
+        // reliably keep it inside this map. A local panel gives us hard bounds.
+        renderHoverPanel(GuiGraphicsExtractor, resolved, mouseX, mouseY);
+    }
+
+    /**
+     * Builds the Level-2 tooltip cache key from the current hover state.
+     * Everything that can change the rendered tooltip is part of the key;
+     * anything not in the key (temperature/noise values, hover list entries
+     * beyond the first structure) does not affect the tooltip text.
+     */
+    private TooltipKey buildTooltipKey(List<StructHoverHelperEntry> structuresInfos,
+                                       HoverInfo hoverInfo,
+                                       WorldPreviewConfig config) {
+        final int kind;
+        final int x;
+        final int y;
+        final int z;
+        final int height;
+        final String name;
+        if (!structuresInfos.isEmpty()) {
+            final var structure = structuresInfos.get(0).structure();
+            kind = 2;
+            x = structure.center().getX();
+            y = structure.center().getY();
+            z = structure.center().getZ();
+            height = 0;
+            final var structEntry = host.dataProvider().structure4Id(structure.structureId());
+            name = structEntry == null ? null : structEntry.name();
+        } else {
+            kind = 1;
+            x = hoverInfo.blockX;
+            y = hoverInfo.blockY;
+            z = hoverInfo.blockZ;
+            height = hoverInfo.height;
+            name = hoverInfo.entry == null ? null : hoverInfo.entry.name();
+        }
+        return new TooltipKey(kind, x, y, z, height, name, config.showControls,
+                host.minecraft().getLanguageManager().getSelected(), layoutTextWidth());
+    }
+
+    /** Builds the tooltip component (translatable + formatted) for the current hover state. */
+    private Component buildTooltipText(List<StructHoverHelperEntry> structuresInfos,
+                                       HoverInfo hoverInfo,
+                                       WorldPreviewConfig config) {
         String blockPosTemplate = "§3X=§b%d§r §3Y=§b%d§r §3Z=§b%d§r";
         Component tooltipComponent;
-        WorldPreviewConfig config = host.config();
 
         if (!structuresInfos.isEmpty()) {
             var structure = structuresInfos.get(0).structure();
@@ -352,15 +445,28 @@ class HoverInspector {
                 );
             }
         }
-
-        // Draw the hover data bar ourselves. Minecraft's tooltip renderer uses
-        // the full screen as its layout surface, so a widget scissor does not
-        // reliably keep it inside this map. A local panel gives us hard bounds.
-        renderHoverPanel(GuiGraphicsExtractor, tooltipComponent, mouseX, mouseY);
+        return tooltipComponent;
     }
 
-    private void renderHoverPanel(GuiGraphicsExtractor GuiGraphicsExtractor, Component tooltipComponent,
-                                  double mouseX, double mouseY) {
+    /**
+     * Wrap width (font pixels) used by the hover panel layout.  Part of the
+     * tooltip cache key, so a panel/geometry change forces a re-layout.
+     */
+    private int layoutTextWidth() {
+        final float textScale = 0.8F;
+        final int panelPadding = 6;
+        final int mapLeft = host.getX() + 4;
+        final int mapRight = host.getX() + host.widgetWidth() - 4;
+        final int availableWidth = Math.max(1, mapRight - mapLeft - panelPadding * 2);
+        return Math.max(1, (int) (availableWidth / textScale));
+    }
+
+    /**
+     * Resolves a tooltip component into its final panel layout: newline
+     * split, font wrapping and panel sizing.  Cached with the tooltip key;
+     * only runs on a Level-2 miss.
+     */
+    private ResolvedTooltip layoutTooltip(Component tooltipComponent) {
         final Minecraft minecraft = host.minecraft();
         final float textScale = 0.8F;
         final int panelPadding = 6;
@@ -368,8 +474,7 @@ class HoverInspector {
         final int mapTop = host.getY() + 4;
         final int mapRight = host.getX() + host.widgetWidth() - 4;
         final int mapBottom = host.getY() + host.widgetHeight() - 4;
-        final int availableWidth = Math.max(1, mapRight - mapLeft - panelPadding * 2);
-        final int textWidth = Math.max(1, (int) (availableWidth / textScale));
+        final int textWidth = layoutTextWidth();
 
         List<FormattedCharSequence> lines = new ArrayList<>();
         for (Component line : splitComponentByNewline(tooltipComponent)) {
@@ -380,9 +485,6 @@ class HoverInspector {
                 lines.addAll(wrapped);
             }
         }
-        if (lines.isEmpty()) {
-            return;
-        }
 
         int textWidthMax = 0;
         for (FormattedCharSequence line : lines) {
@@ -392,6 +494,29 @@ class HoverInspector {
                 mapRight - mapLeft);
         final int lineHeight = Math.max(1, (int) Math.ceil(minecraft.font.lineHeight * textScale));
         int panelHeight = Math.min(lines.size() * lineHeight + panelPadding * 2, mapBottom - mapTop);
+
+        return new ResolvedTooltip(tooltipComponent.getString(), lines, panelWidth, panelHeight);
+    }
+
+    private void renderHoverPanel(GuiGraphicsExtractor GuiGraphicsExtractor, ResolvedTooltip resolved,
+                                  double mouseX, double mouseY) {
+        final Minecraft minecraft = host.minecraft();
+        final float textScale = 0.8F;
+        final int panelPadding = 6;
+        final int mapLeft = host.getX() + 4;
+        final int mapTop = host.getY() + 4;
+        final int mapRight = host.getX() + host.widgetWidth() - 4;
+        final int mapBottom = host.getY() + host.widgetHeight() - 4;
+
+        // (C4) Text wrapping and panel sizing come from the cached
+        // ResolvedTooltip; only the cursor-relative positioning below is
+        // recomputed every frame.
+        final List<FormattedCharSequence> lines = resolved.lines();
+        if (lines.isEmpty()) {
+            return;
+        }
+        final int panelWidth = resolved.panelWidth();
+        final int panelHeight = resolved.panelHeight();
 
         final int cursorX = (int) mouseX;
         final int cursorY = (int) mouseY;
