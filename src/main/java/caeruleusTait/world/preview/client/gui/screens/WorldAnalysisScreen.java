@@ -122,6 +122,14 @@ public final class WorldAnalysisScreen extends Screen {
     private boolean stale;
     private int profileRefreshCooldown;
     private boolean lastRunning;
+    /**
+     * Running state as of the previous tick. Transition detection must use
+     * this, not {@link #lastRunning}: updateControlState() (also invoked
+     * directly by the start/cancel/pause handlers between ticks) syncs
+     * lastRunning eagerly, which would swallow the running→terminal
+     * transition and leave the panel on its last in-flight snapshot.
+     */
+    private boolean prevTickRunning;
 
     /** Shared status line (validation / clamping / export), expires after {@link #STATUS_MILLIS}. */
     @Nullable private Component statusMessage;
@@ -669,6 +677,12 @@ public final class WorldAnalysisScreen extends Screen {
 
         // Lightweight control-state update every tick.
         boolean running = session.isRunning();
+        // Compare against the PREVIOUS tick's value, captured before anything
+        // else can sync state for this tick: updateControlState() writes
+        // lastRunning at its end, so a lastRunning-based check below would
+        // always see "no transition" on the very tick the analysis ends.
+        boolean transitioned = prevTickRunning != running;
+        prevTickRunning = running;
         if (running != lastRunning) {
             updateControlState();
         } else {
@@ -683,8 +697,12 @@ public final class WorldAnalysisScreen extends Screen {
 
         // Expensive metrics/profile updates only while the analysis is active, and throttled.
         if (!running) {
-            // Still refresh final metrics once after a transition to terminal.
-            if (lastRunning || profileRefreshCooldown == 0) {
+            // Push the final snapshot exactly once on a running→terminal
+            // transition (completion / cancel / failure — including cancels
+            // issued by the button handler between ticks), and once at screen
+            // open (the cooldown starts at 0). Otherwise stay idle: a finished
+            // session's data cannot change, so there is no periodic repoll.
+            if (transitioned || profileRefreshCooldown == 0) {
                 AnalysisProgress progress = session.progress();
                 RegionMetrics metrics = session.result();
                 overviewPanel.setSessionData(progress, session.request().y(), session.request().sampleStep());
