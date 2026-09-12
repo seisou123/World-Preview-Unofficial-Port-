@@ -194,7 +194,6 @@
   "world_preview.analysis.height.mean": "Mean height: %s",
   "world_preview.analysis.slope": "Slope mean/max: %s / %s",
   "world_preview.analysis.flat": "Flat ratio: %s",
-  "world_preview.analysis.profile.point": "x=%s y=%s z=%s height=%s",
   "world_preview.analysis.state.sampled": "Sampled",
   "world_preview.analysis.state.pending": "Pending",
   "world_preview.analysis.state.unavailable": "Unavailable",

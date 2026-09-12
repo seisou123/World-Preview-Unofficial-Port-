@@ -194,7 +194,6 @@
   "world_preview.analysis.height.mean": "平均高度：%s",
   "world_preview.analysis.slope": "坡度均值/最大：%s / %s",
   "world_preview.analysis.flat": "平坦比例：%s",
-  "world_preview.analysis.profile.point": "x=%s y=%s z=%s 高度=%s",
   "world_preview.analysis.state.sampled": "已采样",
   "world_preview.analysis.state.pending": "等待中",
   "world_preview.analysis.state.unavailable": "不可用",

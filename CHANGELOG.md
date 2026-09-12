@@ -3,6 +3,8 @@
 ### Improvements
 
 - The "Analysis" button now uses the same sidebar rail style as the Biomes/Structures/Seeds buttons and sits directly below the Seeds button in the sidebar, instead of the old plain button style floating over the map
+- The world analysis screen has been rebuilt in the panelized style of the seed search screen: region coordinates now really define the analyzed area (with shrink/invalid feedback), a stats panel with progress bar and spawn-score breakdown, a biome-colored terrain cross-section with sea-level line, a height histogram and biome/terrain share tabs, map box-selection for the region, structure distances, and richer CSV/JSON reports
+- Fixed the spawn score ignoring nearby structures, mis-scaled slope scoring and distorted water share when the preview layer was underground
 
 ## 1.5.2
 
