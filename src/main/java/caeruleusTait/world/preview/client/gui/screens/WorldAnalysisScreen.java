@@ -878,7 +878,12 @@ public final class WorldAnalysisScreen extends Screen {
         overviewPanel.setWidth(leftW);
         overviewPanel.setHeight(Math.max(60, panelBottom - panelsTop));
 
-        int mapH = Math.max(120, (int) ((panelBottom - panelsTop) * 0.45));
+        // Vertical budget: map + 4px gap + 22px tab band + chart must fit
+        // between panelsTop and panelBottom, or the tabs land on the footer
+        // row on short windows (GUI scale 3). The 45% map share is capped at
+        // the space left after reserving the band and a 56px chart minimum.
+        int available = Math.max(0, panelBottom - panelsTop);
+        int mapH = Math.max(70, Math.min(available * 45 / 100, available - 26 - 56));
         previewContainer.previewDisplay().setPosition(rightX, panelsTop);
         previewContainer.previewDisplay().setSize(rightW, mapH);
         // Chart tab row in the reserved band: three tab buttons LEFT of the
@@ -894,7 +899,7 @@ public final class WorldAnalysisScreen extends Screen {
         place(tabBiomesButton, rightX + 2 * (tabW + tabGap), tabsY, tabW, 20);
         // The three chart widgets share one rectangle; visibility decides
         // which one is drawn (applyTabVisibility).
-        int chartH = Math.max(60, panelBottom - tabsY - 22);
+        int chartH = Math.max(40, panelBottom - tabsY - 22);
         profileChart.setX(rightX);
         profileChart.setY(tabsY + 22);
         profileChart.setWidth(rightW);

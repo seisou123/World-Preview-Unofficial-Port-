@@ -51,7 +51,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget {
     private static final int COLOR_BAR_SLOT = 0xFF2A2A38;
 
     private static final int MAX_SPAWN_REASONS = 3;
-    private static final int MAX_STRUCTURE_ROWS = 10;
+    private static final int MAX_STRUCTURE_ROWS = 4;
 
     /** Translation keys of the four spawn-bar segments, in part order. */
     private static final Component[] SPAWN_PART_LABELS = {
@@ -192,12 +192,8 @@ public final class AnalysisOverviewPanel extends AbstractWidget {
             y += 14;
             y = line(g, font, x, y, Component.translatable("world_preview.analysis.progress.count",
                     progress.completedUnits(), progress.totalUnits()), COLOR_TEXT);
-            // pendingPoints is in work-unit rows while sampledPoints is in
-            // sample points — never add them. The metrics snapshot (non-null
-            // here, checked above) carries the true point total the session
-            // was built with: rows x row width.
-            y = line(g, font, x, y, Component.translatable("world_preview.analysis.points",
-                    progress.sampledPoints(), metrics.expectedSamples()), COLOR_TEXT);
+            // Sample-point counts live in the metrics grid below only — a
+            // second "Points" line here duplicated it verbatim.
         }
         if (metrics.state() == AnalysisDataState.UNAVAILABLE && !metrics.unavailableReason().isBlank()) {
             y = line(g, font, x, y, Component.translatable("world_preview.analysis.unavailable.reason",
