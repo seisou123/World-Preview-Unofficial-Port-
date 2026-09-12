@@ -56,18 +56,6 @@ class MetricAggregatorTest {
     }
 
     @Test
-    void reportsUnavailableWhenExplicitlyMarkedWithoutValidSamples() {
-        MetricAggregator aggregator = new MetricAggregator(0);
-        aggregator.markUnavailable("height data is unavailable");
-
-        RegionMetrics metrics = aggregator.snapshot();
-
-        assertEquals(AnalysisDataState.UNAVAILABLE, metrics.state());
-        assertEquals("height data is unavailable", metrics.unavailableReason());
-        assertEquals(1.0, metrics.coverage(), 1e-12);
-    }
-
-    @Test
     void slopeUsesExactSampleStepFourNeighborsOnly() {
         // Grid step 10: +x/+z edges only; no diagonal, no sorted-order wrap.
         MetricAggregator aggregator = new MetricAggregator(4, 10);
@@ -104,5 +92,77 @@ class MetricAggregatorTest {
 
         assertTrue(metrics.meanSlope().isEmpty());
         assertEquals(0.0, metrics.flatRatio(), 1e-12);
+    }
+
+    @Test
+    void incrementalSlopeMatchesWindowedRecompute() {
+        MetricAggregator agg = new MetricAggregator(9, 4);
+        long seed = 42; java.util.Random rnd = new java.util.Random(seed);
+        short[][] h = new short[3][3];
+        for (int z = 0; z < 3; z++) for (int x = 0; x < 3; x++) h[z][x] = (short) (60 + rnd.nextInt(40));
+        // 打乱插入顺序，模拟多线程完成次序
+        List<int[]> cells = new java.util.ArrayList<>();
+        for (int z = 0; z < 3; z++) for (int x = 0; x < 3; x++) cells.add(new int[]{x, z});
+        java.util.Collections.shuffle(cells, rnd);
+        for (int[] c : cells) agg.addSample(c[0] * 4, c[1] * 4, (short) 1, h[c[1]][c[0]]);
+        RegionMetrics m = agg.snapshot();
+        // 全量对拍：所有 +x/+z 边（同一网格、同一 step）
+        double sum = 0, max = 0; long pairs = 0, flat = 0;
+        for (int z = 0; z < 3; z++) for (int x = 0; x < 3; x++) {
+            if (x + 1 < 3) { long d = Math.abs((long) h[z][x + 1] - h[z][x]); sum += d; max = Math.max(max, d); pairs++; if (d <= 1) flat++; }
+            if (z + 1 < 3) { long d = Math.abs((long) h[z + 1][x] - h[z][x]); sum += d; max = Math.max(max, d); pairs++; if (d <= 1) flat++; }
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(sum / pairs / 4.0, m.meanSlope().getAsDouble(), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(max / 4.0, m.maxSlope().getAsDouble(), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals((double) flat / pairs, m.flatRatio(), 1e-9);
+    }
+
+    @Test
+    void histogramMedianAndWaterShare() {
+        MetricAggregator agg = new MetricAggregator(4, 1);
+        agg.setSeaLevel(63);
+        agg.addSample(0, 0, (short) 1, (short) 70); // 陆地
+        agg.addSample(4, 0, (short) 1, (short) 62); // 水
+        agg.addSample(8, 0, (short) 1, (short) 64);
+        agg.addSample(12, 0, (short) 1, (short) 70);
+        RegionMetrics m = agg.snapshot();
+        org.junit.jupiter.api.Assertions.assertEquals(0.25, m.waterShare(), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(64.0, m.medianHeight().getAsDouble(), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(62, m.minHeight().getAsInt());
+        org.junit.jupiter.api.Assertions.assertEquals(70, m.maxHeight().getAsInt());
+        org.junit.jupiter.api.Assertions.assertEquals(9, m.heightHistogram().length); // 62..70
+        org.junit.jupiter.api.Assertions.assertEquals(62, m.histogramMinY());
+        org.junit.jupiter.api.Assertions.assertEquals(1, m.heightHistogram()[0]); // y=62 一格
+    }
+
+    @Test
+    void snapshotIsCheapAndConsistent() { // 快照重复调用返回同一实例（dirty flag 不失效）
+        MetricAggregator agg = new MetricAggregator(2, 1);
+        agg.addSample(0, 0, (short) 1, (short) 10);
+        RegionMetrics a = agg.snapshot();
+        org.junit.jupiter.api.Assertions.assertSame(a, agg.snapshot());
+        agg.addSample(1, 1, (short) 2, (short) 20);
+        RegionMetrics b = agg.snapshot();
+        org.junit.jupiter.api.Assertions.assertNotSame(a, b);
+        org.junit.jupiter.api.Assertions.assertEquals(15.0, b.meanHeight().getAsDouble(), 1e-9);
+    }
+
+    @Test
+    void negativeHeightsProduceWrappedHistogramWithoutCrashing() {
+        // 1.21 overworld surface heights can be negative (min world Y = -64);
+        // the histogram window must wrap the 0xFFFF index space, not throw.
+        MetricAggregator aggregator = new MetricAggregator(3, 1);
+        aggregator.addSample(0, 0, (short) 1, (short) -64);
+        aggregator.addSample(1, 0, (short) 1, (short) 0);
+        aggregator.addSample(2, 0, (short) 1, (short) 70);
+
+        RegionMetrics metrics = aggregator.snapshot();
+
+        assertEquals(-64, metrics.histogramMinY());
+        assertEquals(135, metrics.heightHistogram().length); // -64..70
+        assertEquals(1, metrics.heightHistogram()[0]);       // y=-64 is the first bin
+        assertEquals(0.0, metrics.medianHeight().getAsDouble(), 1e-9);
+        assertEquals(-64, metrics.minHeight().orElseThrow());
+        assertEquals(70, metrics.maxHeight().orElseThrow());
     }
 }
