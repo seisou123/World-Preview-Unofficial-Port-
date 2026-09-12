@@ -192,8 +192,12 @@ public final class AnalysisOverviewPanel extends AbstractWidget {
             y += 14;
             y = line(g, font, x, y, Component.translatable("world_preview.analysis.progress.count",
                     progress.completedUnits(), progress.totalUnits()), COLOR_TEXT);
+            // pendingPoints is in work-unit rows while sampledPoints is in
+            // sample points — never add them. The metrics snapshot (non-null
+            // here, checked above) carries the true point total the session
+            // was built with: rows x row width.
             y = line(g, font, x, y, Component.translatable("world_preview.analysis.points",
-                    progress.sampledPoints(), progress.sampledPoints() + progress.pendingPoints()), COLOR_TEXT);
+                    progress.sampledPoints(), metrics.expectedSamples()), COLOR_TEXT);
         }
         if (metrics.state() == AnalysisDataState.UNAVAILABLE && !metrics.unavailableReason().isBlank()) {
             y = line(g, font, x, y, Component.translatable("world_preview.analysis.unavailable.reason",

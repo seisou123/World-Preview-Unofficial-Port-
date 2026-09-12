@@ -165,6 +165,12 @@ public final class WorldAnalysisScreen extends Screen {
 
     /** Nearest structure per probe type; null = analytic probing unavailable. */
     @Nullable private Map<Identifier, BlockPos> nearestStructures;
+    /**
+     * True once a structure probe was attempted for the current screen-open /
+     * run ({@link #refreshStructures} marks it even when the probe returns
+     * null — an unavailable context must not be retried every refresh).
+     */
+    private boolean structuresProbed;
     /** Number of distinct structure types the last probe found (spawn bonus input). */
     private int structuresNearby;
     /** Top-5 biome rarity rows, kept for the upcoming share panel (chart task). */
@@ -320,7 +326,16 @@ public final class WorldAnalysisScreen extends Screen {
         if (started == null) {
             return;
         }
-        session.start();
+        try {
+            session.start();
+        } catch (RuntimeException e) {
+            // Belt-and-suspenders: no uncaught exception may escape a button
+            // press (start() throws on a closed session and can fail in the
+            // scheduler); show the restart-failed status instead of crashing.
+            LOGGER.warn("Failed to start analysis session", e);
+            showStatus(WorldPreviewComponents.ANALYSIS_RESTART_FAILED, STATUS_BAD);
+            return;
+        }
         // Show the analyzed region as a green rectangle on the map.
         previewContainer.previewDisplay().setAnalysisRegionOverlay(session.request().region());
         // A fresh run invalidates the previously computed spawn/top-biome data.
@@ -336,11 +351,17 @@ public final class WorldAnalysisScreen extends Screen {
     /**
      * Swaps in a fresh session when the target region differs from the
      * running/finished session's region; the container closes and replaces the
-     * owned session. Returns the session's (normalized) region, or null when
-     * the restart failed (status shown, old session left untouched).
+     * owned session. Also rebuilds when the current session is closed (a
+     * failed restart left it unstartable) even if the region matches, so the
+     * caller never starts a closed session. Returns the session's (normalized)
+     * region, or null when the restart failed (status shown, old session left
+     * untouched unless it was closed).
      */
     private @Nullable Region restartTo(Region target) {
-        if (target.equals(session.request().region())) {
+        // A closed session must never be started again (start() throws), so it
+        // always falls through to the rebuild below; closing it again in the
+        // container is a no-op.
+        if (target.equals(session.request().region()) && !session.isClosed()) {
             return session.request().region();
         }
         AnalysisRequest old = session.request();
@@ -436,6 +457,7 @@ public final class WorldAnalysisScreen extends Screen {
         nearestStructures = found;
         structuresNearby = found == null ? 0 : found.size();
         overviewPanel.setStructures(found, cx, cz);
+        structuresProbed = true;
     }
 
     private void togglePause() {
@@ -956,6 +978,14 @@ public final class WorldAnalysisScreen extends Screen {
                 overviewPanel.setError(progress.error() != null
                         ? Component.translatable("world_preview.analysis.error", progress.error())
                         : null);
+                // Reattach path: a session that ran (or finished) while the
+                // screen was closed has never been probed in this open. Fire
+                // the probe once on the first terminal/idle push, before the
+                // spawn score is computed, so the score and the structures
+                // section match a fresh run instead of silently regressing.
+                if (!structuresProbed) {
+                    refreshStructures();
+                }
                 refreshSpawnAndBiomePanels(metrics);
                 refreshChartTabs(metrics);
                 profileRefreshCooldown = 20;
