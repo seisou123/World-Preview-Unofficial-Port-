@@ -51,6 +51,7 @@ public class WorldPreviewComponents {
     public static final Component WAYPOINT_DEFAULT_NAME = Component.translatable("world_preview.waypoint.default_name");
     public static final Component ANALYSIS_TITLE = Component.translatable("world_preview.analysis.title");
     public static final Component ANALYSIS_OPEN = Component.translatable("world_preview.analysis.open");
+    public static final Component ANALYSIS_OPEN_TOOLTIP = Component.translatable("world_preview.analysis.open.tooltip");
     public static final Component ANALYSIS_START = Component.translatable("world_preview.analysis.start");
     public static final Component ANALYSIS_CANCEL = Component.translatable("world_preview.analysis.cancel");
     public static final Component ANALYSIS_EXPORT_REPORT = Component.translatable("world_preview.analysis.export");

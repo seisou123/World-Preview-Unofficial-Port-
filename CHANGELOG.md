@@ -1,3 +1,9 @@
+## Unreleased
+
+### Improvements
+
+- The "Analysis" button now uses the same sidebar rail style as the Biomes/Structures/Seeds buttons and sits directly below the Seeds button in the sidebar, instead of the old plain button style floating over the map
+
 ## 1.5.2
 
 ### Improvements
