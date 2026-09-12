@@ -67,6 +67,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import caeruleusTait.world.preview.backend.export.TerrainCategory;
+import caeruleusTait.world.preview.backend.export.TerrainClassifier;
 import caeruleusTait.world.preview.backend.export.TerrainExportController;
 import caeruleusTait.world.preview.backend.export.TerrainExportSpec;
 import caeruleusTait.world.preview.backend.export.TerrainMapExporter;
@@ -172,6 +174,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private volatile java.util.function.Consumer<Integer> seedSearchProgressListener = a -> { };
     @Nullable private volatile SeedSearchResult lastSeedSearchResult;
     @Nullable private volatile String lastSeedSearchCriteria;
+    /** Session-level advanced search options (anchor/distances/attempts/hits); survives screen round-trips, not persisted. */
+    private final SeedSearchOptions seedSearchOptions;
     private final NoiseColorProvider noiseColorProvider = new NoiseColorProvider();
 
     /**
@@ -243,6 +247,17 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private final Executor serverThreadPoolExecutor;
     private final AtomicInteger reloadRevision = new AtomicInteger(0);
 
+    // === A5: settings-round-trip suspend/resume ===
+    // Snapshot of the structural (worldgen-shaping) settings taken when the
+    // settings screen suspends sampling.  On close, the snapshot is compared
+    // against the live settings: unchanged means the retained preview storage
+    // and worldgen context can be resumed as-is (cheap), changed means a full
+    // rebuild is required.  structuralPpcSnapshot == -1 means "no snapshot".
+    private boolean structuralFullVertSnapshot;
+    private int structuralPpcSnapshot = -1;
+    private RenderSettings.SamplerType structuralSamplerSnapshot;
+    private Identifier structuralDimensionSnapshot;
+
     // Seed edits trigger a full world reload; debounce them so typing (or a
     // randomize+edit burst) starts exactly one reload after the input pauses.
     private static final long SEED_EDIT_DEBOUNCE_MS = 300;
@@ -269,6 +284,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         allBiomes = new BiomesList.BiomeEntry[0];
         worldPreview = WorldPreview.get();
         cfg = worldPreview.cfg();
+        seedSearchOptions = SeedSearchOptions.fromConfig(cfg);
         workManager = worldPreview.workManager();
         previewMappingData = worldPreview.biomeColorMap();
         renderSettings = worldPreview.renderSettings();
@@ -367,7 +383,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         toRender.add(seedSearchButton);
 
         settings = iconButton(60, 20, x -> {
-            workManager.cancel();
+            suspendForSettings();
             minecraft.setScreen(new caeruleusTait.world.preview.client.gui.screens.settings.SettingsScreen(screen, this));
         });
         settings.setTooltip(Tooltip.create(BTN_SETTINGS));
@@ -1157,6 +1173,11 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         return lastSeedSearchCriteria;
     }
 
+    /** The session-level advanced search options edited by the seed search screens. */
+    public SeedSearchOptions seedSearchOptions() {
+        return seedSearchOptions;
+    }
+
     private void queueEarlyPreviewRange() {
         // Early queue: start sampling the center region immediately so the
         // worker threads are busy while we set up the rest of the GUI.
@@ -1239,6 +1260,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         freeStructureIcons();
         final ResourceManager builtinResourceManager = minecraft.getResourceManager();
         final ResourceManager sampleResourceManager = workManager.sampleResourceManager();
+        // Fingerprint of the current resource packs; a change (pack
+        // added/removed/reordered) automatically generations the IconCache.
+        final String fp = IconCache.fingerprint(builtinResourceManager, sampleResourceManager);
         allStructureIcons = new NativeImage[previewData.structId2StructData().length];
 
         // Collect unique icon identifiers to avoid loading the same icon twice.
@@ -1265,7 +1289,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 final java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>(iconCount);
                 for (Identifier iconId : uniqueIconIds.keySet()) {
                     futures.add(executor.submit(() -> {
-                        NativeImage img = loadSingleIcon(iconId, builtinResourceManager, sampleResourceManager);
+                        NativeImage img = IconCache.getOrLoadCopy(iconId, fp, builtinResourceManager, sampleResourceManager);
                         loadedIcons.put(iconId, img);
                     }));
                 }
@@ -1331,8 +1355,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     /**
      * Loads a single structure icon from the builtin or sample resource manager.
      * Thread-safe: creates a new NativeImage and does not modify shared state.
+     * Package-visible: also used as the decode routine by {@link IconCache},
+     * which caches the decoded master and hands out private copies.
      */
-    private static NativeImage loadSingleIcon(Identifier iconId,
+    static NativeImage loadSingleIcon(Identifier iconId,
                                                ResourceManager builtinResourceManager,
                                                ResourceManager sampleResourceManager) {
         Optional<Resource> resource = builtinResourceManager.getResource(iconId);
@@ -1592,6 +1618,118 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         tabManager.resetTabs();
     }
 
+    // === A5: settings-round-trip suspend/resume ===
+
+    /** Refreshes the structural snapshot from the current live settings. */
+    public synchronized void markStructuralRebuildApplied() {
+        structuralFullVertSnapshot = cfg.buildFullVertChunk;
+        structuralPpcSnapshot = renderSettings.pixelsPerChunk();
+        structuralSamplerSnapshot = renderSettings.samplerType;
+        structuralDimensionSnapshot = renderSettings.dimension;
+    }
+
+    /** True when the live structural settings differ from the snapshot taken at suspend time. */
+    private boolean structuralSnapshotDiffers() {
+        return structuralPpcSnapshot == -1
+                || structuralFullVertSnapshot != cfg.buildFullVertChunk
+                || structuralPpcSnapshot != renderSettings.pixelsPerChunk()
+                || structuralSamplerSnapshot != renderSettings.samplerType
+                || !Objects.equals(structuralDimensionSnapshot, renderSettings.dimension);
+    }
+
+    /**
+     * Kills any in-flight updateSettings chain by bumping the reload revision
+     * (the async chain aborts at its revision checks) and clearing the
+     * isUpdating flag.  Prevents a stale chain from reviving the worker pools
+     * while sampling is suspended.
+     */
+    private void invalidatePendingUpdates() {
+        synchronized (reloadRevision) {
+            reloadRevision.incrementAndGet();
+        }
+        isUpdating = false;
+    }
+
+    /**
+     * Opens the settings screen: suspends sampling without destroying the
+     * worldgen state, remembering the structural settings so the close path
+     * can decide between a cheap resume and a full rebuild.
+     */
+    private void suspendForSettings() {
+        invalidatePendingUpdates();
+        structuralFullVertSnapshot = cfg.buildFullVertChunk;
+        structuralPpcSnapshot = renderSettings.pixelsPerChunk();
+        structuralSamplerSnapshot = renderSettings.samplerType;
+        structuralDimensionSnapshot = renderSettings.dimension;
+        workManager.suspend();
+    }
+
+    /**
+     * Settings screen closed (Done or Cancel).  Routes between a cheap resume
+     * (nothing structural changed, no biome color edits), a full rebuild
+     * (structural settings changed and/or color edits must be pushed) and the
+     * legacy full-apply path when a settings-page rebuild already resumed the
+     * WorkManager.
+     *
+     * @param colorsChanged true when biome entries were edited in the settings
+     *                      session (they must be pushed into the color mapping)
+     */
+    public synchronized void onSettingsClosed(boolean colorsChanged) {
+        if (!workManager.isSuspended()) {
+            // A settings page (e.g. ResolutionSettingsPage) already rebuilt the
+            // preview via its own cancel+start.  The pending structural values
+            // only land on the live settings when onDone applies them (after
+            // that rebuild), and biome color edits still need to be pushed into
+            // the color mapping -- so fall back to the existing full-apply path.
+            if (colorsChanged) {
+                patchColorData();
+            } else if (structuralSnapshotDiffers()) {
+                updateSettings();
+            }
+            return;
+        }
+        boolean structural = structuralSnapshotDiffers();
+        if (structural || colorsChanged) {
+            resumeForRebuild(colorsChanged);
+        } else {
+            resumeLight();
+        }
+    }
+
+    /** Resumes sampling on the retained worldgen state without a rebuild. */
+    private void resumeLight() {
+        if (!workManager.resumeAfterSuspend()) {
+            resumeForRebuild(false);
+            return;
+        }
+        if (isUpdating) {
+            return;
+        }
+        applySamplingFeatureToggles();
+        // Clear the WorkManager-side dedup guard so the next viewport queue
+        // pass re-issues its range; the display's 250ms unsampled-viewport
+        // probe fills in any areas whose batches were killed at suspend time.
+        workManager.resetQueuedRange();
+        previewDisplay.invalidateRenderCache();
+    }
+
+    /** Resumes the WorkManager and then runs the existing full rebuild path. */
+    private void resumeForRebuild(boolean colorsChanged) {
+        // Clear the suspended flag (and rebuild the pools); the old preview
+        // storage is disposed by cancel() inside the updateSettings chain.
+        workManager.resumeAfterSuspend();
+        invalidatePendingUpdates();
+        if (colorsChanged) {
+            patchColorData();   // ends with updateSettings()
+        } else {
+            updateSettings();
+        }
+        // Refresh the snapshot so a same-frame re-entry (e.g. the tab manager
+        // re-registering the preview tab right after Done) does not trigger a
+        // second full rebuild for changes already being applied.
+        markStructuralRebuildApplied();
+    }
+
 /**
 * Called when the parent screen is re-entered from a sub-screen
      * (e.g. WorldAnalysisScreen, SettingsScreen).
@@ -1606,12 +1744,26 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 * properly positioned after the screen is re-initialised.
 */
 public void onScreenReentry() {
-    LOGGER.info("[WP-Reentry] onScreenReentry called: previewStorage={}, isUpdating={}, setupFailed={}, workManager.isSetup={}",
+    LOGGER.info("[WP-Reentry] onScreenReentry called: previewStorage={}, isUpdating={}, setupFailed={}, workManager.isSetup={}, suspended={}",
             workManager.previewStorage() != null,
             isUpdating,
             setupFailed,
-            workManager.isSetup());
+            workManager.isSetup(),
+            workManager.isSuspended());
     previewDisplay.invalidateRenderCache();
+    // A5 fallback: if the WorkManager is still suspended when the screen comes
+    // back (e.g. an unusual screen chain that bypassed the SettingsScreen
+    // Done/Cancel handlers), resume here instead of falling through to the
+    // previewStorage==null probe, which would tear down the preserved state.
+    if (workManager.isSuspended()) {
+        if (structuralSnapshotDiffers()) {
+            resumeForRebuild(false);
+        } else {
+            resumeLight();
+        }
+        tabManager.reapplyCurrentTab();
+        return;
+    }
     // CRITICAL FIX: After returning from a sub-screen (e.g. TerrainExportScreen),
     // the WorkManager's previewStorage may be null because cancel() was called
     // when the Settings button was pressed.  Without previewStorage, the map
@@ -1640,6 +1792,29 @@ public void onScreenReentry() {
             randomizeSeed(null);
         }
         inhibitUpdates = false;
+        if (workManager.isSuspended()) {
+            // Resuming after stop(): the world settings may have changed while
+            // updates were inhibited (tab was switched away), so invalidate the
+            // structural snapshot and take the full rebuild path.
+            structuralPpcSnapshot = -1;
+            if (structuralSnapshotDiffers()) {
+                resumeForRebuild(false);
+            } else {
+                resumeLight();
+            }
+            return;
+        }
+        if (workManager.isSetup() && workManager.previewStorage() != null && !structuralSnapshotDiffers()) {
+            // A5: re-entry after a sub-screen round trip -- the tab manager
+            // re-registers the preview tab and calls start() again.  When
+            // onSettingsClosed already resumed the suspended WorkManager and no
+            // structural setting changed, a full updateSettings() here would
+            // tear the preserved state down again (and kill running analysis
+            // sessions) for nothing.  Only re-apply the sampling feature
+            // toggles; the viewport is re-queued by the render loop.
+            applySamplingFeatureToggles();
+            return;
+        }
         updateSettings();
     }
 
@@ -1648,8 +1823,11 @@ public void onScreenReentry() {
      */
     public synchronized void stop() {
         LOGGER.info("Stop generating biome data...");
+        // Prevent an in-flight updateSettings chain from reviving the worker
+        // pools while sampling is suspended.
+        invalidatePendingUpdates();
         inhibitUpdates = true;
-        workManager.cancel();
+        workManager.suspend();
     }
 
     public void doLayout(ScreenRectangle screenRectangle) {
@@ -2150,7 +2328,81 @@ public void onScreenReentry() {
         }
         Path outputDir = worldPreview.configDir().resolve("terrain_exports");
         terrainExportController.start(spec, terrainExportSampler, heightProbe(), exportOrigin(),
+                buildTerrainExportBiomeFacts(),
                 workManager.yMin(), workManager.yMax(), outputDir);
+    }
+
+    /**
+     * Storage-backed biome facts for terrain export: reuses the preview
+     * storage's already-sampled biome ids (same seed, same worldgen epoch as
+     * the export sampler) instead of re-running the noise sampler per pixel.
+     * Returns {@code null} — pure noise-sampling fallback — whenever the
+     * facts cannot be trusted (no storage, no preview data, no worldgen
+     * context, or table build failure). Storage access is strictly read-only.
+     */
+    @Nullable
+    private TerrainMapExporter.BiomeFacts buildTerrainExportBiomeFacts() {
+        final var storage = workManager.previewStorage();
+        if (storage == null || previewData == null || workManager.worldgenContext() == null) {
+            return null;
+        }
+
+        // Per-id tables: storage biome ids index into previewData's biome
+        // list. A null slot marks an id that must not be trusted (misaligned
+        // storage id or unregistered biome) and sends the exporter back to
+        // noise sampling for that pixel.
+        final PreviewData.BiomeData[] biomeDataById = previewData.biomeId2BiomeData();
+        final TerrainCategory[] categoryById = new TerrainCategory[biomeDataById.length];
+        final byte[] estimatedHeightById = new byte[biomeDataById.length];
+        try {
+            Registry<Biome> biomeRegistry = workManager.worldgenContext().registryAccess()
+                    .compositeAccess().lookupOrThrow(Registries.BIOME);
+            Map<Identifier, Holder.Reference<Biome>> registryHolders = biomeRegistry.listElements()
+                    .collect(Collectors.toMap(x -> x.key().identifier(), x -> x));
+            for (int id = 0; id < biomeDataById.length; id++) {
+                final PreviewData.BiomeData biomeData = biomeDataById[id];
+                if (biomeData == null || biomeData.tag() == null) {
+                    continue;
+                }
+                Holder.Reference<Biome> holder = registryHolders.get(biomeData.tag());
+                if (holder == null) {
+                    // Biome is in the biome source but not in the registry;
+                    // standalone holders classify through the id-keyword
+                    // fallback, matching the sidebar biome list behavior.
+                    holder = Holder.Reference.createStandAlone(
+                            biomeRegistry, ResourceKey.create(Registries.BIOME, biomeData.tag()));
+                }
+                final TerrainCategory category = TerrainClassifier.classify(holder);
+                categoryById[id] = category;
+                estimatedHeightById[id] = TerrainClassifier.categoryHeight(category);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Terrain export biome facts unavailable; falling back to noise sampling", e);
+            return null;
+        }
+
+        // The export sampler evaluates biomes at Y=64, so reuse the storage's
+        // Y=64 biome layer. Completion bits live on the primary section layer:
+        // y=0 with full-vertical chunk sampling, the sampled layer itself
+        // otherwise. An unsampled or partially sampled chunk makes the probe
+        // answer null (noise-sampling fallback for that pixel) — never a
+        // stale or missing value.
+        final int completionQuartY = net.minecraft.core.QuartPos.fromBlock(cfg.buildFullVertChunk ? 0 : 64);
+        final int dataQuartY = net.minecraft.core.QuartPos.fromBlock(64);
+        TerrainMapExporter.BiomeIdProbe probe = (blockX, blockZ) -> {
+            int qx = net.minecraft.core.QuartPos.fromBlock(blockX);
+            int qz = net.minecraft.core.QuartPos.fromBlock(blockZ);
+            if (!storage.isChunkSampled(qx, completionQuartY, qz,
+                    caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_BIOME)) {
+                return null;
+            }
+            short v = storage.getRawData4(qx, dataQuartY, qz,
+                    caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_BIOME);
+            return v == Short.MIN_VALUE ? null : v;
+        };
+
+        return new TerrainMapExporter.BiomeFacts(
+                probe, new TerrainMapExporter.IdTableResolver(categoryById, estimatedHeightById));
     }
 
     /** Real-height probe over the live preview storage; null when unavailable. */

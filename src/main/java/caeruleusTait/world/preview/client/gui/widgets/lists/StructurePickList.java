@@ -2,6 +2,7 @@
 // See CHANGES.md for details.
 package caeruleusTait.world.preview.client.gui.widgets.lists;
 
+import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -119,6 +120,19 @@ public class StructurePickList extends BaseObjectSelectionList<StructurePickList
             int left = getContentX();
             if (entry != null && entry.displayItem() != null) {
                 guiGraphics.renderItem(entry.displayItem(), left + 2, top + 2);
+            } else if (entry != null && entry.hasIconTexture()) {
+                // Texture-based structures have no item icon: draw their loaded
+                // icon texture, scaled to fit the 16x16 icon box without distortion.
+                final int iw = entry.iconWidth();
+                final int ih = entry.iconHeight();
+                if (iw > 0 && ih > 0) {
+                    final float scale = Math.min(16f / iw, 16f / ih);
+                    final int dw = Math.max(1, Math.round(iw * scale));
+                    final int dh = Math.max(1, Math.round(ih * scale));
+                    final int x0 = left + 2 + (16 - dw) / 2;
+                    final int y0 = top + 2 + (16 - dh) / 2;
+                    WorldPreviewClient.renderTexture(guiGraphics, entry.iconTexture(), x0, y0, x0 + dw, y0 + dh);
+                }
             }
             guiGraphics.drawString(StructurePickList.this.minecraft.font, rowText(), left + 20, top + 6, 0xFFFFFFFF);
         }

@@ -16,8 +16,15 @@ public class PreviewSectionHalf extends PreviewSection {
         Arrays.fill(data, Short.MIN_VALUE);
     }
 
+    /**
+     * Lock-free read: short array writes are atomic per JLS 17.7 and readers tolerate eventual
+     * consistency; render-thread visibility is established via the acquire read of
+     * {@link PreviewStorage#writeCounter()}, matching the lock-free contract of
+     * {@link PreviewSectionCompressed#get(int, int)} and the lock-free reads of
+     * {@link PreviewSectionStructure}.
+     */
     @Override
-    public synchronized short get(int x, int z) {
+    public short get(int x, int z) {
         return data[(x >> HALF_SHIFT) * HALF_SIZE + (z >> HALF_SHIFT)];
     }
 

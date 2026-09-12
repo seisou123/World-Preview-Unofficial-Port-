@@ -235,6 +235,23 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
         public ItemStack displayItem() {
             return itemStack;
         }
+
+        /** Whether the uploaded icon texture is alive and safe to draw. */
+        public boolean hasIconTexture() {
+            return iconTexture != null && !textureClosed;
+        }
+
+        public DynamicTexture iconTexture() {
+            return iconTexture;
+        }
+
+        public int iconWidth() {
+            return iconWidth;
+        }
+
+        public int iconHeight() {
+            return iconHeight;
+        }
     }
 
 }

@@ -315,6 +315,21 @@ public class SettingsScreen extends Screen {
         contentContainer.setWidgets(currentPage.widgets());
     }
 
+    /**
+     * True when at least one biome entry differs from the state captured when
+     * this screen was constructed (i.e. the user edited biome colors/caves in
+     * the settings session and they have not been restored).
+     */
+    private boolean hasBiomeColorEdits() {
+        for (BiomesList.BiomeEntry entry : previewContainer.allBiomes()) {
+            BiomesList.BiomeEntry.State initial = initialBiomeStates.get(entry.entry().key().identifier());
+            if (initial == null || !initial.equals(entry.state())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void onDone() {
         if (!pageRegistry.validateAll().isEmpty()) {
             return;
@@ -334,7 +349,11 @@ public class SettingsScreen extends Screen {
         worldPreview.saveConfig(configCandidate, renderCandidate, collectConfigBiomeColors());
         applyConfig(configCandidate, worldPreview.cfg());
         applyRenderSettings(renderCandidate, worldPreview.renderSettings());
-        previewContainer.patchColorData();
+        // Route through the suspend/resume splitter: a cheap resume when only
+        // UI-level fields changed, the full rebuild path when structural
+        // settings changed (resumeForRebuild applies patchColorData itself when
+        // biome colors were edited).
+        previewContainer.onSettingsClosed(hasBiomeColorEdits());
         previewContainer.resetTabs();
 
         minecraft.setScreen(parent);
@@ -406,7 +425,10 @@ public class SettingsScreen extends Screen {
         for (BiomesList.BiomeEntry entry : previewContainer.allBiomes()) {
             entry.restore(initialBiomeStates.get(entry.entry().key().identifier()));
         }
-        previewContainer.patchColorData();
+        // Restore() undid the edits, so hasBiomeColorEdits() is normally false
+        // here; route through the suspend/resume splitter regardless so a still
+        // suspended WorkManager is resumed cheaply (no unconditional rebuild).
+        previewContainer.onSettingsClosed(hasBiomeColorEdits());
         minecraft.setScreen(parent);
     }
 }
