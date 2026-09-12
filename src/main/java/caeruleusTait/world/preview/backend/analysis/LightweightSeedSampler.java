@@ -10,6 +10,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
@@ -20,8 +21,11 @@ import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -58,6 +62,10 @@ public final class LightweightSeedSampler implements SeedSearchService.BiomeSamp
     /** Per-seed structure state: computes placement grids lazily and caches them. */
     private ChunkGeneratorStructureState structureState;
 
+    /** Memoized possible-biome holders for the single-pass holder sampling path. */
+    @Nullable
+    private Collection<Holder<Biome>> possibleBiomesCache;
+
     /** Memoized structure holders resolved from identifiers. */
     private final Map<Identifier, Holder<Structure>> holderCache = new HashMap<>();
 
@@ -80,6 +88,31 @@ public final class LightweightSeedSampler implements SeedSearchService.BiomeSamp
         this.seed = seed;
         this.heightAccessor = heightAccessor;
         this.templateManager = templateManager;
+    }
+
+    @Override
+    public boolean supportsHolderSampling() {
+        return true;
+    }
+
+    @Override
+    public Holder<Biome> biomeHolderAt(int x, int y, int z) {
+        return biomeSource.getNoiseBiome(
+                QuartPos.fromBlock(x),
+                QuartPos.fromBlock(y),
+                QuartPos.fromBlock(z),
+                randomState.sampler()
+        );
+    }
+
+    @Override
+    public Collection<Holder<Biome>> possibleBiomes() {
+        if (possibleBiomesCache == null) {
+            List<Holder<Biome>> list = new ArrayList<>();
+            biomeSource.possibleBiomes().forEach(list::add);
+            possibleBiomesCache = list;
+        }
+        return possibleBiomesCache;
     }
 
     @Override

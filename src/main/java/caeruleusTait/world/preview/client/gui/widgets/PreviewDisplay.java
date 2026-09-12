@@ -443,7 +443,9 @@ resizeImage();
                     engine.beginFrameCounts();
                     hoverInspector.clearGridEntries();
                     // Structure hover grid was rebuilt; force tooltip re-query.
-                    hoverInspector.invalidateCache();
+                    // (C4) The grid feeds the tooltip content itself, so drop
+                    // both hover cache levels (query cache + resolved tooltip).
+                    hoverInspector.invalidateAll();
                     final List<PreviewRenderEngine.RenderHelper> renderData = engine.generateRenderData();
                     cachedRenderData = renderData;
                     engine.updateTexture(renderData);
@@ -683,8 +685,6 @@ resizeImage();
         // the full path are the initial-queue guarantee (needsInitialQueue) or
         // a due unsampled-viewport probe (idle + probe cooldown elapsed).
         final long now = System.nanoTime();
-        final boolean idle = workManager.isSetup() && workManager.isIdle();
-        final boolean probeDue = idle && (now - lastUnsampledProbeNanos) >= UNSAMPLED_PROBE_COOLDOWN_NANOS;
         final BlockPos c = center();
         final QueueGenerationKey key = new QueueGenerationKey(
                 c,
@@ -694,6 +694,19 @@ resizeImage();
                 renderSettings.quartStride(),
                 preload
         );
+        // (C6) Cheapest early-out first, before any WorkManager interaction:
+        // when the queue key is unchanged and the unsampled-viewport probe is
+        // still cooling down, everything below (isIdle futures scan, 3x3
+        // probe, mapping/AABB/range allocation) would produce identical
+        // results, so return immediately.  needsInitialQueue still bypasses
+        // this so the initial-queue guarantee is preserved.
+        final boolean probeCooldownElapsed =
+                (now - lastUnsampledProbeNanos) >= UNSAMPLED_PROBE_COOLDOWN_NANOS;
+        if (!probeCooldownElapsed && !throttle.needsInitialQueue() && key.equals(lastQueueKey)) {
+            return;
+        }
+        final boolean idle = workManager.isSetup() && workManager.isIdle();
+        final boolean probeDue = idle && (now - lastUnsampledProbeNanos) >= UNSAMPLED_PROBE_COOLDOWN_NANOS;
         if (!probeDue && !throttle.needsInitialQueue() && key.equals(lastQueueKey)) {
             return;
         }
@@ -718,24 +731,30 @@ resizeImage();
         // viewport range bypassing all dedup guards (display-side and
         // WorkManager-side).  Intentionally no isDragging() gate: pausing
         // mid-drag at an unloaded position must also recover.
-        if (throttle.initialDataReceived()
-                && idle
-                && viewportHasUnsampledArea(map)) {
-            // (R7) The probe ran on this frame; restart the probe cooldown
-            // regardless of the outcome so the idle steady state probes at a
-            // bounded rate instead of every frame.
-            lastUnsampledProbeNanos = now;
-            if (now - lastForceQueueNanos >= FORCE_QUEUE_COOLDOWN_NANOS) {
-                lastForceQueueNanos = now;
-                lastQueuedRange = range;
-                lastQueueKey = key;
-                throttle.clearNeedsInitialQueue();
-                WorldPreview.LOGGER.info(
-                        "Viewport contains unsampled chunks while sampling is idle — forcing re-queue of {} .. {}",
-                        range.min(), range.max()
-                );
-                workManager.forceQueueRange(range.min(), range.max());
-                return;
+        if (throttle.initialDataReceived() && idle) {
+            if (viewportHasUnsampledArea(map)) {
+                // (R7) The probe ran on this frame; restart the probe cooldown
+                // regardless of the outcome so the idle steady state probes at a
+                // bounded rate instead of every frame.
+                lastUnsampledProbeNanos = now;
+                if (now - lastForceQueueNanos >= FORCE_QUEUE_COOLDOWN_NANOS) {
+                    lastForceQueueNanos = now;
+                    lastQueuedRange = range;
+                    lastQueueKey = key;
+                    throttle.clearNeedsInitialQueue();
+                    WorldPreview.LOGGER.info(
+                            "Viewport contains unsampled chunks while sampling is idle — forcing re-queue of {} .. {}",
+                            range.min(), range.max()
+                    );
+                    workManager.forceQueueRange(range.min(), range.max());
+                    return;
+                }
+            } else {
+                // (C6) The probe ran on a fully-sampled viewport; reset the
+                // cooldown so the idle steady state probes at a bounded rate.
+                // Without this the cooldown never restarted, probeDue stayed
+                // true forever and the queue-key early-outs above were dead.
+                lastUnsampledProbeNanos = now;
             }
         }
         // The needsInitialQueue flag guarantees at least one queueRange() call
@@ -914,7 +933,10 @@ resizeImage();
         // the mouse is still held down after returning from the sub-screen.
         interaction.resetInteractionState();
         // Invalidate hover cache so the tooltip re-queries on the next frame.
-        hoverInspector.invalidateCache();
+        // (C4) Query cache only: the resolved-tooltip cache is keyed on the
+        // hover result and rebuilds itself if the key changed; the next heavy
+        // render drops it via invalidateAll() anyway.
+        hoverInspector.invalidateQueryCache();
     }
 
     @Override

@@ -541,7 +541,7 @@ public class SampleUtils implements AutoCloseable {
         return minecraftServer.getPlayerList().getPlayer(playerId);
     }
 
-    public record BiomeResult(ResourceKey<Biome> biome, short[] noiseResult) {}
+    public record BiomeResult(Holder<Biome> biome, short[] noiseResult) {}
 
     private static short doubleToShort(double val, double factor) {
         // Short.MIN_VALUE is the empty-cell sentinel; clamp noise so real samples never collide with it.
@@ -576,7 +576,7 @@ public class SampleUtils implements AutoCloseable {
             final var targetPoint = Climate.target((float) temperature, (float) humidity, (float) continentalness, (float) erosion, (float) depth, (float) weirdness);
             final MultiNoiseBiomeSource noiseBiomeSource = (MultiNoiseBiomeSource) biomeSource;
             final Holder<Biome> biome = noiseBiomeSource.getNoiseBiome(targetPoint);
-            return new BiomeResult(biome.unwrapKey().orElseThrow(), noiseData);
+            return new BiomeResult(biome, noiseData);
         } else {
             return new BiomeResult(
                     biomeSource.getNoiseBiome(
@@ -584,7 +584,7 @@ public class SampleUtils implements AutoCloseable {
                             QuartPos.fromBlock(pos.getY()),
                             QuartPos.fromBlock(pos.getZ()),
                             randomState.sampler()
-                    ).unwrapKey().orElseThrow(),
+                    ),
                     null
             );
         }

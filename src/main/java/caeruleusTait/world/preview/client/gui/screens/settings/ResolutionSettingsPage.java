@@ -63,6 +63,11 @@ public class ResolutionSettingsPage extends AbstractSettingsPage {
                          pc.previewDisplay().invalidateRenderCache();
                          pc.workManager().cancel();
                          pc.start();
+                         // This page's cancel+start already resumed/rebuilt the
+                         // preview: refresh the container's structural snapshot
+                         // so closing the settings screen does not trigger a
+                         // second full rebuild for the same change.
+                         pc.markStructuralRebuildApplied();
                      }
                  });
         pixelBtn.setTooltip(Tooltip.create(SETTINGS_SAMPLE_PIXELS_TITLE_2));
