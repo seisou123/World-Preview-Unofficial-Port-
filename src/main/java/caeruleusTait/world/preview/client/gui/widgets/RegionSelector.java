@@ -77,11 +77,28 @@ public final class RegionSelector extends AbstractWidget {
         for (int i = 0; i < fields.size(); i++) fields.get(i).setValue(values[i]);
     }
 
+    /** True while the fields do not parse into a usable region (bad input or out of bounds). */
+    public boolean hasError() {
+        return currentRegion().isEmpty();
+    }
+
     private void updateRegion() {
-        currentRegion().ifPresent(region -> {
-            lastValidRegion = region;
-            onRegionChanged.accept(region);
-        });
+        boolean allNumeric = true;
+        for (EditBox field : fields) {
+            boolean ok = field.getValue().trim().matches("-?\\d{1,10}");
+            field.setTextColor(ok ? 0xFFFFFFFF : 0xFFFF5555);
+            allNumeric &= ok;
+        }
+        Optional<Region> region = currentRegion();
+        if (region.isPresent()) {
+            lastValidRegion = region.get();
+            onRegionChanged.accept(region.get());
+        } else if (!allNumeric) {
+            // Partially typed input: no error state, no fallback (the user is still typing).
+        } else {
+            // Numeric but out of bounds (e.g. > 4096 wide): keep the red text,
+            // lastValidRegion stays untouched so Start can fall back to it.
+        }
     }
 
     @Override
