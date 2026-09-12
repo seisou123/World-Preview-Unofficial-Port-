@@ -85,6 +85,10 @@ public class WorldPreviewComponents {
     public static final Component ANALYSIS_ERROR = Component.translatable("world_preview.analysis.error");
     /** Gray toolbar summary of the analysis plane: Y layer + sample step. */
     public static final Component ANALYSIS_Y_STEP = Component.translatable("world_preview.analysis.y_step");
+    // Profile direction presets (cycled by the analysis screen's direction button).
+    public static final Component ANALYSIS_DIR_DIAGONAL = Component.translatable("world_preview.analysis.dir.diagonal");
+    public static final Component ANALYSIS_DIR_EASTWEST = Component.translatable("world_preview.analysis.dir.eastwest");
+    public static final Component ANALYSIS_DIR_NORTHSOUTH = Component.translatable("world_preview.analysis.dir.northsouth");
 
     // === Seed comparison screen (v1.5) ===
     public static final Component COMPARISON_TITLE = Component.translatable("world_preview.comparison.title");

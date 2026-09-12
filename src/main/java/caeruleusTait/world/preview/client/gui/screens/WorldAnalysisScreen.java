@@ -114,8 +114,12 @@ public final class WorldAnalysisScreen extends Screen {
     private final TranslucentButton presetButton;
     private final TranslucentButton boxSelectButton;
     private final TranslucentButton locateButton;
+    private final TranslucentButton directionButton;
     private final TranslucentButton exportReportButton;
     private TranslucentButton closeButton;
+
+    /** Profile line preset cycled by {@link #directionButton} (label shows the current one). */
+    private ProfileChart.Direction profileDirection = ProfileChart.Direction.DIAGONAL;
 
     private boolean closed;
     /** True once the worldgen context this session belongs to has been replaced. */
@@ -178,6 +182,8 @@ public final class WorldAnalysisScreen extends Screen {
                 WorldPreviewComponents.ANALYSIS_ACTION_BOXSELECT, ignored -> { });
         this.locateButton = new TranslucentButton(font, 0, 0, 90, 20,
                 WorldPreviewComponents.ANALYSIS_ACTION_LOCATE, ignored -> { });
+        this.directionButton = new TranslucentButton(font, 0, 0, 90, 20,
+                profileDirectionLabel(), ignored -> cycleProfileDirection());
         this.exportReportButton = new TranslucentButton(font, 0, 0, 90, 20,
                 WorldPreviewComponents.ANALYSIS_EXPORT_REPORT, ignored -> exportReport());
         this.exportReportButton.active = false;
@@ -205,7 +211,9 @@ public final class WorldAnalysisScreen extends Screen {
 
     private void setRegion(Region region) {
         this.region = region;
-        profileChart.setResult(null);
+        // No profile clear here: clearing while the user is still typing wiped
+        // the chart on every keystroke. The profile only rebuilds on
+        // startAnalysis / direction switch / the running-throttle re-poll.
     }
 
     /** Aligns the analysis region to the preview viewport (same recipe as the container's open). */
@@ -308,13 +316,43 @@ public final class WorldAnalysisScreen extends Screen {
         return clamped;
     }
 
-    /** Rebuilds the horizontal profile from the session's current request (direction lands later). */
+    /**
+     * Rebuilds the profile chart from the session's current request along the
+     * selected direction: diagonal = region diagonal, E-W / N-S = the
+     * horizontal / vertical region center lines (at the fixed analysis Y).
+     */
     private void rebuildProfile() {
         AnalysisRequest request = session.request();
         Region r = request.region();
-        ProfileRequest profile = new ProfileRequest(r.minX(), r.minZ(), r.maxX(), r.maxZ(),
-                request.y(), request.y(), Math.max(1, request.sampleStep()), false);
+        int y = request.y();
+        int step = Math.max(1, request.sampleStep());
+        ProfileRequest profile = switch (profileDirection) {
+            case DIAGONAL -> new ProfileRequest(r.minX(), r.minZ(), r.maxX(), r.maxZ(), y, y, step, false);
+            case EAST_WEST -> new ProfileRequest(r.minX(), (r.minZ() + r.maxZ()) / 2, r.maxX(),
+                    (r.minZ() + r.maxZ()) / 2, y, y, step, false);
+            case NORTH_SOUTH -> new ProfileRequest((r.minX() + r.maxX()) / 2, r.minZ(),
+                    (r.minX() + r.maxX()) / 2, r.maxZ(), y, y, step, false);
+        };
         profileChart.setResult(session.profile(profile));
+    }
+
+    private Component profileDirectionLabel() {
+        return switch (profileDirection) {
+            case DIAGONAL -> WorldPreviewComponents.ANALYSIS_DIR_DIAGONAL;
+            case EAST_WEST -> WorldPreviewComponents.ANALYSIS_DIR_EASTWEST;
+            case NORTH_SOUTH -> WorldPreviewComponents.ANALYSIS_DIR_NORTHSOUTH;
+        };
+    }
+
+    /** Cycles 对角 → 东西 → 南北 and rebuilds the profile along the new line. */
+    private void cycleProfileDirection() {
+        profileDirection = switch (profileDirection) {
+            case DIAGONAL -> ProfileChart.Direction.EAST_WEST;
+            case EAST_WEST -> ProfileChart.Direction.NORTH_SOUTH;
+            case NORTH_SOUTH -> ProfileChart.Direction.DIAGONAL;
+        };
+        directionButton.setMessage(profileDirectionLabel());
+        rebuildProfile();
     }
 
     /**
@@ -360,6 +398,7 @@ public final class WorldAnalysisScreen extends Screen {
                 ? WorldPreviewComponents.ANALYSIS_ACTION_RESUME
                 : WorldPreviewComponents.ANALYSIS_ACTION_PAUSE);
         cancelButton.active = running && !stale;
+        directionButton.active = !stale;
         refreshExportButton(running);
         if (closeButton != null) {
             // Closing must always remain possible.
@@ -574,15 +613,36 @@ public final class WorldAnalysisScreen extends Screen {
         addRenderableWidget(locateButton);
         addRenderableWidget(alignViewportButton);
         addRenderableWidget(presetButton);
+        addRenderableWidget(directionButton);
         addRenderableWidget(exportReportButton);
         closeButton = new TranslucentButton(Minecraft.getInstance().font, 0, 0, 90, 20,
                 CommonComponents.GUI_BACK, ignored -> onClose());
         addRenderableWidget(closeButton);
         layoutWidgets();
         updateControlState();
+        // Biome colors/names for the profile bands + tooltip come from the
+        // biome list lookup (built lazily, main thread); unknown ids fall back
+        // inside ProfileChart (gray band / "biome_<id>").
+        profileChart.setPalette(this::profileBiomeColor, this::profileBiomeName);
+        Integer seaLevel = previewContainer.analysisSeaLevel();
+        profileChart.setSeaLevel(seaLevel != null ? seaLevel : -1);
         // Force the preview display to re-render on this screen instead of
         // reusing stale cached render data from the previous screen.
         previewContainer.previewDisplay().invalidateRenderCache();
+    }
+
+    /** ARGB band color for a short biome id; null (chart falls back to gray) when unknown. */
+    private @Nullable Integer profileBiomeColor(int id) {
+        BiomesList.BiomeEntry entry = biomeIdLookup().get((short) id);
+        // entry.color() is stored without the alpha byte (the biome lists draw
+        // it through WorldPreview.nativeColor), so force an opaque ARGB here.
+        return entry != null ? entry.color() | 0xFF000000 : null;
+    }
+
+    /** Display name for a short biome id; null (chart falls back to "biome_<id>") when unknown. */
+    private @Nullable String profileBiomeName(int id) {
+        BiomesList.BiomeEntry entry = biomeIdLookup().get((short) id);
+        return entry != null ? entry.name() : null;
     }
 
     private static void place(AbstractWidget widget, int x, int y, int width, int height) {
@@ -635,8 +695,10 @@ public final class WorldAnalysisScreen extends Screen {
         previewContainer.previewDisplay().setPosition(rightX, panelsTop);
         previewContainer.previewDisplay().setSize(rightW, mapH);
         // The chart tab row will sit at tabsY (inserted by the chart task);
-        // the profile chart starts 22px below it.
+        // the profile chart starts 22px below it. The direction button takes
+        // the right end of the reserved tab-row band until then.
         int tabsY = panelsTop + mapH + 4;
+        place(directionButton, Math.max(rightX, rightX + rightW - 90), tabsY, 90, 20);
         profileChart.setX(rightX);
         profileChart.setY(tabsY + 22);
         profileChart.setWidth(rightW);
@@ -707,6 +769,8 @@ public final class WorldAnalysisScreen extends Screen {
                 RegionMetrics metrics = session.result();
                 overviewPanel.setSessionData(progress, session.request().y(), session.request().sampleStep());
                 overviewPanel.setMetrics(metrics);
+                profileChart.setMeanHeight(metrics.meanHeight().isPresent()
+                        ? metrics.meanHeight().getAsDouble() : null);
                 overviewPanel.setError(progress.error() != null
                         ? Component.translatable("world_preview.analysis.error", progress.error())
                         : null);
@@ -726,6 +790,8 @@ public final class WorldAnalysisScreen extends Screen {
         RegionMetrics metrics = session.result();
         overviewPanel.setSessionData(progress, session.request().y(), session.request().sampleStep());
         overviewPanel.setMetrics(metrics);
+        profileChart.setMeanHeight(metrics.meanHeight().isPresent()
+                ? metrics.meanHeight().getAsDouble() : null);
         overviewPanel.setError(progress.error() != null
                 ? Component.translatable("world_preview.analysis.error", progress.error())
                 : null);
