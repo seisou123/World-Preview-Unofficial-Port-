@@ -127,7 +127,7 @@ class MetricAggregatorTest {
         agg.addSample(12, 0, (short) 1, (short) 70);
         RegionMetrics m = agg.snapshot();
         org.junit.jupiter.api.Assertions.assertEquals(0.25, m.waterShare(), 1e-9);
-        org.junit.jupiter.api.Assertions.assertEquals(64.0, m.medianHeight().getAsDouble(), 1e-9);
+        org.junit.jupiter.api.Assertions.assertEquals(67.0, m.medianHeight().getAsDouble(), 1e-9); // (64+70)/2
         org.junit.jupiter.api.Assertions.assertEquals(62, m.minHeight().getAsInt());
         org.junit.jupiter.api.Assertions.assertEquals(70, m.maxHeight().getAsInt());
         org.junit.jupiter.api.Assertions.assertEquals(9, m.heightHistogram().length); // 62..70
@@ -164,5 +164,25 @@ class MetricAggregatorTest {
         assertEquals(0.0, metrics.medianHeight().getAsDouble(), 1e-9);
         assertEquals(-64, metrics.minHeight().orElseThrow());
         assertEquals(70, metrics.maxHeight().orElseThrow());
+    }
+
+    @Test
+    void evenCountMedianMatchesSortedArrayParity() {
+        // Even sample count: median must interpolate the middle pair exactly like
+        // the old sorted-array implementation. [70,62,70,64,80,60] sorts to
+        // [60,62,64,70,70,80] → (64+70)/2 = 67.0.
+        short[] heights = {70, 62, 70, 64, 80, 60};
+        MetricAggregator agg = new MetricAggregator(heights.length, 1);
+        for (int i = 0; i < heights.length; i++) {
+            agg.addSample(i * 8, 0, (short) 1, heights[i]);
+        }
+
+        RegionMetrics metrics = agg.snapshot();
+
+        short[] sorted = heights.clone();
+        java.util.Arrays.sort(sorted);
+        double expected = (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0;
+        assertEquals(67.0, expected, 1e-12); // sanity on the local reference
+        assertEquals(expected, metrics.medianHeight().getAsDouble(), 1e-9);
     }
 }

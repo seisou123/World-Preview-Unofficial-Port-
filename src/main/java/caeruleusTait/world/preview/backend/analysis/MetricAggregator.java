@@ -169,18 +169,21 @@ public final class MetricAggregator {
         OptionalInt max = histMaxY == Integer.MIN_VALUE ? OptionalInt.empty() : OptionalInt.of(histMaxY);
         OptionalDouble median = OptionalDouble.empty();
         if (heightCount > 0) {
-            // Median = smallest y with cumulative count >= half: the exact median
-            // for odd counts, the lower middle value for even counts.
+            // Median with parity to the old sorted-array implementation:
+            // lo = smallest y reaching half the samples, hi = smallest y reaching
+            // half plus one; exact middle value for odd counts, (lo + hi) / 2
+            // (interpolated) for even counts.
             long seen = 0;
-            double med = histMaxY;
+            long lo = -1, hi = -1;
             for (int y = histMinY; y <= histMaxY; y++) {
                 seen += heightHistogram[y & 0xFFFF];
-                if (seen * 2 >= heightCount) {
-                    med = y;
+                if (lo < 0 && seen * 2 >= heightCount) lo = y;
+                if (seen * 2 >= heightCount + 1) {
+                    hi = y;
                     break;
                 }
             }
-            median = OptionalDouble.of(med);
+            median = OptionalDouble.of(heightCount % 2 == 1 ? lo : (lo + hi) / 2.0);
         }
         OptionalDouble meanSlope = slopePairs == 0 ? OptionalDouble.empty()
                 : OptionalDouble.of((double) slopeSumDelta / slopePairs / sampleStep);
