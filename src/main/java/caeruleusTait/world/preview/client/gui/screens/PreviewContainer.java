@@ -8,10 +8,12 @@ import caeruleusTait.world.preview.WorldPreviewConfig;
 import caeruleusTait.world.preview.backend.WorkManager;
 import caeruleusTait.world.preview.backend.analysis.AnalysisSession;
 import caeruleusTait.world.preview.backend.analysis.AnalysisRequest;
+import caeruleusTait.world.preview.backend.analysis.LightweightSeedSampler;
 import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchService;
+import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import caeruleusTait.world.preview.client.gui.widgets.RegionSelector;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.backend.color.ColorMap;
@@ -56,10 +58,15 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.dimension.LevelStem;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
+import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.structure.Structure;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -78,6 +85,7 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -166,6 +174,11 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     // going and is re-attached when the screen is reopened for the same world.
     @Nullable private AnalysisSession activeAnalysisSession;
     private long activeAnalysisSessionEpoch = -1;
+    // Analytic structure probe for the current worldgen context's seed (see
+    // probeNearestStructures): built lazily on the render thread and cached per
+    // worldgen epoch, so world switches never reuse a stale sampler.
+    @Nullable private volatile LightweightSeedSampler structureSampler;
+    private volatile long structureSamplerEpoch = -1;
     // Seed search listener indirection: a search started on one screen keeps
     // running in the background, and a reopened screen can take over the
     // progress/completion callbacks. Callbacks always fire on the main thread
@@ -968,9 +981,26 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         terrainExportSampler = null;
         seedSearchFactory = null;
         samplerContextEpoch = -1;
+        closeStructureSampler();
         terrainExportController.cancel();
         seedSearchService.cancel();
         closeActiveAnalysisSession();
+    }
+
+    /** Drops the cached analytic structure probe so the next probe rebuilds it for the new epoch. */
+    private void closeStructureSampler() {
+        LightweightSeedSampler sampler = structureSampler;
+        structureSampler = null;
+        structureSamplerEpoch = -1;
+        if (sampler != null) {
+            try {
+                // close() is a no-op today (see LightweightSeedSampler), but
+                // staying AutoCloseable-clean keeps that free to change.
+                sampler.close();
+            } catch (Throwable ignored) {
+                // Never block world switches on probe cleanup.
+            }
+        }
     }
 
     /** Closes and forgets the currently owned analysis session, if any. */
@@ -985,6 +1015,39 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 // Never block world switches on session cleanup.
             }
         }
+    }
+
+    /**
+     * Closes the current analysis session and opens a fresh one for the given
+     * request, stamping the worldgen epoch of the new session so later screen
+     * opens can re-attach to it.
+     *
+     * @return the new session, or {@code null} when the work manager is not
+     *         set up or the session could not be opened
+     */
+    public @Nullable AnalysisSession restartAnalysisSession(AnalysisRequest request) {
+        if (!workManager.isSetup()) return null;
+        try {
+            closeActiveAnalysisSession();
+            AnalysisSession session = workManager.openAnalysisSession(request);
+            activeAnalysisSession = session;
+            activeAnalysisSessionEpoch = workManager.epoch();
+            return session;
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to restart analysis session for region {}", request.region(), e);
+            closeActiveAnalysisSession();
+            return null;
+        }
+    }
+
+    /**
+     * Sea level of the current worldgen context, for reference lines in the
+     * analysis screen. {@code null} when there is no live worldgen context or
+     * the sea level cannot be derived (e.g. non-noise generators).
+     */
+    public @Nullable Integer analysisSeaLevel() {
+        WorldgenContext context = workManager.worldgenContext();
+        return context != null ? AnalysisSession.deriveSeaLevel(context) : null;
     }
 
     private void setupSearchContext() {
@@ -1065,6 +1128,101 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // Remember which worldgen epoch these snapshots belong to; background
         // tasks started later verify this before they run or publish.
         samplerContextEpoch = workManager.epoch();
+    }
+
+    /**
+     * Analytic nearest-structure probe for the current preview seed: pure
+     * worldgen math (the vanilla /locate placement pipeline), no storage and
+     * no server infrastructure, so it is safe to call on the render thread
+     * when the analysis screen opens.
+     * <p>
+     * The backing {@link LightweightSeedSampler} is built lazily on first use
+     * (at most one build attempt per worldgen epoch) and cached until
+     * {@link #invalidateWorldScopedTasks()} drops it on a world switch. Only
+     * render-thread callers are expected; the fields are volatile so an
+     * accidental cross-thread use stays memory-safe without locking.
+     *
+     * @return found structure id to its located position (ids that could not
+     *         be located within the distance cap are simply omitted), or
+     *         {@code null} when probing is unavailable — no live worldgen
+     *         context, or the probe sampler could not be built
+     */
+    public @Nullable Map<Identifier, BlockPos> probeNearestStructures(Set<Identifier> types, BlockPos anchor, int maxDistanceBlocks) {
+        var context = workManager.worldgenContext();
+        if (context == null) return null;
+        long epoch = workManager.epoch();
+        if (structureSamplerEpoch != epoch) {
+            structureSampler = buildStructureSampler(context);
+            structureSamplerEpoch = epoch;
+        }
+        if (structureSampler == null) return null;
+        Map<Identifier, BlockPos> out = new LinkedHashMap<>();
+        for (Identifier id : types) {
+            try {
+                BlockPos found = structureSampler.nearestStructure(Set.of(id), anchor, maxDistanceBlocks);
+                if (found != null) out.put(id, found);
+            } catch (Exception e) {
+                LOGGER.debug("structure probe failed for {}", id, e);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Builds the analytic structure probe sampler for the given worldgen
+     * context, following the same assembly recipe as
+     * {@link #setupSearchContext()} (shared biome source / chunk generator /
+     * composite registry access, a per-seed {@link RandomState}, and the
+     * height accessor + template manager from the context's sample utilities)
+     * but fixed to the context's current seed instead of a per-seed factory.
+     *
+     * @return the sampler, or {@code null} when probing is unavailable — most
+     *         notably when the structure template manager cannot be obtained
+     */
+    @Nullable
+    private LightweightSeedSampler buildStructureSampler(WorldgenContext worldgenContext) {
+        try {
+            final var biomeSource = worldgenContext.biomeSource();
+            final var chunkGenerator = worldgenContext.chunkGenerator();
+            // compositeAccess() returns RegistryAccess.Frozen, supports lookupOrThrow
+            final var compositeRegistryAccess = worldgenContext.registryAccess().compositeAccess();
+            final var probeRegistries = new LightweightSeedSampler.RegistryAccessBundle(
+                    compositeRegistryAccess,
+                    compositeRegistryAccess.lookupOrThrow(Registries.STRUCTURE),
+                    compositeRegistryAccess.lookupOrThrow(Registries.STRUCTURE_SET));
+            final LevelHeightAccessor probeHeight;
+            final StructureTemplateManager probeTemplates;
+            try {
+                // Reuse the WorkManager-owned SampleUtils: it already carries the
+                // template manager and height accessor for this worldgen context.
+                var sampleUtils = worldgenContext.createSampleUtils();
+                probeHeight = sampleUtils.levelHeightAccessor();
+                probeTemplates = sampleUtils.structureTemplateManager();
+            } catch (Exception e) {
+                LOGGER.warn("Structure probing disabled: failed to obtain structure template manager", e);
+                return null;
+            }
+            final long seed = worldgenContext.seed();
+            RandomState randomState;
+            if (chunkGenerator instanceof NoiseBasedChunkGenerator noiseBasedChunkGenerator) {
+                randomState = RandomState.create(
+                    noiseBasedChunkGenerator.generatorSettings().value(),
+                    compositeRegistryAccess.lookupOrThrow(Registries.NOISE),
+                    seed
+                );
+            } else {
+                randomState = RandomState.create(
+                    NoiseGeneratorSettings.dummy(),
+                    compositeRegistryAccess.lookupOrThrow(Registries.NOISE),
+                    seed
+                );
+            }
+            return new LightweightSeedSampler(
+                    biomeSource, chunkGenerator, probeRegistries, randomState, seed, probeHeight, probeTemplates);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to build structure probe sampler", e);
+            return null;
+        }
     }
 
     public void onBiomeRightClick(BiomesList.BiomeEntry entry) {
