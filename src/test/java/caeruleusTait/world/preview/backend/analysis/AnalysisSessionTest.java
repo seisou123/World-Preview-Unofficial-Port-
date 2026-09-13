@@ -4,6 +4,7 @@ import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.WorldPreviewConfig;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
+import caeruleusTait.world.preview.domain.session.SessionState;
 import caeruleusTait.world.preview.domain.task.TaskScheduler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -144,6 +145,43 @@ class AnalysisSessionTest {
             session.resume();
             awaitStatus(session, AnalysisStatus.COMPLETED);
             assertEquals(1.0, session.result().coverage());
+            session.close();
+        }
+    }
+
+    @Test
+    void pauseBeforeStartIsANoop() throws Exception {
+        try (TaskScheduler scheduler = new TaskScheduler(1)) {
+            CountDownLatch firstRow = new CountDownLatch(1);
+            CountDownLatch pauseGate = new CountDownLatch(1);
+            CountDownLatch resumeGate = new CountDownLatch(1);
+            AnalysisSession session = newSession(scheduler, (x, z, y) -> {
+                if (z == 0) firstRow.countDown();
+                if (z == 1) pauseGate.await();
+                if (z == 2) resumeGate.await();
+                return new AnalysisSession.Sample((short) 7, (short) 64);
+            });
+
+            // Not started yet: pause/resume must be complete no-ops — no state
+            // change at all, and the reported progress stays QUEUED.
+            SessionState stateBefore = session.state();
+            session.pause();
+            assertEquals(stateBefore, session.state());
+            assertEquals(AnalysisStatus.QUEUED, session.progress().status());
+            session.resume();
+            assertEquals(stateBefore, session.state());
+            assertEquals(AnalysisStatus.QUEUED, session.progress().status());
+
+            session.start();
+            assertTrue(firstRow.await(2, TimeUnit.SECONDS));
+            session.pause();
+            assertEquals(AnalysisStatus.PAUSED, session.progress().status());
+            // Unblock the worker so it can finish row z=1 and reach the pause check.
+            pauseGate.countDown();
+            session.resume();
+            awaitStatus(session, AnalysisStatus.RUNNING);
+            resumeGate.countDown();
+            awaitStatus(session, AnalysisStatus.COMPLETED);
             session.close();
         }
     }

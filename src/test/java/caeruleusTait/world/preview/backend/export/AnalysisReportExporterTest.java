@@ -77,15 +77,23 @@ class AnalysisReportExporterTest {
     void csvHasHeaderAndDescendingRowsWithFormattedShare() {
         String csv = exporter.buildCsv(sampleInput());
         String[] lines = csv.split("\n", -1);
+        // First table unchanged: header + biome rows sorted desc by count.
         assertEquals("biome,count,share_percent", lines[0]);
         assertEquals("Mountains,60,60.00", lines[1]);
         assertEquals("Plains,40,40.00", lines[2]);
         assertEquals("River,0,0.00", lines[3]);
+        // Summary metrics section appended after a blank separator line
+        // (legacy inputs default the extended metrics to 0).
+        assertEquals("", lines[4]);
+        assertEquals("metric,value", lines[5]);
+        assertEquals("water_share,0.0000", lines[6]);
+        assertEquals("shannon_diversity,0.0000", lines[7]);
+        assertEquals("effective_biome_count,0.0000", lines[8]);
         // LF line endings, no BOM, trailing newline
         assertTrue(csv.endsWith("\n"));
         assertFalse(csv.endsWith("\r\n"));
         assertFalse(csv.startsWith("\uFEFF"));
-        assertEquals(5, lines.length); // header + 3 rows + trailing empty element
+        assertEquals(10, lines.length); // header + 3 rows + blank + metric header + 3 metrics + trailing empty
     }
 
     @Test
@@ -110,7 +118,13 @@ class AnalysisReportExporterTest {
                 OptionalInt.empty(), OptionalInt.empty(), OptionalDouble.empty(),
                 OptionalDouble.empty(), OptionalDouble.empty(), OptionalDouble.empty(),
                 OptionalDouble.empty(), 0.0);
-        assertEquals("biome,count,share_percent\n\"Weird, biome\",10,100.00\n",
+        assertEquals("biome,count,share_percent\n"
+                        + "\"Weird, biome\",10,100.00\n"
+                        + "\n"
+                        + "metric,value\n"
+                        + "water_share,0.0000\n"
+                        + "shannon_diversity,0.0000\n"
+                        + "effective_biome_count,0.0000\n",
                 exporter.buildCsv(input));
     }
 
@@ -184,5 +198,108 @@ class AnalysisReportExporterTest {
         try (var files = Files.list(tempDir.resolve("nested/reports"))) {
             assertEquals(2, files.count());
         }
+    }
+
+    @Test
+    void jsonContainsExtendedMetrics() {
+        LinkedHashMap<String, long[]> biomes = new LinkedHashMap<>();
+        biomes.put("plains", new long[]{10});
+        LinkedHashMap<String, Long> terrain = new LinkedHashMap<>();
+        terrain.put("PLAINS", 10L);
+        LinkedHashMap<String, Long> structs = new LinkedHashMap<>();
+        structs.put("village", 350L);
+        ReportInput input = new ReportInput(
+                "123", "minecraft:overworld", "-1000,-1000 -> 1000,1000",
+                100, 100, 1.0, biomes,
+                OptionalInt.of(60), OptionalInt.of(90),
+                OptionalDouble.of(70), OptionalDouble.of(70),
+                OptionalDouble.of(5), OptionalDouble.of(0.5), OptionalDouble.of(9),
+                0.4, "ctx",
+                0.25, 0.56, 1.75, terrain, structs,
+                new int[]{1, 2, 3}, 60);
+        String json = exporter.buildJson(input, GSON);
+        assertTrue(json.contains("\"waterShare\": 0.25"));
+        assertTrue(json.contains("shannonDiversity"));
+        assertTrue(json.contains("village"));
+
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        assertEquals(0.25, root.get("waterShare").getAsDouble(), 1e-9);
+        JsonObject insights = root.get("insights").getAsJsonObject();
+        assertEquals(0.56, insights.get("shannonDiversity").getAsDouble(), 1e-9);
+        assertEquals(1.75, insights.get("effectiveBiomeCount").getAsDouble(), 1e-9);
+        JsonObject terrainEntry = root.get("terrain").getAsJsonArray().get(0).getAsJsonObject();
+        assertEquals("PLAINS", terrainEntry.get("category").getAsString());
+        assertEquals(10L, terrainEntry.get("count").getAsLong());
+        JsonObject structEntry = root.get("nearestStructures").getAsJsonArray().get(0).getAsJsonObject();
+        assertEquals("village", structEntry.get("structure").getAsString());
+        assertEquals(350L, structEntry.get("distanceBlocks").getAsLong());
+        JsonObject hist = root.get("heightHistogram").getAsJsonObject();
+        assertEquals(60, hist.get("minY").getAsInt());
+        assertEquals(3, hist.get("counts").getAsJsonArray().size());
+        assertEquals(1, hist.get("counts").getAsJsonArray().get(0).getAsInt());
+
+        String csv = exporter.buildCsv(input);
+        assertTrue(csv.contains("water_share"));
+    }
+
+    @Test
+    void csvAppendsSummarySectionAfterBiomeTable() {
+        LinkedHashMap<String, long[]> biomes = new LinkedHashMap<>();
+        biomes.put("plains", new long[]{10});
+        LinkedHashMap<String, Long> terrain = new LinkedHashMap<>();
+        terrain.put("PLAINS", 10L);
+        ReportInput input = new ReportInput(
+                "123", "minecraft:overworld", "-1000,-1000 -> 1000,1000",
+                100, 100, 1.0, biomes,
+                OptionalInt.of(60), OptionalInt.of(90),
+                OptionalDouble.of(70), OptionalDouble.of(70),
+                OptionalDouble.of(5), OptionalDouble.of(0.5), OptionalDouble.of(9),
+                0.4, "ctx",
+                0.25, 0.56, 1.75, terrain, new LinkedHashMap<>(),
+                new int[]{1, 2, 3}, 60);
+        assertEquals("biome,count,share_percent\n"
+                + "plains,10,10.00\n"
+                + "\n"
+                + "metric,value\n"
+                + "water_share,0.2500\n"
+                + "shannon_diversity,0.5600\n"
+                + "effective_biome_count,1.7500\n", exporter.buildCsv(input));
+    }
+
+    @Test
+    void legacyConstructorDefaultsExtendedMetrics() {
+        String json = exporter.buildJson(sampleInput(), GSON);
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        assertEquals(0.0, root.get("waterShare").getAsDouble(), 1e-9);
+        JsonObject insights = root.get("insights").getAsJsonObject();
+        assertEquals(0.0, insights.get("shannonDiversity").getAsDouble(), 1e-9);
+        assertEquals(0.0, insights.get("effectiveBiomeCount").getAsDouble(), 1e-9);
+        assertTrue(root.get("terrain").getAsJsonArray().isEmpty());
+        assertTrue(root.get("nearestStructures").getAsJsonArray().isEmpty());
+        JsonObject hist = root.get("heightHistogram").getAsJsonObject();
+        assertEquals(0, hist.get("minY").getAsInt());
+        assertTrue(hist.get("counts").getAsJsonArray().isEmpty());
+    }
+
+    @Test
+    void nonFiniteAndNullExtendedInputsNormalize() {
+        LinkedHashMap<String, long[]> biomes = new LinkedHashMap<>();
+        biomes.put("plains", new long[]{10});
+        ReportInput input = new ReportInput(
+                "1", "minecraft:overworld", "0,0 -> 1,1",
+                10, 10, 1.0, biomes,
+                OptionalInt.empty(), OptionalInt.empty(), OptionalDouble.empty(),
+                OptionalDouble.empty(), OptionalDouble.empty(), OptionalDouble.empty(),
+                OptionalDouble.empty(), 0.0, null,
+                Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
+                null, null, null, 0);
+        String json = exporter.buildJson(input, GSON);
+        assertTrue(json.contains("\"waterShare\": 0.0"));
+        assertFalse(json.contains("NaN"));
+        assertFalse(json.contains("Infinity"));
+        String csv = exporter.buildCsv(input);
+        assertTrue(csv.contains("water_share,0.0000"));
+        assertTrue(csv.contains("shannon_diversity,0.0000"));
+        assertTrue(csv.contains("effective_biome_count,0.0000"));
     }
 }
