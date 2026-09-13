@@ -77,6 +77,15 @@ public final class AnalysisOverviewPanel extends AbstractWidget {
     private int structureCenterZ;
     @Nullable private Component errorText;
 
+    // ===== Scrolling: content can exceed the panel on small windows =====
+    private static final int SCROLL_STEP = 14;
+    private static final int SCROLLBAR_WIDTH = 3;
+    private int scrollOffset;
+    /** Total rendered content height in pixels (updated every frame). */
+    private int contentHeight;
+    private boolean scrollbarDragging;
+    private int scrollbarGrabOffset;
+
     public AnalysisOverviewPanel(int x, int y, int width, int height) {
         super(x, y, width, height, Component.translatable("world_preview.analysis.metrics"));
     }
@@ -157,17 +166,74 @@ public final class AnalysisOverviewPanel extends AbstractWidget {
         Font font = Minecraft.getInstance().font;
         int x = getX() + PanelRenderer.PANEL_PAD;
         int w = width - PanelRenderer.PANEL_PAD * 2;
+        int topPad = getY() + PanelRenderer.PANEL_PAD;
         int bottom = getY() + height - PanelRenderer.PANEL_PAD;
-        int y = getY() + PanelRenderer.PANEL_PAD;
-        // Content clipping: sections past the panel bottom are cut off.
+        scrollOffset = clampScroll();
+        int y = topPad - scrollOffset;
+        // Sections render in scrolled coordinates; the scissor clips anything
+        // outside the panel. Every section runs each frame (they are a handful
+        // of strings each) so contentHeight stays current even while the tail
+        // is scrolled out of view.
         graphics.enableScissor(getX(), getY(), getX() + width, getY() + height);
         for (Section section : sections) {
-            if (y >= bottom) {
-                break;
-            }
             y = section.render(graphics, font, x, y, Math.max(0, w), bottom);
         }
         graphics.disableScissor();
+        contentHeight = y + scrollOffset - topPad;
+        drawScrollbar(graphics);
+    }
+
+    // ===== Scrolling helpers =====
+
+    private int scrollMax() {
+        return Math.max(0, contentHeight - Math.max(0, height - PanelRenderer.PANEL_PAD * 2));
+    }
+
+    private int clampScroll() {
+        return Math.min(scrollMax(), Math.max(0, scrollOffset));
+    }
+
+    /** Thumb rect {x0, y0, x1, y1} in panel space, or null when there is nothing to scroll. */
+    @Nullable
+    private int[] scrollbarThumbRect() {
+        int scrollMax = scrollMax();
+        if (scrollMax <= 0) {
+            return null;
+        }
+        int trackTop = getY() + 3;
+        int trackHeight = height - 6;
+        int visible = Math.max(0, height - PanelRenderer.PANEL_PAD * 2);
+        int thumbHeight = Math.max(10, (int) ((long) trackHeight * visible / contentHeight));
+        int thumbY = trackTop + (int) ((long) (trackHeight - thumbHeight) * scrollOffset / scrollMax);
+        return new int[]{getX() + width - 1 - SCROLLBAR_WIDTH, thumbY, getX() + width - 1, thumbY + thumbHeight};
+    }
+
+    private void drawScrollbar(GuiGraphics graphics) {
+        int[] thumb = scrollbarThumbRect();
+        if (thumb == null) {
+            return;
+        }
+        int trackTop = getY() + 3;
+        graphics.fill(thumb[0], trackTop, thumb[2], getY() + height - 3, 0x33FFFFFF);
+        graphics.fill(thumb[0], thumb[1], thumb[2], thumb[3], scrollbarDragging ? 0xB4FFFFFF : 0x8CFFFFFF);
+    }
+
+    private void scrollFromScrollbar(double mouseY) {
+        int[] thumb = scrollbarThumbRect();
+        if (thumb == null) {
+            return;
+        }
+        int trackTop = getY() + 3;
+        int travel = (getY() + height - 3) - trackTop - (thumb[3] - thumb[1]);
+        if (travel <= 0) {
+            return;
+        }
+        int raw = Math.min(travel, Math.max(0, (int) mouseY - scrollbarGrabOffset - trackTop));
+        scrollOffset = raw * scrollMax() / travel;
+    }
+
+    private int clampScroll(int value) {
+        return Math.min(scrollMax(), Math.max(0, value));
     }
 
     // ===== Sections =====
@@ -348,8 +414,47 @@ public final class AnalysisOverviewPanel extends AbstractWidget {
 
     @Override
     public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
-        // Display-only: never consume clicks that should reach buttons underneath/nearby.
+        // Grab the scrollbar thumb when clicked; everything else stays
+        // display-only so clicks reach buttons underneath/nearby.
+        int[] thumb = scrollbarThumbRect();
+        if (visible && thumb != null
+                && event.x() >= thumb[0] - 2 && event.x() <= getX() + width
+                && event.y() >= thumb[1] - 2 && event.y() <= thumb[3] + 2) {
+            scrollbarDragging = true;
+            scrollbarGrabOffset = (int) event.y() - thumb[1];
+            return true;
+        }
         return false;
+    }
+
+    @Override
+    public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+        boolean handled = scrollbarDragging;
+        scrollbarDragging = false;
+        scrollbarGrabOffset = 0;
+        return handled;
+    }
+
+    @Override
+    public boolean mouseDragged(net.minecraft.client.input.MouseButtonEvent event, double dragX, double dragY) {
+        if (scrollbarDragging) {
+            scrollFromScrollbar(event.y());
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double deltaX, double deltaY) {
+        if (!visible || !isMouseOver(mouseX, mouseY) || scrollMax() <= 0) {
+            return false;
+        }
+        int steps = (int) deltaY;
+        if (steps == 0 && deltaY != 0.0) {
+            steps = deltaY > 0 ? 1 : -1;
+        }
+        scrollOffset = clampScroll(scrollOffset - steps * SCROLL_STEP);
+        return true;
     }
 
     @Override
