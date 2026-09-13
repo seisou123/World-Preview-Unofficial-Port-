@@ -60,8 +60,8 @@ public class WaypointOverlayRenderer implements PreviewDisplay.WaypointRenderer 
         return cachedWaypoints;
     }
 
-    /** Screen position (GUI px) of a block coordinate, or null when off the map. */
-    public @Nullable BlockPos screenPos(int blockX, int blockZ) {
+    /** Screen position (GUI px) of a block coordinate; may lie outside the widget bounds (never null). */
+    public BlockPos screenPos(int blockX, int blockZ) {
         return display.blockToScreen(blockX, blockZ);
     }
 
@@ -71,7 +71,6 @@ public class WaypointOverlayRenderer implements PreviewDisplay.WaypointRenderer 
         BlockPos center = display.center();
         for (Waypoint waypoint : currentWaypoints()) {
             BlockPos pos = screenPos(waypoint.x(), waypoint.z());
-            if (pos == null) continue;
             int sx = pos.getX();
             int sz = pos.getZ();
             if (sx < xMin || sx > xMax || sz < yMin || sz > yMax) continue;

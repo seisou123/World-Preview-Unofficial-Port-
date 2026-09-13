@@ -51,6 +51,7 @@ public class WorldPreviewComponents {
     public static final Component WAYPOINT_DEFAULT_NAME = Component.translatable("world_preview.waypoint.default_name");
     public static final Component ANALYSIS_TITLE = Component.translatable("world_preview.analysis.title");
     public static final Component ANALYSIS_OPEN = Component.translatable("world_preview.analysis.open");
+    public static final Component ANALYSIS_OPEN_TOOLTIP = Component.translatable("world_preview.analysis.open.tooltip");
     public static final Component ANALYSIS_START = Component.translatable("world_preview.analysis.start");
     public static final Component ANALYSIS_CANCEL = Component.translatable("world_preview.analysis.cancel");
     public static final Component ANALYSIS_EXPORT_REPORT = Component.translatable("world_preview.analysis.export");
@@ -59,6 +60,35 @@ public class WorldPreviewComponents {
     public static final Component ANALYSIS_SPAWN_SCORE = Component.translatable("world_preview.analysis.spawn_score");
     public static final Component ANALYSIS_SPAWN_SCORE_VALUE = Component.translatable("world_preview.analysis.spawn_score.value");
     public static final Component ANALYSIS_TOP_BIOMES = Component.translatable("world_preview.analysis.top_biomes");
+
+    // === Analysis screen redesign: toolbar actions & overview panel strings ===
+    public static final Component ANALYSIS_ACTION_PAUSE = Component.translatable("world_preview.analysis.action.pause");
+    public static final Component ANALYSIS_ACTION_RESUME = Component.translatable("world_preview.analysis.action.resume");
+    public static final Component ANALYSIS_ACTION_ALIGN = Component.translatable("world_preview.analysis.action.align");
+    public static final Component ANALYSIS_ACTION_PRESET = Component.translatable("world_preview.analysis.action.preset");
+    public static final Component ANALYSIS_ACTION_BOXSELECT = Component.translatable("world_preview.analysis.action.boxselect");
+    public static final Component ANALYSIS_ACTION_LOCATE = Component.translatable("world_preview.analysis.action.locate");
+    public static final Component ANALYSIS_REGION_INVALID = Component.translatable("world_preview.analysis.region.invalid");
+    public static final Component ANALYSIS_REGION_CLAMPED = Component.translatable("world_preview.analysis.region.clamped");
+    public static final Component ANALYSIS_RESTART_FAILED = Component.translatable("world_preview.analysis.restart_failed");
+    public static final Component ANALYSIS_WATER_SHARE = Component.translatable("world_preview.analysis.water_share");
+    public static final Component ANALYSIS_MEDIAN_HEIGHT = Component.translatable("world_preview.analysis.median_height");
+    public static final Component ANALYSIS_STDDEV = Component.translatable("world_preview.analysis.stddev");
+    public static final Component ANALYSIS_POINTS = Component.translatable("world_preview.analysis.points");
+    public static final Component ANALYSIS_SPAWN_PART_FLAT = Component.translatable("world_preview.analysis.spawn.part.flat");
+    public static final Component ANALYSIS_SPAWN_PART_SLOPE = Component.translatable("world_preview.analysis.spawn.part.slope");
+    public static final Component ANALYSIS_SPAWN_PART_WATER = Component.translatable("world_preview.analysis.spawn.part.water");
+    public static final Component ANALYSIS_SPAWN_PART_STRUCTURE = Component.translatable("world_preview.analysis.spawn.part.structure");
+    public static final Component ANALYSIS_NEAREST_STRUCTURES = Component.translatable("world_preview.analysis.nearest_structures");
+    public static final Component ANALYSIS_NEAREST_STRUCTURES_NONE = Component.translatable("world_preview.analysis.nearest_structures.none");
+    public static final Component ANALYSIS_STRUCT_DISTANCE = Component.translatable("world_preview.analysis.struct_distance");
+    public static final Component ANALYSIS_ERROR = Component.translatable("world_preview.analysis.error");
+    /** Gray toolbar summary of the analysis plane: Y layer + sample step. */
+    public static final Component ANALYSIS_Y_STEP = Component.translatable("world_preview.analysis.y_step");
+    // Profile direction presets (cycled by the analysis screen's direction button).
+    public static final Component ANALYSIS_DIR_DIAGONAL = Component.translatable("world_preview.analysis.dir.diagonal");
+    public static final Component ANALYSIS_DIR_EASTWEST = Component.translatable("world_preview.analysis.dir.eastwest");
+    public static final Component ANALYSIS_DIR_NORTHSOUTH = Component.translatable("world_preview.analysis.dir.northsouth");
 
     // === Seed comparison screen (v1.5) ===
     public static final Component COMPARISON_TITLE = Component.translatable("world_preview.comparison.title");

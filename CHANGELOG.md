@@ -1,3 +1,17 @@
+## Unreleased
+
+### Fixes
+
+- Fixed the analysis screen layout on small windows: the profile chart no longer overlaps the footer buttons, the chart tabs no longer overlap the profile-direction button, and the overview panel now extends to the bottom of the screen instead of leaving dead space above the footer
+- Fixed a phantom selection band rendering at the right edge of the region coordinate fields
+
+### Improvements
+
+- Noise render modes (temperature, humidity, continentalness, ...) now draw smooth perceptual color gradients instead of coarse posterized color bands; the temperature, humidity, continentalness and erosion ramps are anchored to the vanilla biome climate bands, so colors line up with real biome boundaries
+- The "Analysis" button now uses the same sidebar rail style as the Biomes/Structures/Seeds buttons and sits directly below the Seeds button in the sidebar, instead of the old plain button style floating over the map
+- The world analysis screen has been rebuilt in the panelized style of the seed search screen: region coordinates now really define the analyzed area (with shrink/invalid feedback), a stats panel with progress bar and spawn-score breakdown, a biome-colored terrain cross-section with sea-level line, a height histogram and biome/terrain share tabs, map box-selection for the region, structure distances, and richer CSV/JSON reports
+- Fixed the spawn score ignoring nearby structures, mis-scaled slope scoring and distorted water share when the preview layer was underground
+
 ## 1.5.2
 
 ### Improvements
@@ -69,4 +83,4 @@
 
 ### UI
 
-- Preview page: unified Biomes / Structures / Seeds rail buttons (gray-to-black translucent theme); selected tab no longer darkens its background — marked only by outline and full-white text, all three identical at rest
+- Preview page: unified Biomes / Structures / Seeds rail buttons (gray-to-black translucent theme); selected tab no longer darkens its background — marked only by outline and full-white text, all three identical at rest
