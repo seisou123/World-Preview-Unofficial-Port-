@@ -6,6 +6,7 @@ import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.WorldPreviewConfig;
 import caeruleusTait.world.preview.backend.WorkManager;
+import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider;
@@ -195,8 +196,43 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
 
     public void setMeasureMode(boolean enabled) { interaction.setMeasureMode(enabled); }
 
-    /** Maps a block coordinate to widget-relative screen coords (GUI px), or null when off the map. */
-    @Nullable
+    // === Region select (analysis screen) ===
+
+    /** One-shot box-select mode owned by the interaction controller. */
+    public boolean isRegionSelectMode() { return interaction.isRegionSelectMode(); }
+
+    public void setRegionSelectMode(boolean enabled) { interaction.setRegionSelectMode(enabled); }
+
+    public void setRegionSelectCallback(@Nullable java.util.function.Consumer<Region> callback) {
+        interaction.setRegionSelectCallback(callback);
+    }
+
+    /**
+     * Analysis region rectangle drawn as a green outline while the analysis
+     * screen is open; cleared by the screen on close (shared widget instance).
+     */
+    @Nullable private Region analysisRegionOverlay = null;
+
+    public void setAnalysisRegionOverlay(@Nullable Region region) {
+        this.analysisRegionOverlay = region;
+    }
+
+    /**
+     * Centers the map on the given position and re-queues sampling for the
+     * new viewport (the same recipe as the pan finalize / locateStructure).
+     */
+    public void locateTo(BlockPos center) {
+        renderSettings().setCenter(center);
+        invalidateRenderCache();
+        resetQueuedRange();
+        queueGeneration();
+    }
+
+    /**
+     * Maps a block coordinate to widget-relative screen coords (GUI px).
+     * Never returns null: blocks outside the map simply project outside the
+     * widget bounds and are clipped by the caller's scissor.
+     */
     BlockPos blockToScreen(int blockX, int blockZ) {
         final BlockPos center = center();
         final int guiScale = (int) minecraft.getWindow().getGuiScale();
@@ -559,6 +595,7 @@ resizeImage();
             waypointRenderer.render(guiGraphics, getX(), getY(), getX() + width, getY() + height);
         }
         renderMeasureOverlay(guiGraphics);
+        renderRegionOverlay(guiGraphics);
     }
 
     private void renderMeasureOverlay(GuiGraphics guiGraphics) {
@@ -566,10 +603,9 @@ resizeImage();
         if (a == null) {
             return;
         }
+        // blockToScreen never returns null (off-map blocks just project
+        // outside the widget bounds; the scissor clips them).
         BlockPos sa = blockToScreen(a.getX(), a.getZ());
-        if (sa == null) {
-            return;
-        }
         drawMeasureMarker(guiGraphics, sa, 0xFF29B6F6);
 
         BlockPos b = interaction.measurePointB();
@@ -577,9 +613,6 @@ resizeImage();
             return;
         }
         BlockPos sb = blockToScreen(b.getX(), b.getZ());
-        if (sb == null) {
-            return;
-        }
 
         // Line between the two markers (Bresenham via 1px fills)
         int dx = sb.getX() - sa.getX();
@@ -608,6 +641,63 @@ resizeImage();
                 screenPos.getX() + 3, screenPos.getZ() + 3, 0xFF000000);
         guiGraphics.fill(screenPos.getX() - 1, screenPos.getZ() - 1,
                 screenPos.getX() + 2, screenPos.getZ() + 2, color);
+    }
+
+    private static final Component REGION_SELECT_HINT = Component.translatable(
+            "world_preview.analysis.boxselect.hint");
+
+    /**
+     * Draws the analysis-screen region overlays: the persisted analysis region
+     * (green outline) and, while box-select mode is active, the live drag
+     * rectangle (white outline + translucent fill) plus the mode hint bar.
+     * Block→screen conversion uses {@link #blockToScreen(int, int)}, the same
+     * math the measure overlay uses; the scissor clips off-map parts.
+     */
+    private void renderRegionOverlay(GuiGraphics guiGraphics) {
+        if (analysisRegionOverlay != null) {
+            drawBlockRect(guiGraphics, analysisRegionOverlay.minX(), analysisRegionOverlay.minZ(),
+                    analysisRegionOverlay.maxX(), analysisRegionOverlay.maxZ(), 0xFF55FF55, 0);
+        }
+        if (interaction.isRegionSelectMode()) {
+            BlockPos a = interaction.regionDragStart();
+            BlockPos b = interaction.regionDragEnd();
+            if (a != null && b != null) {
+                drawBlockRect(guiGraphics,
+                        Math.min(a.getX(), b.getX()), Math.min(a.getZ(), b.getZ()),
+                        Math.max(a.getX(), b.getX()), Math.max(a.getZ(), b.getZ()),
+                        0xFFFFFFFF, 0x33FFFFFF);
+            }
+            drawRegionSelectHint(guiGraphics);
+        }
+    }
+
+    /** Outlines the block-space rectangle {@code (minX,minZ)..(maxX,maxZ)} with a 1px border plus optional inner fill. */
+    private void drawBlockRect(GuiGraphics guiGraphics, int minX, int minZ, int maxX, int maxZ, int border, int fill) {
+        BlockPos tl = blockToScreen(minX, minZ);
+        BlockPos br = blockToScreen(maxX, maxZ);
+        int sx1 = tl.getX();
+        int sz1 = tl.getZ();
+        int sx2 = br.getX();
+        int sz2 = br.getZ();
+        if (fill != 0) {
+            guiGraphics.fill(sx1, sz1, sx2 + 1, sz2 + 1, fill);
+        }
+        guiGraphics.fill(sx1, sz1, sx2 + 1, sz1 + 1, border); // top
+        guiGraphics.fill(sx1, sz2, sx2 + 1, sz2 + 1, border); // bottom
+        guiGraphics.fill(sx1, sz1, sx1 + 1, sz2 + 1, border); // left
+        guiGraphics.fill(sx2, sz1, sx2 + 1, sz2 + 1, border); // right
+    }
+
+    /** Persistent hint bar at the top of the map while box-select mode is active (same style as the transient HUD). */
+    private void drawRegionSelectHint(GuiGraphics guiGraphics) {
+        final int xMin = getX();
+        final int xMax = getX() + width;
+        final int yMin = getY();
+        int textW = minecraft.font.width(REGION_SELECT_HINT);
+        int hx = xMin + Math.max(0, (xMax - xMin - textW) / 2);
+        int hy = yMin + 6;
+        guiGraphics.fill(hx - 4, hy - 2, hx + textW + 4, hy + minecraft.font.lineHeight + 2, 0xAA000000);
+        guiGraphics.drawString(minecraft.font, REGION_SELECT_HINT, hx, hy, 0xFFFFFFFF);
     }
 
     /**

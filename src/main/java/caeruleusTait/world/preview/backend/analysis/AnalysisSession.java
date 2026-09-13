@@ -71,17 +71,18 @@ public final class AnalysisSession extends Session {
 
     public AnalysisSession(AnalysisRequest request, TaskScheduler scheduler,
                            PreviewStorage storage, Sampler sampler) {
-        this(request, scheduler, storage, sampler, null, false);
+        this(request, scheduler, storage, sampler, null, false, null);
     }
 
     public AnalysisSession(AnalysisRequest request, TaskScheduler scheduler,
                            PreviewStorage storage, Sampler sampler, AutoCloseable ownedResource) {
-        this(request, scheduler, storage, sampler, ownedResource, ownedResource != null);
+        this(request, scheduler, storage, sampler, ownedResource, ownedResource != null, null);
     }
 
     private AnalysisSession(AnalysisRequest request, TaskScheduler scheduler,
                             PreviewStorage storage, Sampler sampler,
-                            AutoCloseable ownedResource, boolean ownsResource) {
+                            AutoCloseable ownedResource, boolean ownsResource,
+                            @org.jetbrains.annotations.Nullable Integer seaLevel) {
         super(UUID.randomUUID().toString(), "analysis", null);
         this.request = Objects.requireNonNull(request, "request");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -91,6 +92,7 @@ public final class AnalysisSession extends Session {
         this.ownsResource = ownsResource && ownedResource != null;
         this.totalUnits = count(request);
         this.metrics = new MetricAggregator(totalUnits * rowWidth(request), request.sampleStep());
+        this.metrics.setSeaLevel(seaLevel);
         this.profileAnalyzer = new ProfileAnalyzer((x, z, y) -> {
             short biome = storage.getRawData4(
                     net.minecraft.core.QuartPos.fromBlock(x),
@@ -128,7 +130,24 @@ public final class AnalysisSession extends Session {
                            PreviewData previewData, boolean ownsContext,
                            @org.jetbrains.annotations.Nullable PreviewStorage facts) throws java.io.IOException {
         this(request, scheduler, storage, createContextSampler(request, context,
-                Objects.requireNonNull(previewData, "previewData"), facts), ownsContext ? context : null, ownsContext);
+                Objects.requireNonNull(previewData, "previewData"), facts), ownsContext ? context : null, ownsContext,
+                deriveSeaLevel(context));
+    }
+
+    /**
+     * Derives the sea level used for water-share accounting from a worldgen
+     * context. Returns {@code null} when it cannot be determined (non-noise
+     * generators, degenerate dimensions, adapter failures) so the aggregator
+     * simply disables water counting instead of failing the session.
+     */
+    public static @org.jetbrains.annotations.Nullable Integer deriveSeaLevel(WorldgenContext context) {
+        try {
+            int sea = context.chunkGenerator().getSeaLevel();
+            int minY = context.dimensionType().minY();
+            return sea > minY + 1 ? sea : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static Sampler createContextSampler(AnalysisRequest request, WorldgenContext context,
@@ -286,14 +305,16 @@ public final class AnalysisSession extends Session {
     @Override
     public void pause() {
         TaskScheduler.TaskHandle handle = task.get();
-        if (handle != null) scheduler.pause(handle);
+        if (handle == null) return; // 未 start：没有可暂停的任务，保持 QUEUED
+        scheduler.pause(handle);
         setStateDirect(SessionState.PAUSED);
     }
 
     @Override
     public void resume() {
         TaskScheduler.TaskHandle handle = task.get();
-        if (handle != null) scheduler.resume(handle);
+        if (handle == null) return;
+        scheduler.resume(handle);
         setStateDirect(SessionState.RUNNING);
     }
 

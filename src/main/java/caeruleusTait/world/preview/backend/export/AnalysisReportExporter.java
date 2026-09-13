@@ -45,7 +45,14 @@ public final class AnalysisReportExporter {
             OptionalDouble meanSlope,
             OptionalDouble maxSlope,
             double flatRatio,
-            @Nullable String contextId) {
+            @Nullable String contextId,
+            double waterShare,
+            double shannonDiversity,
+            double effectiveBiomeCount,
+            LinkedHashMap<String, Long> terrainTable,
+            LinkedHashMap<String, Long> nearestStructures,
+            int[] heightHistogram,
+            int histogramMinY) {
 
         /** Legacy constructor without lineage info. */
         public ReportInput(
@@ -58,6 +65,22 @@ public final class AnalysisReportExporter {
             this(seed, dimension, regionDescription, expectedSamples, presentSamples, coverage,
                     biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
                     meanSlope, maxSlope, flatRatio, null);
+        }
+
+        /** Legacy constructor without the extended metrics; they default to 0 / empty. */
+        public ReportInput(
+                String seed, String dimension, String regionDescription,
+                long expectedSamples, long presentSamples, double coverage,
+                LinkedHashMap<String, long[]> biomeTable,
+                OptionalInt minHeight, OptionalInt maxHeight,
+                OptionalDouble meanHeight, OptionalDouble medianHeight, OptionalDouble standardDeviation,
+                OptionalDouble meanSlope, OptionalDouble maxSlope, double flatRatio,
+                String contextId) {
+            this(seed, dimension, regionDescription, expectedSamples, presentSamples, coverage,
+                    biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
+                    meanSlope, maxSlope, flatRatio, contextId,
+                    0.0, 0.0, 0.0,
+                    new LinkedHashMap<>(), new LinkedHashMap<>(), new int[0], 0);
         }
 
         public ReportInput {
@@ -73,6 +96,31 @@ public final class AnalysisReportExporter {
             meanSlope = meanSlope == null ? OptionalDouble.empty() : meanSlope;
             maxSlope = maxSlope == null ? OptionalDouble.empty() : maxSlope;
             contextId = contextId == null ? "unknown" : contextId;
+            // Non-finite doubles would corrupt the JSON (Gson writes NaN/Infinity
+            // literals); normalize them to 0.0 like the absent-stat defaults.
+            waterShare = finiteOrZero(waterShare);
+            shannonDiversity = finiteOrZero(shannonDiversity);
+            effectiveBiomeCount = finiteOrZero(effectiveBiomeCount);
+            terrainTable = copyStringLongTable(terrainTable);
+            nearestStructures = copyStringLongTable(nearestStructures);
+            heightHistogram = heightHistogram == null ? new int[0] : heightHistogram.clone();
+        }
+
+        private static double finiteOrZero(double value) {
+            return Double.isFinite(value) ? value : 0.0;
+        }
+
+        private static LinkedHashMap<String, Long> copyStringLongTable(LinkedHashMap<String, Long> source) {
+            LinkedHashMap<String, Long> copy = new LinkedHashMap<>();
+            if (source != null) {
+                for (Map.Entry<String, Long> e : source.entrySet()) {
+                    if (e.getKey() == null) {
+                        continue;
+                    }
+                    copy.put(e.getKey(), e.getValue() == null ? 0L : e.getValue());
+                }
+            }
+            return copy;
         }
 
         private static LinkedHashMap<String, long[]> copyBiomeTable(LinkedHashMap<String, long[]> source) {
@@ -111,6 +159,13 @@ public final class AnalysisReportExporter {
                     .append(row.count()).append(',')
                     .append(String.format(Locale.ROOT, "%.2f", row.sharePercent())).append('\n');
         }
+        // Summary metrics section appended after the biome table; the first
+        // table's header and row format stay unchanged (blank line separates them).
+        sb.append('\n');
+        sb.append("metric,value\n");
+        sb.append("water_share,").append(fmt(input.waterShare())).append('\n');
+        sb.append("shannon_diversity,").append(fmt(input.shannonDiversity())).append('\n');
+        sb.append("effective_biome_count,").append(fmt(input.effectiveBiomeCount())).append('\n');
         return sb.toString();
     }
 
@@ -144,6 +199,42 @@ public final class AnalysisReportExporter {
 
         root.addProperty("flatRatio", input.flatRatio());
 
+        // Extended metrics: water coverage, diversity insights, terrain mix,
+        // nearest structure distances and the height histogram.
+        root.addProperty("waterShare", input.waterShare());
+
+        JsonObject insights = new JsonObject();
+        insights.addProperty("shannonDiversity", input.shannonDiversity());
+        insights.addProperty("effectiveBiomeCount", input.effectiveBiomeCount());
+        root.add("insights", insights);
+
+        JsonArray terrain = new JsonArray();
+        for (Map.Entry<String, Long> e : input.terrainTable().entrySet()) {
+            JsonObject t = new JsonObject();
+            t.addProperty("category", e.getKey());
+            t.addProperty("count", e.getValue());
+            terrain.add(t);
+        }
+        root.add("terrain", terrain);
+
+        JsonArray structures = new JsonArray();
+        for (Map.Entry<String, Long> e : input.nearestStructures().entrySet()) {
+            JsonObject s = new JsonObject();
+            s.addProperty("structure", e.getKey());
+            s.addProperty("distanceBlocks", e.getValue());
+            structures.add(s);
+        }
+        root.add("nearestStructures", structures);
+
+        JsonObject hist = new JsonObject();
+        hist.addProperty("minY", input.histogramMinY());
+        JsonArray counts = new JsonArray();
+        for (int v : input.heightHistogram()) {
+            counts.add(v);
+        }
+        hist.add("counts", counts);
+        root.add("heightHistogram", hist);
+
         JsonArray biomes = new JsonArray();
         for (BiomeRow row : input.sortedRows()) {
             JsonObject biome = new JsonObject();
@@ -173,6 +264,11 @@ public final class AnalysisReportExporter {
             return 0.0;
         }
         return count * 100.0 / presentSamples;
+    }
+
+    /** Fixed 4-decimal formatting for the CSV summary metric rows. */
+    private static String fmt(double value) {
+        return String.format(Locale.ROOT, "%.4f", value);
     }
 
     private static Integer boxed(OptionalInt value) {
