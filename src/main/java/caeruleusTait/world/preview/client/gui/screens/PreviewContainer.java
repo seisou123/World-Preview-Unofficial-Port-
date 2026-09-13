@@ -2415,7 +2415,11 @@ public void onScreenReentry() {
             activeAnalysisSession = session;
             activeAnalysisSessionEpoch = workManager.epoch();
             minecraft.setScreen(new WorldAnalysisScreen(parentScreen, session, this, request.region()));
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
+            // Never swallow silently: a throw here means the analysis screen
+            // (or its session) failed to build while the button already lost
+            // its press, which is undebuggable without the stack trace.
+            LOGGER.error("Failed to open the analysis screen", error);
             openAnalysis.active = false;
         }
     }

@@ -31,12 +31,14 @@ public final class RegionSelector extends AbstractWidget {
         for (int i = 0; i < 4; i++) {
             EditBox field = new EditBox(font, 0, 0, 70, 20, Component.translatable("world_preview.analysis.coordinate"));
             field.setValue(values[i]);
-            field.setResponder(ignored -> updateRegion());
-            // Park the caret at index 0 with a collapsed highlight: an end-of-text
-            // caret on a filled field can leave a phantom selection band rendering
-            // at the field's right edge (vanilla draws the text highlight even when
-            // the box is unfocused).
+            // Park the caret at index 0 with a collapsed highlight (an
+            // end-of-text caret on a filled field can leave a phantom selection
+            // band rendering at the field's right edge). MUST run before
+            // setResponder: moveCursorToStart fires onValueChange, which with a
+            // live responder would re-enter updateRegion() while the field list
+            // is still half-built.
             field.moveCursorToStart(false);
+            field.setResponder(ignored -> updateRegion());
             fields.add(field);
         }
     }
