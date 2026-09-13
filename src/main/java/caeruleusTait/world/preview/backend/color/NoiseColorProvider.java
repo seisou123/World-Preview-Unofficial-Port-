@@ -134,13 +134,21 @@ public final class NoiseColorProvider {
                 0.7f
         ));
 
-        // Erosion: low (stable teal) -> medium (lavender) -> high (pink)
+        // Erosion: rugged (rock slate) -> rolling (sage) -> flat (pale cream).
+        // Semantic: low erosion = jagged mountainous terrain, high erosion =
+        // flat lowlands. Vanilla erosion band edges (pos = (value + 1) / 2):
+        // -1.0 / -0.78 / -0.375 / -0.2225 / 0.05 / 0.2625 / 0.45 / 1.0 ->
+        // pos 0 / 0.11 / 0.31 / 0.39 / 0.53 / 0.63 / 0.73 / 1.0.
         result.put(RenderMode.NOISE_EROSION, bake(
                 gradient("erosion",
-                        new float[]{0.20f, 0.58f, 0.58f},
-                        new float[]{0.40f, 0.45f, 0.60f},
-                        new float[]{0.70f, 0.50f, 0.65f},
-                        new float[]{0.90f, 0.65f, 0.72f}
+                        new float[]{0.28f, 0.26f, 0.36f},
+                        new float[]{0.38f, 0.34f, 0.44f},
+                        new float[]{0.50f, 0.46f, 0.46f},
+                        new float[]{0.52f, 0.54f, 0.44f},
+                        new float[]{0.55f, 0.60f, 0.42f},
+                        new float[]{0.62f, 0.66f, 0.46f},
+                        new float[]{0.72f, 0.72f, 0.50f},
+                        new float[]{0.82f, 0.80f, 0.62f}
                 ),
                 0.7f
         ));
