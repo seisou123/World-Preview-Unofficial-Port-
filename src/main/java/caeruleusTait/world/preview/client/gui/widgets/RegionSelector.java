@@ -32,6 +32,11 @@ public final class RegionSelector extends AbstractWidget {
             EditBox field = new EditBox(font, 0, 0, 70, 20, Component.translatable("world_preview.analysis.coordinate"));
             field.setValue(values[i]);
             field.setResponder(ignored -> updateRegion());
+            // Park the caret at index 0 with a collapsed highlight: an end-of-text
+            // caret on a filled field can leave a phantom selection band rendering
+            // at the field's right edge (vanilla draws the text highlight even when
+            // the box is unfocused).
+            field.moveCursorToStart(false);
             fields.add(field);
         }
     }
@@ -74,12 +79,31 @@ public final class RegionSelector extends AbstractWidget {
         lastValidRegion = region;
         String[] values = {String.valueOf(region.minX()), String.valueOf(region.minZ()),
                 String.valueOf(region.maxX()), String.valueOf(region.maxZ())};
-        for (int i = 0; i < fields.size(); i++) fields.get(i).setValue(values[i]);
+        for (int i = 0; i < fields.size(); i++) {
+            fields.get(i).setValue(values[i]);
+            fields.get(i).moveCursorToStart(false);
+        }
     }
 
-    /** True while the fields do not parse into a usable region (bad input or out of bounds). */
+    /**
+     * True while the fields do not parse into a usable region (bad input or out of bounds).
+     */
     public boolean hasError() {
         return currentRegion().isEmpty();
+    }
+
+    /**
+     * Drops stale text selections on unfocused fields. Vanilla renders the
+     * selection highlight regardless of focus, so a selection left behind by
+     * double-click / shift-click would keep drawing a phantom band after the
+     * field loses focus; a focused field keeps its (visible) selection.
+     */
+    public void clearStaleSelections() {
+        for (EditBox field : fields) {
+            if (!field.isFocused() && !field.getHighlighted().isEmpty()) {
+                field.setHighlightPos(field.getCursorPosition());
+            }
+        }
     }
 
     private void updateRegion() {

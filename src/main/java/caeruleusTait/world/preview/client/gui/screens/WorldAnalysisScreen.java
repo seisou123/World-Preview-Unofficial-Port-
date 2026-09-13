@@ -873,33 +873,45 @@ public final class WorldAnalysisScreen extends Screen {
         place(boxSelectButton, left + 222, row2Y, 90, 20);
         place(locateButton, left + 316, row2Y, 90, 20);
 
+        // The left column has no footer buttons, so its panel extends down to
+        // the same 8px bottom margin as the screen instead of stopping at the
+        // right column's footer band (which read as dead whitespace) — this
+        // also gives the overview panel more content height before it scrolls.
         overviewPanel.setX(left);
         overviewPanel.setY(panelsTop);
         overviewPanel.setWidth(leftW);
-        overviewPanel.setHeight(Math.max(60, panelBottom - panelsTop));
+        overviewPanel.setHeight(Math.max(60, height - 8 - panelsTop));
 
         // Vertical budget: map + 4px gap + 22px tab band + chart must fit
-        // between panelsTop and panelBottom, or the tabs land on the footer
-        // row on short windows (GUI scale 3). The 45% map share is capped at
-        // the space left after reserving the band and a 56px chart minimum.
+        // between panelsTop and panelBottom. The map's 70px comfort floor
+        // yields first on short windows (a hard floor used to push the chart
+        // past panelBottom into the footer row); the chart absorbs the rest
+        // and always ends exactly at panelBottom.
         int available = Math.max(0, panelBottom - panelsTop);
-        int mapH = Math.max(70, Math.min(available * 45 / 100, available - 26 - 56));
+        int mapCap = Math.max(24, available - 66);
+        int mapH = Math.min(Math.max(70, available * 45 / 100), mapCap);
         previewContainer.previewDisplay().setPosition(rightX, panelsTop);
         previewContainer.previewDisplay().setSize(rightW, mapH);
         // Chart tab row in the reserved band: three tab buttons LEFT of the
-        // direction preset button, which keeps the band's right end.
+        // direction preset button, which keeps the band's right end. The
+        // direction button yields width first (down to 50px) so the tabs can
+        // never overlap it on narrow right columns.
         int tabsY = panelsTop + mapH + 4;
-        int directionX = Math.max(rightX, rightX + rightW - 90);
-        place(directionButton, directionX, tabsY, 90, 20);
+        int directionW = Math.min(90, Math.max(50, rightW - 84));
+        int directionX = Math.max(rightX, rightX + rightW - directionW);
+        place(directionButton, directionX, tabsY, directionW, 20);
         int tabGap = 4;
-        // 42px floor keeps the widest label ("Heights" / 4 CJK chars) readable.
-        int tabW = Math.max(42, Math.min(64, (directionX - tabGap - rightX - 2 * tabGap) / 3));
+        // 24px floor: the widest label may overflow its button on very narrow
+        // columns, but the buttons themselves must never collide.
+        int tabW = Math.max(24, Math.min(64, (directionX - tabGap - rightX - 2 * tabGap) / 3));
         place(tabProfileButton, rightX, tabsY, tabW, 20);
         place(tabHeightButton, rightX + tabW + tabGap, tabsY, tabW, 20);
         place(tabBiomesButton, rightX + 2 * (tabW + tabGap), tabsY, tabW, 20);
         // The three chart widgets share one rectangle; visibility decides
-        // which one is drawn (applyTabVisibility).
-        int chartH = Math.max(40, panelBottom - tabsY - 22);
+        // which one is drawn (applyTabVisibility). No floor here: the map
+        // budget above already reserved the band, so the chart ends exactly
+        // at panelBottom even on short windows.
+        int chartH = Math.max(1, panelBottom - tabsY - 22);
         profileChart.setX(rightX);
         profileChart.setY(tabsY + 22);
         profileChart.setWidth(rightW);
@@ -927,6 +939,10 @@ public final class WorldAnalysisScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        // Vanilla draws the EditBox text highlight regardless of focus, so a
+        // selection left on a coordinate field (double-click, shift-click)
+        // would keep rendering a phantom band after the field loses focus.
+        regionSelector.clearStaleSelections();
         // Stale detection: the session keeps running after the screen closes;
         // when the worldgen context it was created under has been replaced,
         // cancel it and lock the controls instead of letting it write results

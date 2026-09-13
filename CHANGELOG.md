@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Fixes
+
+- Fixed the analysis screen layout on small windows: the profile chart no longer overlaps the footer buttons, the chart tabs no longer overlap the profile-direction button, and the overview panel now extends to the bottom of the screen instead of leaving dead space above the footer
+- Fixed a phantom selection band rendering at the right edge of the region coordinate fields
+
 ### Improvements
 
 - The "Analysis" button now uses the same sidebar rail style as the Biomes/Structures/Seeds buttons and sits directly below the Seeds button in the sidebar, instead of the old plain button style floating over the map
