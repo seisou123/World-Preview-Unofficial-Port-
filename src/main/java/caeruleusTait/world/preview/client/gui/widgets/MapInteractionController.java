@@ -1,5 +1,6 @@
 package caeruleusTait.world.preview.client.gui.widgets;
 
+import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.domain.waypoint.Waypoint;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -42,6 +43,13 @@ class MapInteractionController {
     private boolean measureMode = false;
     private BlockPos measureA = null;
     private BlockPos measureB = null;
+
+    // === Region select (analysis screen) ===
+    /** One-shot mode: left drag draws a rectangle that becomes the analysis region. */
+    private boolean regionSelectMode = false;
+    private BlockPos regionDragStart = null;
+    private BlockPos regionDragEnd = null;
+    private java.util.function.Consumer<Region> regionSelectCallback = null;
 
     MapInteractionController(PreviewDisplay host) {
         this.host = host;
@@ -109,6 +117,39 @@ class MapInteractionController {
         return measureB;
     }
 
+    // === Region select API ===
+
+    void setRegionSelectMode(boolean enabled) {
+        regionSelectMode = enabled;
+        regionDragStart = null;
+        regionDragEnd = null;
+        if (enabled) {
+            // Mode exclusivity: region select is the only one that clears the
+            // other one-shot modes (the existing modes do not clear each other).
+            setSpawnPinMode(false);
+            setWaypointMode(false);
+            setMeasureMode(false);
+        }
+    }
+
+    boolean isRegionSelectMode() {
+        return regionSelectMode;
+    }
+
+    @org.jetbrains.annotations.Nullable
+    BlockPos regionDragStart() {
+        return regionDragStart;
+    }
+
+    @org.jetbrains.annotations.Nullable
+    BlockPos regionDragEnd() {
+        return regionDragEnd;
+    }
+
+    void setRegionSelectCallback(@org.jetbrains.annotations.Nullable java.util.function.Consumer<Region> callback) {
+        regionSelectCallback = callback;
+    }
+
     // === State queries / mutation used by the widget ===
 
     boolean isClicked() {
@@ -151,6 +192,11 @@ class MapInteractionController {
     // === Event handlers ===
 
     boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        // Region select: right click cancels the mode.
+        if (regionSelectMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
+            setRegionSelectMode(false);
+            return true;
+        }
         if (spawnPinMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
             removeSpawnPin();
             host.playDownSound();
@@ -199,6 +245,17 @@ class MapInteractionController {
         // Fix: set focus so Screen dispatches onDrag to this widget
         if (host.minecraft().gui.screen() != null) {
             host.minecraft().gui.screen().setFocused(host);
+        }
+
+        // Region select: a left press starts a box drag. This MUST return
+        // before the pan path below (clicked stays false, so onDrag/onRelease
+        // take their region branches instead of panning / biome-selecting).
+        if (regionSelectMode && host.widgetIsMouseOver(event.x(), event.y())) {
+            if (event.button() == 0) {
+                regionDragStart = host.screenToBlock(event.x(), event.y());
+                regionDragEnd = regionDragStart;
+            }
+            return;
         }
 
         // Spawn pin placement
@@ -260,6 +317,13 @@ class MapInteractionController {
     }
 
     void onDrag(MouseButtonEvent event, double dragX, double dragY) {
+        if (regionSelectMode) {
+            // Box drag: track the moving corner; never accumulate pan offsets.
+            if (regionDragStart != null) {
+                regionDragEnd = host.screenToBlock(event.x(), event.y());
+            }
+            return;
+        }
         final double guiScale = host.minecraft().getWindow().getGuiScale();
         totalDragX -= (dragX * guiScale) * host.scaleBlockPos();
         totalDragZ -= (dragY * guiScale) * host.scaleBlockPos();
@@ -274,6 +338,29 @@ class MapInteractionController {
     }
 
     void onRelease(MouseButtonEvent event) {
+        // Region select finalize: commit the box to the callback (when the
+        // drag covered more than a single block) and clear the drag state.
+        // Runs before the !clicked guard because the region press path never
+        // sets clicked — and it must not fall into biome select / pan finalize.
+        if (regionSelectMode) {
+            if (regionDragStart != null && regionDragEnd != null && regionSelectCallback != null) {
+                BlockPos a = regionDragStart;
+                BlockPos b = regionDragEnd;
+                Region sel = Region.of(a.getX(), a.getZ(), b.getX(), b.getZ());
+                if (sel.blockArea() > 1) {
+                    regionSelectCallback.accept(sel);
+                }
+            }
+            regionDragStart = null;
+            regionDragEnd = null;
+            // A press that started outside the map (pan path) may have set
+            // clicked; drop its drag state so the pan path cannot resume.
+            clicked = false;
+            totalDragX = 0;
+            totalDragZ = 0;
+            return;
+        }
+
         // If we did not click into the canvas at the start, then we ignore this release
         if (!clicked) {
             return;

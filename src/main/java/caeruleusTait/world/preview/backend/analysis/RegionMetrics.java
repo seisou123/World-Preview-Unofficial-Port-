@@ -18,7 +18,20 @@ public record RegionMetrics(
         OptionalDouble meanSlope,
         OptionalDouble maxSlope,
         double flatRatio,
-        String unavailableReason) {
+        String unavailableReason,
+        double waterShare,
+        int[] heightHistogram,
+        int histogramMinY) {
+
+    /** Legacy constructor: waterShare=0, no histogram. */
+    public RegionMetrics(AnalysisDataState state, long expectedSamples, long presentSamples,
+            Map<Short, Long> biomeCounts, OptionalInt minHeight, OptionalInt maxHeight,
+            OptionalDouble meanHeight, OptionalDouble medianHeight, OptionalDouble standardDeviation,
+            OptionalDouble meanSlope, OptionalDouble maxSlope, double flatRatio, String unavailableReason) {
+        this(state, expectedSamples, presentSamples, biomeCounts, minHeight, maxHeight, meanHeight,
+                medianHeight, standardDeviation, meanSlope, maxSlope, flatRatio, unavailableReason,
+                0.0, new int[0], 0);
+    }
 
     public RegionMetrics {
         state = Objects.requireNonNull(state, "state");
@@ -37,6 +50,8 @@ public record RegionMetrics(
             throw new IllegalArgumentException("flatRatio must be between 0 and 1");
         }
         unavailableReason = unavailableReason == null ? "" : unavailableReason;
+        waterShare = Double.isFinite(waterShare) ? Math.max(0.0, Math.min(1.0, waterShare)) : 0.0;
+        heightHistogram = heightHistogram == null ? new int[0] : heightHistogram.clone();
     }
 
     public double coverage() {
