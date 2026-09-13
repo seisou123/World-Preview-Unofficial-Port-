@@ -246,9 +246,14 @@ public final class WorldAnalysisScreen extends Screen {
 
     private void setRegion(Region region) {
         this.region = region;
-        // No profile clear here: clearing while the user is still typing wiped
-        // the chart on every keystroke. The profile only rebuilds on
-        // startAnalysis / direction switch / the running-throttle re-poll.
+        // Live map feedback: glue the analysis-region rectangle to the pending
+        // region immediately (box-select, viewport align, size presets and
+        // manual coordinate edits), instead of only refreshing it when an
+        // analysis starts. The profile is deliberately NOT rebuilt here:
+        // clearing while the user is still typing wiped the chart on every
+        // keystroke; it only rebuilds on startAnalysis / direction switch /
+        // the running-throttle re-poll.
+        previewContainer.previewDisplay().setAnalysisRegionOverlay(region);
     }
 
     /** Aligns the analysis region to the preview viewport (same recipe as the container's open). */
