@@ -56,6 +56,12 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     private long transientHudNanos = 0;
     private static final long TRANSIENT_HUD_NANOS = 1_500_000_000L;
 
+    // Scale-bar zoom slider geometry (absolute screen coords), refreshed every
+    // frame in renderWidget and hit-tested by MapInteractionController.
+    private boolean zoomSliderVisible;
+    private int zoomSliderX0, zoomSliderY0, zoomSliderX1, zoomSliderY1;
+    private int zoomTrackX0, zoomTrackX1;
+
     private int texWidth = 100;
     private int texHeight = 100;
 
@@ -95,6 +101,21 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     boolean isHoveredFlag() { return isHovered; }
     boolean widgetIsMouseOver(double mouseX, double mouseY) { return isMouseOver(mouseX, mouseY); }
 
+    /** True when the scale-bar zoom slider was drawn this frame. */
+    boolean zoomSliderVisible() { return zoomSliderVisible; }
+    /** Hit-test a point against the zoom slider's padded bounds. */
+    boolean zoomSliderHit(double mouseX, double mouseY) {
+        return zoomSliderVisible
+                && mouseX >= zoomSliderX0 && mouseX <= zoomSliderX1
+                && mouseY >= zoomSliderY0 && mouseY <= zoomSliderY1;
+    }
+    /** Map a slider x position to the nearest ladder index (0 = most zoomed in). */
+    int zoomSliderIndexAt(double mouseX) {
+        final int count = RenderSettings.zoomLevelCount();
+        final double t = (mouseX - zoomTrackX0) / (double) Math.max(1, zoomTrackX1 - zoomTrackX0);
+        return Math.max(0, Math.min(count - 1, (int) Math.round(t * (count - 1))));
+    }
+
     /** Updates the block-per-pixel scale and re-wires the minimap after a zoom change. */
     void applyZoomToVisualizer() {
         scaleBlockPos = renderSettings.toScaleSpec().blockScale();
@@ -104,6 +125,19 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     void resetQueuedRange() {
         lastQueuedRange = null;
         lastQueueKey = null;
+    }
+
+    /**
+     * Applies a render-only zoom step (quartStride unchanged): re-derive the
+     * block scale, drop cached frames and re-queue sampling for the new field
+     * of view. The already stored quart data is reused by the storage;
+     * nothing is rebuilt.
+     */
+    public void applyIncrementalZoom() {
+        applyZoomToVisualizer();
+        invalidateRenderCache();
+        resetQueuedRange();
+        queueGeneration();
     }
 
     void showCopiedMessage(Component msg) {
@@ -523,6 +557,69 @@ resizeImage();
         guiGraphics.fill(xMax, yMin, xMax+1, yMax, colorBorder); // Down
         guiGraphics.fill(xMin-1, yMax, xMax+1, yMax+1, colorBorder); // Left
         guiGraphics.fill(xMin-1, yMin, xMin, yMax, colorBorder); // Up
+
+        // Permanent scale bar (bottom-left), now interactive: the bar reads the
+        // physical scale, the tick slider beside it is the zoom ladder - click
+        // or drag it to jump to a level (MapInteractionController routes the
+        // change through the same incremental/rebuild split as the wheel).
+        final int guiScale = Math.max(1, (int) minecraft.getWindow().getGuiScale());
+        final double blocksPerGuiPixel = scaleBlockPos / (double) guiScale;
+        zoomSliderVisible = false;
+        if (blocksPerGuiPixel > 0.0 && width >= 120) {
+            final int barPx = 48;
+            final double rawBlocks = barPx * blocksPerGuiPixel;
+            // Snap to a friendly block count (1/2/5 * 10^n), then re-derive
+            // the exact bar length so the label always matches the drawn line.
+            final double mag = Math.pow(10.0, Math.floor(Math.log10(rawBlocks)));
+            double nice = mag;
+            for (double m : new double[]{mag, 2 * mag, 5 * mag}) {
+                if (m <= rawBlocks * 1.15) {
+                    nice = m;
+                }
+            }
+            final int barW = Math.max(8, (int) Math.round(nice / blocksPerGuiPixel));
+            final int barX = xMin + 4;
+            final int barY = yMax - 8;
+            final Component label = Component.translatable("world_preview.preview-display.hud.scale_bar", (int) nice);
+            final int labelW = minecraft.font.width(label);
+
+            // Zoom slider: fixed track right of the bar readout, one tick per
+            // ladder level (16/8/4/2/1 px per chunk, left = most zoomed in).
+            final int tickCount = RenderSettings.zoomLevelCount();
+            final int sliderX0 = barX + Math.max(barW, labelW) + 10;
+            final int sliderX1 = sliderX0 + (tickCount - 1) * 10;
+            final int current = renderSettings.currentZoomLevel();
+
+            final double hmX = (minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth()) / minecraft.getWindow().getScreenWidth();
+            final double hmY = (minecraft.mouseHandler.ypos() * minecraft.getWindow().getGuiScaledHeight()) / minecraft.getWindow().getScreenHeight();
+            final boolean hover = zoomSliderHit(hmX, hmY);
+
+            // Padded hit region over the whole readout (bar + label + slider).
+            zoomSliderVisible = true;
+            zoomSliderX0 = barX - 2;
+            zoomSliderY0 = barY - 11;
+            zoomSliderX1 = sliderX1 + 6;
+            zoomSliderY1 = barY + 4;
+            zoomTrackX0 = sliderX0;
+            zoomTrackX1 = sliderX1;
+
+            guiGraphics.fill(zoomSliderX0, zoomSliderY0, zoomSliderX1, zoomSliderY1, hover ? 0xC0000000 : 0x88000000);
+            final int lineColor = hover ? 0xFFFFFFFF : 0xE0FFFFFF;
+            guiGraphics.fill(barX, barY, barX + barW, barY + 1, lineColor);
+            guiGraphics.fill(barX, barY - 3, barX + 1, barY + 2, lineColor);
+            guiGraphics.fill(barX + barW - 1, barY - 3, barX + barW, barY + 2, lineColor);
+            guiGraphics.text(minecraft.font, label, barX, barY - 10, 0xFFFFFFFF);
+
+            guiGraphics.fill(sliderX0, barY, sliderX1 + 1, barY + 1, 0x80FFFFFF);
+            for (int i = 0; i < tickCount; i++) {
+                final int tx = sliderX0 + i * 10;
+                if (i == current) {
+                    guiGraphics.fill(tx - 1, barY - 4, tx + 2, barY + 3, 0xFFFFFFFF);
+                } else {
+                    guiGraphics.fill(tx, barY - 2, tx + 1, barY + 2, 0x80FFFFFF);
+                }
+            }
+        }
 
         // Render copied message
         if (coordinatesCopiedMsg != null) {

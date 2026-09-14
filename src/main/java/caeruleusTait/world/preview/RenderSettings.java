@@ -161,43 +161,70 @@ public class RenderSettings {
                 quartExpand = 1;
                 quartStride = 4;
             }
-            case 32 -> {
-                quartExpand = 8;
-                quartStride = 1;
-            }
-            case 64 -> {
-                quartExpand = 16;
-                quartStride = 1;
-            }
             default -> throw new RuntimeException("Invalid blocksPerChunk=" + blocksPerChunk);
         }
     }
 
-    // Zoom levels from most zoomed-in (64px/chunk) to most zoomed-out (4px/chunk)
-    // Only levels with quartStride=1 are included because changing quartStride
-    // requires recreating the sampler and storage sections (a world-change operation).
-    private static final int[] ZOOM_LEVELS = {64, 32, 16, 8, 4};
+    // The zoom ladder from most zoomed-in (16px/chunk = one pixel per block)
+    // to most zoomed-out (1px/chunk). Levels 16..4 keep quartStride=1 and are
+    // pure render zoom (already-sampled quarts just paint bigger), so they
+    // apply incrementally. Levels 2 and 1 widen the field beyond one pixel
+    // per block by skipping quarts (quartStride 2/4), which requires
+    // recreating the sampler and storage sections - a rebuild, see
+    // samplerStrideFor().
+    private static final int[] ZOOM_LEVELS = {16, 8, 4, 2, 1};
+    /** Index of the default level (4 px/chunk) within {@link #ZOOM_LEVELS}. */
+    private static final int DEFAULT_ZOOM_INDEX = 2;
+
+    /**
+     * Sampling stride a zoom level implies: &gt;1 means the level skips quarts
+     * and changing to/from it requires the full resampling rebuild; 1 means
+     * the level is render-only and applies incrementally.
+     */
+    public static int samplerStrideFor(int pixelsPerChunk) {
+        return switch (pixelsPerChunk) {
+            case 2 -> 2;
+            case 1 -> 4;
+            default -> 1;
+        };
+    }
 
     public int currentZoomLevel() {
         int ppc = pixelsPerChunk();
         for (int i = 0; i < ZOOM_LEVELS.length; i++) {
             if (ZOOM_LEVELS[i] == ppc) return i;
         }
-        return 4; // default to 4px/chunk
+        return DEFAULT_ZOOM_INDEX;
     }
 
-    public void zoomIn() {
-        int level = currentZoomLevel();
-        if (level > 0) {
-            setPixelsPerChunk(ZOOM_LEVELS[level - 1]);
-        }
+    /** Number of discrete levels in the zoom ladder (the scale-bar slider's tick count). */
+    public static int zoomLevelCount() {
+        return ZOOM_LEVELS.length;
     }
 
-    public void zoomOut() {
+    /** Pixels-per-chunk value of ladder position {@code index} (0 = most zoomed in). */
+    public static int zoomLevelAt(int index) {
+        return ZOOM_LEVELS[index];
+    }
+
+    /** @return true when the level changed, false when already at the zoom-in end */
+    public boolean zoomIn() {
         int level = currentZoomLevel();
-        if (level < ZOOM_LEVELS.length - 1) {
-            setPixelsPerChunk(ZOOM_LEVELS[level + 1]);
+        if (level <= 0) {
+            return false;
         }
+        setPixelsPerChunk(ZOOM_LEVELS[level - 1]);
+        return true;
+    }
+
+    /** @return true when the level changed, false when already at the zoom-out end */
+    public boolean zoomOut() {
+        int level = currentZoomLevel();
+        if (level >= ZOOM_LEVELS.length - 1) {
+            return false;
+        }
+        setPixelsPerChunk(ZOOM_LEVELS[level + 1]);
+        return true;
     }
 
     public enum RenderMode {
