@@ -44,7 +44,7 @@ public class ResolutionSettingsPage extends AbstractSettingsPage {
                 SETTINGS_SAMPLE_PIXELS_TITLE_2, mc.font));
         y += 14;
 
-        Integer[] pixelOptions = {1, 2, 4, 8, 16};
+        Integer[] pixelOptions = {16, 8, 4, 2, 1};
         int current = rs.pixelsPerChunk();
         Integer selected = java.util.Arrays.stream(pixelOptions)
                 .anyMatch(v -> v == current) ? current : 4;
@@ -58,9 +58,15 @@ public class ResolutionSettingsPage extends AbstractSettingsPage {
                  (btn, val) -> {
                      int previous = rs.pixelsPerChunk();
                      rs.setPixelsPerChunk(val);
-                     // Resolution change requires full preview rebuild (sampler/storage may change).
-                     if (previous != val) {
-                         pc.previewDisplay().invalidateRenderCache();
+                     if (previous == val) {
+                         return;
+                     }
+                     pc.previewDisplay().invalidateRenderCache();
+                     if (RenderSettings.samplerStrideFor(previous)
+                             != RenderSettings.samplerStrideFor(val)) {
+                         // Only the 2/1 px levels change the sampling stride
+                         // (they skip quarts), which requires recreating the
+                         // sampler and storage sections.
                          pc.workManager().cancel();
                          pc.start();
                          // This page's cancel+start already resumed/rebuilt the
@@ -68,6 +74,10 @@ public class ResolutionSettingsPage extends AbstractSettingsPage {
                          // so closing the settings screen does not trigger a
                          // second full rebuild for the same change.
                          pc.markStructuralRebuildApplied();
+                     } else {
+                         // Render-only rescale: reuse the sampled quarts, just
+                         // re-queue the new field of view (same as the wheel).
+                         pc.previewDisplay().applyIncrementalZoom();
                      }
                  });
         pixelBtn.setTooltip(Tooltip.create(SETTINGS_SAMPLE_PIXELS_TITLE_2));
