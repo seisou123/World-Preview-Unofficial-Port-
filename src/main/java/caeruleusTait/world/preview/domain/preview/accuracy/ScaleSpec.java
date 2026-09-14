@@ -28,8 +28,6 @@ public final class ScaleSpec {
             case 4 -> of(1, 1);
             case 2 -> of(1, 2);
             case 1 -> of(1, 4);
-            case 32 -> of(8, 1);
-            case 64 -> of(16, 1);
             default -> throw new IllegalArgumentException("Invalid pixelsPerChunk=" + pixelsPerChunk);
         };
     }
@@ -47,8 +45,9 @@ public final class ScaleSpec {
     }
 
     /**
-     * Blocks per texture pixel. Returns double to avoid integer truncation
-     * when quartExpand > QuartPos.SIZE (e.g. pixelsPerChunk=64 gives 0.25).
+     * Blocks per texture pixel: 1 at the 16px/chunk end of the zoom ladder,
+     * 16 at 1px/chunk. Kept as a double so the value stays correct if
+     * quartExpand ever stops dividing 4*quartStride evenly.
      */
     public double blockScale() {
         return (4.0 * quartStride) / quartExpand;
