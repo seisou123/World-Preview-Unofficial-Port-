@@ -778,8 +778,7 @@ public class WorkManager {
         // makes the map appear to load 2-3x faster from the user's perspective,
         // since the most visually important area (center) is filled first.
         //
-        // Inspired by seedviewer's TileScheduler priority queue, but improved:
-        // instead of a per-tile priority queue (which has O(log n) enqueue cost
+        // Instead of a per-tile priority queue (which has O(log n) enqueue cost
         // and requires Comparable wrappers), we do a single O(n log n) sort
         // upfront with band-level randomization for load balancing.
         if (size > 2) {
