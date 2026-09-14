@@ -4,6 +4,7 @@
 
 - Fixed the analysis screen layout on small windows: the profile chart no longer overlaps the footer buttons, the chart tabs no longer overlap the profile-direction button, and the overview panel now extends to the bottom of the screen instead of leaving dead space above the footer
 - Fixed a phantom selection band rendering at the right edge of the region coordinate fields
+- Fixed the map frame touching the seed row: the bottom edge of the map now leaves a small gap above the refresh/save buttons instead of overlapping their top edge
 
 ### Improvements
 
@@ -11,6 +12,8 @@
 - The "Analysis" button now uses the same sidebar rail style as the Biomes/Structures/Seeds buttons and sits directly below the Seeds button in the sidebar, instead of the old plain button style floating over the map
 - The world analysis screen has been rebuilt in the panelized style of the seed search screen: region coordinates now really define the analyzed area (with shrink/invalid feedback), a stats panel with progress bar and spawn-score breakdown, a biome-colored terrain cross-section with sea-level line, a height histogram and biome/terrain share tabs, map box-selection for the region, structure distances, and richer CSV/JSON reports
 - Fixed the spawn score ignoring nearby structures, mis-scaled slope scoring and distorted water share when the preview layer was underground
+- Map zooming was reworked: the mouse wheel and the settings screen now share one zoom ladder (16 down to 1 pixels per chunk - the old 64/32 levels were pure sub-block pixel upscaling with no extra detail and were removed), zooming across the same sampling density re-scales instantly instead of rebuilding the whole map, the wheel now also reaches the 2 and 1 px/chunk overview levels (the widest world view, sampled slowest), and reaching a limit shows a "fully zoomed in/out" hint instead of silently ignoring the scroll
+- A permanent scale bar was added to the bottom-left corner of the map, so the current zoom level is always readable without waiting for the fading HUD message. It is interactive: next to the block-distance readout sits a tick slider over the zoom ladder - click or drag it to jump between zoom levels in real time (same instant/rebuild routing as the wheel), and clicks on it no longer fall through to the map underneath
 
 ## 1.5.2
 
@@ -83,4 +86,4 @@
 
 ### UI
 
-- Preview page: unified Biomes / Structures / Seeds rail buttons (gray-to-black translucent theme); selected tab no longer darkens its background — marked only by outline and full-white text, all three identical at rest
+- Preview page: unified Biomes / Structures / Seeds rail buttons (gray-to-black translucent theme); selected tab no longer darkens its background — marked only by outline and full-white text, all three identical at rest

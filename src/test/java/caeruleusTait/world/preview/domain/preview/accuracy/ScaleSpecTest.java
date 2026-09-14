@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ScaleSpecTest {
     @ParameterizedTest
-    @ValueSource(ints = {1, 2, 4, 8, 16, 32, 64})
+    @ValueSource(ints = {1, 2, 4, 8, 16})
     void fromPixelsPerChunk_roundTrips(int ppc) {
         ScaleSpec s = ScaleSpec.fromPixelsPerChunk(ppc);
         assertEquals(ppc, s.pixelsPerChunk());

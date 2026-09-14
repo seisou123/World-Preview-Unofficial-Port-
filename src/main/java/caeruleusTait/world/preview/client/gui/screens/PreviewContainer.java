@@ -265,9 +265,13 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     // settings screen suspends sampling.  On close, the snapshot is compared
     // against the live settings: unchanged means the retained preview storage
     // and worldgen context can be resumed as-is (cheap), changed means a full
-    // rebuild is required.  structuralPpcSnapshot == -1 means "no snapshot".
+    // rebuild is required.  The zoom scale only matters here through its
+    // sampling stride: quartExpand-only changes (e.g. 4->16 px/chunk) are
+    // pure re-scales of already-sampled quarts and must NOT force a rebuild;
+    // only crossing into/out of the 2/1 px levels (stride 2/4) resamples.
+    // structuralStrideSnapshot == -1 means "no snapshot".
     private boolean structuralFullVertSnapshot;
-    private int structuralPpcSnapshot = -1;
+    private int structuralStrideSnapshot = -1;
     private RenderSettings.SamplerType structuralSamplerSnapshot;
     private Identifier structuralDimensionSnapshot;
 
@@ -1782,16 +1786,16 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     /** Refreshes the structural snapshot from the current live settings. */
     public synchronized void markStructuralRebuildApplied() {
         structuralFullVertSnapshot = cfg.buildFullVertChunk;
-        structuralPpcSnapshot = renderSettings.pixelsPerChunk();
+        structuralStrideSnapshot = renderSettings.quartStride();
         structuralSamplerSnapshot = renderSettings.samplerType;
         structuralDimensionSnapshot = renderSettings.dimension;
     }
 
     /** True when the live structural settings differ from the snapshot taken at suspend time. */
     private boolean structuralSnapshotDiffers() {
-        return structuralPpcSnapshot == -1
+        return structuralStrideSnapshot == -1
                 || structuralFullVertSnapshot != cfg.buildFullVertChunk
-                || structuralPpcSnapshot != renderSettings.pixelsPerChunk()
+                || structuralStrideSnapshot != renderSettings.quartStride()
                 || structuralSamplerSnapshot != renderSettings.samplerType
                 || !Objects.equals(structuralDimensionSnapshot, renderSettings.dimension);
     }
@@ -1817,7 +1821,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private void suspendForSettings() {
         invalidatePendingUpdates();
         structuralFullVertSnapshot = cfg.buildFullVertChunk;
-        structuralPpcSnapshot = renderSettings.pixelsPerChunk();
+        structuralStrideSnapshot = renderSettings.quartStride();
         structuralSamplerSnapshot = renderSettings.samplerType;
         structuralDimensionSnapshot = renderSettings.dimension;
         workManager.suspend();
@@ -1943,6 +1947,26 @@ public void onScreenReentry() {
     // tabs. The old +/-4096 off-screen moveList hack is no longer used (P2).
 
     /**
+     * Rebuilds the preview after a zoom step crossed the sampling stride
+     * (into/out of the 2/1 px levels): the cached quarts were collected at a
+     * different density, so the sampler and storage sections are recreated via
+     * cancel + start. When a sub-screen (analysis, settings) is on top of the
+     * preview, the rebuild is skipped — it would cancel world-scoped tasks and
+     * kill a running analysis session mid-view — and the map falls back to a
+     * render-only rescale that self-corrects on the next real rebuild.
+     */
+    public void requestZoomRebuild() {
+        if (minecraft.gui.screen() != null && minecraft.gui.screen() != parentScreen) {
+            previewDisplay.applyIncrementalZoom();
+            return;
+        }
+        previewDisplay().invalidateRenderCache();
+        workManager.cancel();
+        start();
+        markStructuralRebuildApplied();
+    }
+
+    /**
      * Start generating the biome data
      */
     public synchronized void start() {
@@ -1955,7 +1979,7 @@ public void onScreenReentry() {
             // Resuming after stop(): the world settings may have changed while
             // updates were inhibited (tab was switched away), so invalidate the
             // structural snapshot and take the full rebuild path.
-            structuralPpcSnapshot = -1;
+            structuralStrideSnapshot = -1;
             if (structuralSnapshotDiffers()) {
                 resumeForRebuild(false);
             } else {
@@ -2016,7 +2040,10 @@ public void onScreenReentry() {
         // Bug 4: reduced bottom margin from 28 to BUTTON_GRID_STEP to use more vertical space
         final int bottom = screenRectangle.bottom() - BUTTON_GRID_STEP;
         final int mapWidth = screenRectangle.right() - mapLeft - 4;
-        final int mapHeight = bottom - top;
+        // Stop 2px short of the seed row: the border occupies the last two
+        // rows (yMax..yMax+1) and the buttons start at bottom + 2, so without
+        // this the frame visually fuses with the button tops.
+        final int mapHeight = bottom - top - 2;
 
         // --- Preview display: extends from left edge to right edge ---
         previewDisplay.setPosition(mapLeft, top);
@@ -2188,8 +2215,11 @@ public void onScreenReentry() {
         // Preview
         final int expand = toggleExpand.selected ? BUTTON_GRID_STEP + 2 : 0;
 
+        // The seed row (buttons at `bottom` = screenBottom - 32, 20px tall)
+        // must sit fully below the map: stop the display 34px above the screen
+        // bottom so its border (yMax..yMax+1) clears the button tops by 1px.
         previewDisplay.setPosition(previewLeft, top + expand + 1);
-        previewDisplay.setSize(screenRectangle.right() - previewDisplay.getX() - 4, screenRectangle.bottom() - previewDisplay.getY() - 14);
+        previewDisplay.setSize(screenRectangle.right() - previewDisplay.getX() - 4, screenRectangle.bottom() - previewDisplay.getY() - 34);
 
         // BOTTOM
 

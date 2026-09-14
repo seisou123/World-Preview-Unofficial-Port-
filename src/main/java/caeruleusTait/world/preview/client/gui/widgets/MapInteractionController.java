@@ -1,5 +1,6 @@
 package caeruleusTait.world.preview.client.gui.widgets;
 
+import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.domain.waypoint.Waypoint;
@@ -43,6 +44,10 @@ class MapInteractionController {
     private boolean measureMode = false;
     private BlockPos measureA = null;
     private BlockPos measureB = null;
+
+    // === Scale-bar zoom slider ===
+    /** Left press landed on the scale bar's zoom slider: drags re-level the ladder. */
+    private boolean zoomSliderDragging = false;
 
     // === Region select (analysis screen) ===
     /** One-shot mode: left drag draws a rectangle that becomes the analysis region. */
@@ -167,6 +172,7 @@ class MapInteractionController {
     /** Drops any in-progress press/drag (used when a screen change interrupts input). */
     void resetInteractionState() {
         clicked = false;
+        zoomSliderDragging = false;
         totalDragX = 0;
         totalDragZ = 0;
     }
@@ -176,7 +182,7 @@ class MapInteractionController {
      * raw GLFW button state and end the drag when both buttons are up.
      */
     void endDragIfButtonsReleased() {
-        if (!clicked) {
+        if (!clicked && !zoomSliderDragging) {
             return;
         }
         long window = host.minecraft().getWindow().handle();
@@ -184,6 +190,7 @@ class MapInteractionController {
         boolean rightPressed = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
         if (!leftPressed && !rightPressed) {
             clicked = false;
+            zoomSliderDragging = false;
             totalDragX = 0;
             totalDragZ = 0;
         }
@@ -192,6 +199,14 @@ class MapInteractionController {
     // === Event handlers ===
 
     boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        // Scale-bar zoom slider: right clicks inside its bounds are consumed so
+        // they never fall through to the coordinate-copy path below. Left
+        // clicks are NOT consumed here - they must flow through to
+        // onClick()/super.mouseClicked() so AbstractWidget sets its dragging
+        // flag, without which onDrag never fires and slider dragging dies.
+        if (event.button() != 0 && host.zoomSliderHit(event.x(), event.y())) {
+            return true;
+        }
         // Region select: right click cancels the mode.
         if (regionSelectMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
             setRegionSelectMode(false);
@@ -245,6 +260,16 @@ class MapInteractionController {
         // Fix: set focus so Screen dispatches onDrag to this widget
         if (host.minecraft().gui.screen() != null) {
             host.minecraft().gui.screen().setFocused(host);
+        }
+
+        // Scale-bar zoom slider: a left press grabs it. Runs before every
+        // other mode so a click on the slider never places a waypoint, pins
+        // the spawn, or selects a biome. AbstractWidget already set its
+        // dragging flag, so subsequent onDrag calls keep re-leveling.
+        if (event.button() == 0 && host.zoomSliderHit(event.x(), event.y())) {
+            zoomSliderDragging = true;
+            applySliderLevel(event.x());
+            return;
         }
 
         // Region select: a left press starts a box drag. This MUST return
@@ -317,6 +342,9 @@ class MapInteractionController {
     }
 
     void onDrag(MouseButtonEvent event, double dragX, double dragY) {
+        if (zoomSliderDragged(event.x())) {
+            return;
+        }
         if (regionSelectMode) {
             // Box drag: track the moving corner; never accumulate pan offsets.
             if (regionDragStart != null) {
@@ -330,6 +358,9 @@ class MapInteractionController {
     }
 
     boolean mouseReleased(MouseButtonEvent event) {
+        if (zoomSliderReleased()) {
+            return true;
+        }
         if (clicked) {
             onRelease(event);
             return true;
@@ -437,25 +468,51 @@ class MapInteractionController {
     }
 
     /**
-     * Anchor-based zoom: remember the world position under the cursor so we can
-     * keep it stationary after zooming (inspired by seedviewer's MapCamera.zoomAt,
-     * but adapted for discrete zoom levels instead of continuous).
+     * Anchor-based zoom: remember the world position under the cursor, then
+     * shift the center after the discrete zoom step so that same position
+     * stays under the cursor. The ladder's ends are reported back to the HUD
+     * instead of the wheel silently doing nothing.
      */
     private void scrollZoom(double mouseX, double mouseY, double delta) {
         var renderSettings = host.renderSettings();
         int before = renderSettings.pixelsPerChunk();
+        boolean zoomIn = delta > 0.0;
+        boolean changed = zoomIn ? renderSettings.zoomIn() : renderSettings.zoomOut();
+        int after = changed ? renderSettings.pixelsPerChunk() : before;
 
+        if (changed) {
+            applyZoomChange(before, after, mouseX, mouseY, true);
+        }
+
+        // Always surface the outcome: silently ignoring a wheel tick at the
+        // ladder's end read as "zoom is broken".
+        if (changed) {
+            host.showTransientHud(Component.translatable(
+                    "world_preview.preview-display.hud.zoom", after));
+        } else if (zoomIn) {
+            host.showTransientHud(Component.translatable(
+                    "world_preview.preview-display.hud.zoom.fully_in", after));
+        } else {
+            host.showTransientHud(Component.translatable(
+                    "world_preview.preview-display.hud.zoom.fully_out", after));
+        }
+    }
+
+    /**
+     * Applies a zoom level change that already happened in RenderSettings:
+     * re-anchors the view so the world point under (mouseX, mouseY) stays put,
+     * then routes the refresh. Steps 16..4 px/chunk only rescale the already
+     * sampled map (render-only, applied incrementally), while 2/1 px skip
+     * quarts and need the sampling rebuild, which goes through the container.
+     * {@code anchor} false keeps the map center fixed (slider input).
+     */
+    private void applyZoomChange(int before, int after, double mouseX, double mouseY, boolean anchor) {
+        var renderSettings = host.renderSettings();
         final int anchorWorldX = worldUnderCursorX(mouseX);
         final int anchorWorldZ = worldUnderCursorZ(mouseY);
+        host.applyZoomToVisualizer();
 
-        if (delta > 0.0) {
-            renderSettings.zoomIn();
-        } else {
-            renderSettings.zoomOut();
-        }
-        if (before != renderSettings.pixelsPerChunk()) {
-            host.applyZoomToVisualizer();
-
+        if (anchor) {
             // Adjust center so the same world position is under the cursor
             final int newAnchorWorldX = worldUnderCursorX(mouseX);
             final int newAnchorWorldZ = worldUnderCursorZ(mouseY);
@@ -464,15 +521,56 @@ class MapInteractionController {
                     host.center().getY(),
                     host.center().getZ() + (anchorWorldZ - newAnchorWorldZ)
             ));
-
-            host.invalidateRenderCache();
-            host.resetQueuedRange();
-            host.queueGeneration();
-            host.showTransientHud(Component.translatable(
-                    "world_preview.preview-display.hud.zoom",
-                    renderSettings.pixelsPerChunk()
-            ));
         }
+
+        if (caeruleusTait.world.preview.RenderSettings.samplerStrideFor(before)
+                != caeruleusTait.world.preview.RenderSettings.samplerStrideFor(after)) {
+            // Crossing into/out of the 2/1 px levels changes the sampling
+            // stride: the cached quarts were collected at a different
+            // density, so this zoom step needs the container's cancel+rebuild
+            // rather than an incremental re-queue.
+            if (host.dataProvider() instanceof caeruleusTait.world.preview.client.gui.screens.PreviewContainer pc) {
+                pc.requestZoomRebuild();
+            } else {
+                host.applyIncrementalZoom();
+            }
+        } else {
+            host.applyIncrementalZoom();
+        }
+    }
+
+    /**
+     * Scale-bar slider input: press/drag maps the cursor x onto the nearest
+     * ladder level. No anchor re-centering (the slider is a global control,
+     * not a point on the map).
+     */
+    boolean zoomSliderDragged(double mouseX) {
+        if (!zoomSliderDragging) {
+            return false;
+        }
+        applySliderLevel(mouseX);
+        return true;
+    }
+
+    boolean zoomSliderReleased() {
+        if (!zoomSliderDragging) {
+            return false;
+        }
+        zoomSliderDragging = false;
+        return true;
+    }
+
+    private void applySliderLevel(double mouseX) {
+        var renderSettings = host.renderSettings();
+        int target = RenderSettings.zoomLevelAt(host.zoomSliderIndexAt(mouseX));
+        int before = renderSettings.pixelsPerChunk();
+        if (target == before) {
+            return;
+        }
+        renderSettings.setPixelsPerChunk(target);
+        applyZoomChange(before, target, mouseX, host.widgetHeight() / 2.0, false);
+        host.showTransientHud(Component.translatable(
+                "world_preview.preview-display.hud.zoom", target));
     }
 
     private void scrollYLayer(double delta) {
