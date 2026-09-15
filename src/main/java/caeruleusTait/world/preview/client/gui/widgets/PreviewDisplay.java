@@ -566,7 +566,14 @@ resizeImage();
         final double blocksPerGuiPixel = scaleBlockPos / (double) guiScale;
         zoomSliderVisible = false;
         if (blocksPerGuiPixel > 0.0 && width >= 120) {
-            final int barPx = 48;
+            // The analysis screen re-uses this widget on a much narrower map
+            // (~46% of the screen vs the main preview's ~98%), where the
+            // full-size readout + slider would dominate. Compare against the
+            // screen width, not a fixed pixel count, so the rule holds at any
+            // GUI scale.
+            final boolean compact = width < minecraft.getWindow().getGuiScaledWidth() * 7 / 10;
+            final int tickStep = compact ? 8 : 10;
+            final int barPx = compact ? 32 : 48;
             final double rawBlocks = barPx * blocksPerGuiPixel;
             // Snap to a friendly block count (1/2/5 * 10^n), then re-derive
             // the exact bar length so the label always matches the drawn line.
@@ -585,38 +592,57 @@ resizeImage();
 
             // Zoom slider: fixed track right of the bar readout, one tick per
             // ladder level (16/8/4/2/1 px per chunk, left = most zoomed in).
+            // Pixel-drawn "+" / "-" end glyphs spell out the direction so the
+            // ticks do not read as decoration.
             final int tickCount = RenderSettings.zoomLevelCount();
-            final int sliderX0 = barX + Math.max(barW, labelW) + 10;
-            final int sliderX1 = sliderX0 + (tickCount - 1) * 10;
+            final int sliderX0 = barX + Math.max(barW, labelW) + (compact ? 10 : 12);
+            final int sliderX1 = sliderX0 + (tickCount - 1) * tickStep;
             final int current = renderSettings.currentZoomLevel();
 
             final double hmX = (minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth()) / minecraft.getWindow().getScreenWidth();
             final double hmY = (minecraft.mouseHandler.ypos() * minecraft.getWindow().getGuiScaledHeight()) / minecraft.getWindow().getScreenHeight();
             final boolean hover = zoomSliderHit(hmX, hmY);
+            // While hovering, preview which level a click would pick.
+            final int preview = hover ? zoomSliderIndexAt(hmX) : -1;
 
             // Padded hit region over the whole readout (bar + label + slider).
             zoomSliderVisible = true;
             zoomSliderX0 = barX - 2;
             zoomSliderY0 = barY - 11;
-            zoomSliderX1 = sliderX1 + 6;
+            zoomSliderX1 = sliderX1 + 10;
             zoomSliderY1 = barY + 4;
             zoomTrackX0 = sliderX0;
             zoomTrackX1 = sliderX1;
 
-            guiGraphics.fill(zoomSliderX0, zoomSliderY0, zoomSliderX1, zoomSliderY1, hover ? 0xC0000000 : 0x88000000);
+            guiGraphics.fill(zoomSliderX0, zoomSliderY0, zoomSliderX1, zoomSliderY1, hover ? 0xB8000000 : 0x88000000);
             final int lineColor = hover ? 0xFFFFFFFF : 0xE0FFFFFF;
             guiGraphics.fill(barX, barY, barX + barW, barY + 1, lineColor);
             guiGraphics.fill(barX, barY - 3, barX + 1, barY + 2, lineColor);
             guiGraphics.fill(barX + barW - 1, barY - 3, barX + barW, barY + 2, lineColor);
             guiGraphics.text(minecraft.font, label, barX, barY - 10, 0xFFFFFFFF);
 
-            guiGraphics.fill(sliderX0, barY, sliderX1 + 1, barY + 1, 0x80FFFFFF);
+            // Track: brighter than a stray map line, dimmer than the handle.
+            guiGraphics.fill(sliderX0, barY, sliderX1 + 1, barY + 1, hover ? 0xA6FFFFFF : 0x8CFFFFFF);
+            // "+" (zoom in, left end) and "-" (zoom out, right end) glyphs,
+            // centered on the track row and kept faint so they read as hints.
+            final int glyphColor = 0xA6FFFFFF;
+            final int plusX = sliderX0 - (compact ? 5 : 7);
+            guiGraphics.fill(plusX - 2, barY, plusX + 3, barY + 1, glyphColor);   // + horizontal
+            guiGraphics.fill(plusX, barY - 2, plusX + 1, barY + 3, glyphColor);   // + vertical
+            final int minusX = sliderX1 + (compact ? 4 : 6);
+            guiGraphics.fill(minusX - 2, barY, minusX + 3, barY + 1, glyphColor); // - horizontal
             for (int i = 0; i < tickCount; i++) {
-                final int tx = sliderX0 + i * 10;
+                final int tx = sliderX0 + i * tickStep;
                 if (i == current) {
                     guiGraphics.fill(tx - 1, barY - 4, tx + 2, barY + 3, 0xFFFFFFFF);
+                } else if (i == preview) {
+                    // Hover target: a hollow outline shows what a click selects.
+                    guiGraphics.fill(tx - 1, barY - 4, tx + 2, barY - 3, 0xCCFFFFFF);
+                    guiGraphics.fill(tx - 1, barY + 2, tx + 2, barY + 3, 0xCCFFFFFF);
+                    guiGraphics.fill(tx - 1, barY - 3, tx, barY + 2, 0xCCFFFFFF);
+                    guiGraphics.fill(tx + 1, barY - 3, tx + 2, barY + 2, 0xCCFFFFFF);
                 } else {
-                    guiGraphics.fill(tx, barY - 2, tx + 1, barY + 2, 0x80FFFFFF);
+                    guiGraphics.fill(tx, barY - 2, tx + 1, barY + 2, 0x99FFFFFF);
                 }
             }
         }
