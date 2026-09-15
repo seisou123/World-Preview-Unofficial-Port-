@@ -2,18 +2,18 @@
 
 ### Fixes
 
-- Fixed the analysis screen layout on small windows: the profile chart no longer overlaps the footer buttons, the chart tabs no longer overlap the profile-direction button, and the overview panel now extends to the bottom of the screen instead of leaving dead space above the footer
-- Fixed a phantom selection band rendering at the right edge of the region coordinate fields
-- Fixed the map frame touching the seed row: the bottom edge of the map now leaves a small gap above the refresh/save buttons instead of overlapping their top edge
+- Fixed the analysis screen layout on small windows: the profile chart and chart tabs no longer overlap the footer buttons, and the overview panel reaches the bottom of the screen
+- Fixed a phantom selection band at the right edge of the region coordinate fields
+- Fixed the map border overlapping the seed row buttons
+- Fixed the spawn score ignoring nearby structures, mis-scaled slope scoring and a distorted water share when the preview layer is underground
 
 ### Improvements
 
-- Noise render modes (temperature, humidity, continentalness, ...) now draw smooth perceptual color gradients instead of coarse posterized color bands; the temperature, humidity, continentalness and erosion ramps are anchored to the vanilla biome climate bands, so colors line up with real biome boundaries
-- The "Analysis" button now uses the same sidebar rail style as the Biomes/Structures/Seeds buttons and sits directly below the Seeds button in the sidebar, instead of the old plain button style floating over the map
-- The world analysis screen has been rebuilt in the panelized style of the seed search screen: region coordinates now really define the analyzed area (with shrink/invalid feedback), a stats panel with progress bar and spawn-score breakdown, a biome-colored terrain cross-section with sea-level line, a height histogram and biome/terrain share tabs, map box-selection for the region, structure distances, and richer CSV/JSON reports
-- Fixed the spawn score ignoring nearby structures, mis-scaled slope scoring and distorted water share when the preview layer was underground
-- Map zooming was reworked: the mouse wheel and the settings screen now share one zoom ladder (16 down to 1 pixels per chunk - the old 64/32 levels were pure sub-block pixel upscaling with no extra detail and were removed), zooming across the same sampling density re-scales instantly instead of rebuilding the whole map, the wheel now also reaches the 2 and 1 px/chunk overview levels (the widest world view, sampled slowest), and reaching a limit shows a "fully zoomed in/out" hint instead of silently ignoring the scroll
-- A permanent scale bar was added to the bottom-left corner of the map, so the current zoom level is always readable without waiting for the fading HUD message. It is interactive: next to the block-distance readout sits a tick slider over the zoom ladder - click or drag it to jump between zoom levels in real time (same instant/rebuild routing as the wheel), and clicks on it no longer fall through to the map underneath
+- Noise maps (temperature, humidity, continentalness, erosion) now draw smooth gradients instead of color bands, aligned with real biome boundaries
+- The "Analysis" button moved to the sidebar, below the Seeds button
+- The world analysis screen was rebuilt in the seed search style: region coordinates now define the analyzed area, a stats panel with spawn score, a terrain cross-section, a height histogram, biome/terrain share tabs, map box-selection, structure distances, and CSV/JSON reports
+- The mouse wheel and the settings screen share one zoom ladder (16 down to 1 pixels per chunk); zooming applies instantly instead of rebuilding the map, and hitting a limit shows a hint
+- A scale bar with a zoom slider sits in the bottom-left of the map: click or drag it to change the zoom level
 
 ## 1.5.2
 
