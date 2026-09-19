@@ -148,7 +148,7 @@ public final class RegionSelector extends AbstractWidget {
         setY(area.top());
         setWidth(area.width());
         // The widget must bound ONLY the label row (the fields start 18px
-        // down): 1.21.11's container click dispatch asks getChildAt(), which
+        // down): 1.21.11+/26.x container click dispatch asks getChildAt(), which
         // picks the FIRST child containing the point and consumes the click
         // even when that child ignores it — a label covering the field row
         // would swallow every click meant for the coordinate EditBoxes.
