@@ -1,12 +1,12 @@
 # World Preview — Community Fork
 
-*World Preview* renders a map of a Minecraft world seed — biomes, structures, heightmap and
-Y-layer intersections — before the world is ever generated.
+*World Preview* draws a map of a Minecraft world seed before the world is generated: biomes,
+structures, heightmap and Y-layer intersections.
 
 > **This is an unofficial community fork** of
 > [World Preview](https://modrinth.com/mod/world-preview) by Caeruleus Draconis & Taiterio.
-> The original was last updated for Minecraft 1.21; this fork carries it forward to Minecraft
-> 1.21.11, 26.1.2 and 26.2, on Fabric and NeoForge, with a number of additional features.
+> The original stopped at Minecraft 1.21. This fork adds 1.21.11, 26.1.2 and 26.2, on Fabric and
+> NeoForge, plus a number of extra features.
 > All credit for the mod itself belongs to its authors. Licensed under Apache-2.0.
 
 **Download** → [Releases](../../releases) · **Report a bug** → [Issues](../../issues)
@@ -21,8 +21,7 @@ Y-layer intersections — before the world is ever generated.
 | `26.1.2`  | ✅ | ✅ | `26.1.2-fabric` / `26.1.2-neoforge` |
 | `26.2`    | ✅ | ✅ | `26.2-fabric` / `26.2-neoforge` |
 
-Minecraft versions older than 1.21.11 are not supported by this fork; for 1.20 / 1.21 please
-use the original mod.
+Minecraft versions older than 1.21.11 are not supported.
 
 > The Modrinth and CurseForge pages belong to the original project and do not include this
 > fork's builds. Please download from [Releases](../../releases) in this repository.
@@ -47,7 +46,7 @@ unchanged from upstream behaviour.
 | | Original (≤ MC 1.21) | This fork |
 |---|---|---|
 | **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be switched back in `Settings → General → Scroll wheel zooms map` |
-| **Zoom** | set from the config menu | a 5-step ladder (16 / 8 / 4 / 2 / 1 pixels per chunk), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map |
+| **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two widest levels resample the map, so they take a moment |
 | **Minecraft version** | 1.20.x, 1.21.x | 1.21.11, 26.1.2, 26.2 |
 | **Mod loader** | Fabric, Forge | Fabric, NeoForge |
 | **Settings screen** | a single screen | sidebar with separate pages, plus a *Reset to defaults* button |
@@ -58,53 +57,57 @@ unchanged from upstream behaviour.
 Most of the following are opt-in: they are reached through their own buttons or settings and do
 not change the preview until you use them.
 
-- **Seed search** — search random seeds for a combination of criteria: up to four biomes
-  (any-of), a structure, a minimum biome area share and a maximum distance from the anchor
-  point. Results are ranked, run on the worker pool in the background, and keep running when
-  you leave the screen.
-- **Seed history, favourites and comparison** — every search is recorded; click a row to
-  re-apply a seed, favourite it, or compare the current seed against up to three saved seeds
-  by biome diversity, water share, dominant biome and spawn score.
-- **Seeds hub** — the seed box, Random/Save buttons, results, history, favourites and saved
-  seeds live in one screen that is opened from the sidebar.
-- **World analysis engine** — pick a region on the map and get biome distribution, height
-  range, mean height, slope statistics, flat-area ratio, a terrain cross-section, a height
-  histogram and a **spawn quality score** with reasons. Reports export as CSV + JSON into
-  `config/world_preview/reports/`.
-- **Terrain map export** — export the current seed's terrain as a high-resolution PNG, with a
-  configurable radius/resolution, terrain classification, optional contour overlay, and a
-  batch mode that exports every dimension of the seed at once. (There is also a plain
-  "save the preview as PNG" button in the settings.)
-- **Waypoints** — name and colour pins per seed and dimension; left-click the map to place,
-  right-click a pin to remove. Pins persist.
-- **Measure tool** — two clicks measure the distance and the axis deltas between two points;
-  right-click clears it.
-- **Spawn point override** — place a spawn pin on the preview and those coordinates are
-  applied as the world's spawn point when the world is created, without cheats.
-- **Hillshade and contour lines** — simulated sun illumination on the heightmap view
-  (azimuth, altitude, ambient, exaggeration) and elevation contour lines at a configurable
-  interval.
-- **Noise parameter views** — dedicated views for temperature, humidity, continentalness,
-  erosion, depth and weirdness, each with its own colour gradient. Noise maps are drawn as
-  smooth gradients aligned with real biome boundaries.
-- **Minimap, statistics, coordinates and biome counts** — a small overview map of the sampled
-  area, live sampling progress and thread counts, the centre coordinates, and the visible
-  block count per biome.
-- **Preloading** — areas beyond the visible range are sampled ahead of time so that dragging
-  the map stutters less; can be restricted to idle worker threads and given a radius.
-- **Mod compatibility framework** — modded chunk generators are detected at runtime and
-  adapted. Currently registered: Terralith, Biomes O' Plenty, TerraFirmaCraft, Oh The Biomes
-  You'll Go, AstralsDimension, Nature's Spirit, Oh The Trees, Awaken, Witherstorm, TofuCraft.
-  Other mods that only add biomes or structures keep working through the datapack mechanism.
-- **Multi-dimension support** for sampling, export and analysis, including dimensions with
-  non-standard height limits.
-- **Performance work** — a series of passes over the render path, sampling and idle-frame cost,
-  mainly aimed at map dragging and at worlds loaded from the cache. Ongoing rather than finished.
+**Seed search** scans random seeds for a combination of criteria — up to four biomes (any-of), a
+structure, a minimum biome area share, and a maximum distance from the anchor point. Results are
+ranked and run on the worker pool, so a search keeps going while you are on another screen.
+Structure criteria cover random-spread structures; concentric-ring ones such as strongholds are
+not supported yet.
+
+The seed screen is a **hub**: the seed box with Random and Save, the search criteria, and the
+results, history, favourites and saved seeds as tabs of one list. Searches that hit are stored,
+and a row can be clicked to re-apply a seed or favourited. A **seed comparison** screen puts the
+current seed next to up to seven others and reports biome diversity, water share, the dominant
+biome and a spawn score.
+
+The **world analysis engine** works on a region you select: biome distribution, height range,
+mean height, slope statistics and flat-area ratio, plus a terrain cross-section, a height
+histogram and a spawn quality score with reasons. The tables export as CSV and JSON into
+`config/world_preview/reports/`.
+
+**Terrain map export** writes the current seed's terrain as a high-resolution PNG, with a
+configurable radius and blocks-per-pixel, nine terrain classes and an optional contour overlay.
+It can also walk every dimension of the seed in one batch. Output goes to
+`config/world_preview/terrain_exports/`. There is also a plain "save the preview as PNG" button
+in the settings.
+
+**Waypoints** are named, coloured pins stored per seed and dimension: left-click the map to place
+one, left-click an existing pin to rename, recolour or delete it. The **measure tool** works with
+two clicks and reports the distance and the axis deltas; right-click clears it. **Spawn point
+override** puts a spawn pin on the map and applies those coordinates when the world is created,
+without cheats.
+
+For the heightmap view there is **hillshade** (simulated sun illumination, with azimuth,
+altitude, ambient and exaggeration) and **contour lines** at a configurable interval. The
+**noise parameter views** cover temperature, humidity, continentalness, erosion, depth, weirdness
+and peaks & valleys, each with its own colour gradient; noise maps are drawn as smooth gradients
+that line up with biome boundaries.
+
+Smaller things: a **minimap** and live statistics, coordinates, per-biome block counts,
+**preloading** of the area around the viewport (optionally only when worker threads are idle), and
+a **mod compatibility framework** that adapts to modded chunk generators — currently Terralith,
+Biomes O' Plenty, TerraFirmaCraft, Oh The Biomes You'll Go, AstralsDimension, Nature's Spirit, Oh
+The Trees, Awaken, Witherstorm and TofuCraft. Mods that only add biomes or structures need no
+special handling at all. Sampling, export and analysis also cover **other dimensions**, including
+ones with non-standard height limits.
+
+**Performance** has had several passes over the render path, sampling and idle-frame cost, mostly
+aimed at dragging and at worlds loaded from cache. Ongoing rather than finished.
 
 ### Taken over from the original unchanged
 
-- The biome, structure, heightmap and Y-intersection views, and the load order while dragging
-  (biomes → structures → heightmap → adjacent Y layers).
+- The biome, heightmap and Y-intersection views, and the structure visibility toggles.
+- The load order while dragging: biomes → structures → heightmap → intersections → adjacent
+  Y layers.
 - Click-and-drag panning, arrow-key panning, `Home` to recentre on the origin.
 - Persistent seed storage, biome highlighting, the cache for in-game and world-creation
   previews (with optional compression), config backup and migration, the thread-count setting.
@@ -129,8 +132,8 @@ configured in `Settings` (the wrench button in the top-left).
 ### Moving on the map
 
 - **Drag** the map to travel along X and Z. This queues, in order: biomes not yet sampled on
-  the current Y layer → structures (if enabled) → heightmap (if enabled) → adjacent Y layers
-  (if enabled).
+  the current Y layer → structures (if enabled) → heightmap (if enabled) → intersections
+  (if enabled) → adjacent Y layers (if enabled).
 - **Scroll** to zoom by default. `Ctrl`+scroll always zooms, `Alt`+scroll always moves along
   the Y axis; the behaviour of the bare wheel is a setting.
 - Moving along Y lets you see cave biomes. Note that non-cave biomes span the whole world
@@ -145,10 +148,12 @@ Switch from the toolbar in the preview:
 | Mode | Shows |
 |---|---|
 | **Biomes** | biome colours (default) |
-| **Structures** | likely structure starts; individual types can be toggled |
 | **Heightmap** | colourised elevation, with selectable colour maps |
 | **Y-intersections** | blocks on the current Y layer, with the layer below drawn in a lighter shade |
-| **Noise parameters** | temperature, humidity, continentalness, erosion, depth, weirdness |
+| **Noise parameters** | temperature, humidity, continentalness, erosion, depth, weirdness, peaks & valleys |
+
+Structures are not a view of their own: once structure sampling is on, individual structure types
+are toggled from the structures list.
 
 > **Screenshots pending**, one per mode: `img/render-biomes.png`, `img/render-structures.png`,
 > `img/render-heightmap.png`, `img/render-y-int.png`, `img/render-noise.png`.
@@ -184,7 +189,7 @@ without leaving the world.
 **A:** Scrolling zooms by default in this fork. Check
 `Settings → General → Scroll wheel zooms map`; when that box is off, the wheel moves along the
 Y axis instead and you need `Ctrl`+scroll to zoom. `Alt`+scroll always moves along Y.
-The Y-intersections view showing nothing is a separate issue, see below.
+A blank Y-intersections view is a different problem; see the next entry.
 
 ---
 
@@ -198,10 +203,10 @@ terrain sits above its middle.
 
 **Q: My CPU is at 100%!**
 
-**A:** Limit the number of used cores in `Settings → General → Threads`. By default *World
-Preview* tries to compute the biome preview, structures and heightmap as quickly as possible,
-which is CPU-hungry by design. Enabling preloading and caching, and lowering the sampling
-precision, also help.
+**A:** Lower the thread count in `Settings → General` (the setting is labelled *Number of biome
+sampling threads*). *World Preview* computes the biome preview, structures and heightmap as fast
+as it can, which is CPU-hungry by design. Limiting preloading to idle worker threads, and
+lowering the sampling precision, keep the load down without changing what is drawn.
 
 ---
 
@@ -211,9 +216,18 @@ precision, also help.
 
 ---
 
-**Q: Will multiplayer be supported?**
+**Q: Does this run on a server, or in multiplayer?**
 
-**A:** No.
+**A:** It is a client-side mod and singleplayer-only. Install it on the client; a server does not
+need it, and the preview is not available on a server world.
+
+---
+
+**Q: Where is the config file, and what else does the mod write to disk?**
+
+**A:** `config/world_preview/config.json`. Backups and migrations of older files happen
+automatically. Terrain exports land in `config/world_preview/terrain_exports/` and analysis
+reports in `config/world_preview/reports/`.
 
 ---
 
@@ -231,7 +245,7 @@ also need Fabric API; NeoForge users do not need anything beyond NeoForge itself
 
 ---
 
-## Mod incompatibilities
+## Mod compatibility and known issues
 
 This mod is compatible with most mods, including those that add biomes and dimensions.
 For a list of mods with dedicated compatibility handling, see *Added in this fork* above.
@@ -242,8 +256,7 @@ World Preview **is** compatible with TFC, with one known limitation: the Y-inter
 stays white on every Y level, because `TFCChunkGenerator` has a dummy implementation of
 [`getBaseColumn`](https://github.com/TerraFirmaCraft/TerraFirmaCraft/blob/v3.1.2-beta/src/main/java/net/dries007/tfc/world/TFCChunkGenerator.java#L643-L646).
 
-TFC is not broken — it simply does not expose the information World Preview needs for that
-view.
+This is a limitation of the data TFC exposes, not a TFC bug.
 
 ---
 
