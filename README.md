@@ -51,7 +51,7 @@ unchanged from upstream behaviour.
 | | Original (≤ MC 1.21) | This fork |
 |---|---|---|
 | **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be switched back in `Settings → General → Scroll wheel zooms map` |
-| **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two widest levels resample the map, so they take a moment |
+| **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two most zoomed-out steps (2 and 1 px per chunk) resample the map, so they take a moment |
 | **Minecraft version** | 1.20.x, 1.21.x | 1.21.11, 26.1.2, 26.2 |
 | **Mod loader** | Fabric, Forge | Fabric, NeoForge |
 | **Settings screen** | a single screen | sidebar with separate pages, plus a *Reset to defaults* button |
@@ -59,20 +59,20 @@ unchanged from upstream behaviour.
 
 ### Added in this fork
 
-Most of the following are opt-in: they are reached through their own buttons or settings and do
-not change the preview until you use them.
+Most of the following are opt-in: each has its own button or setting, and none of them change the
+preview until you turn them on.
 
-**Seed search** scans random seeds for a combination of criteria — up to four biomes (any-of), a
-structure, a minimum biome area share, and a maximum distance from the anchor point. Results are
-ranked and run on the worker pool, so a search keeps going while you are on another screen.
-Structure criteria cover random-spread structures; concentric-ring ones such as strongholds are
-not supported yet.
+**Seed search** scans random seeds against a set of criteria: up to four biomes (any-of), a
+structure, a minimum biome area share, a maximum distance to the nearest matching biome, and a
+separate distance limit for the structure. Results are ranked, and a search runs in the background,
+so it keeps going while you are on another screen. Only random-spread structures can be searched
+for; concentric-ring ones such as strongholds are not supported yet.
 
-The seed screen is a **hub**: the seed box with Random and Save, the search criteria, and the
-results, history, favourites and saved seeds as tabs of one list. Searches that hit are stored,
-and a row can be clicked to re-apply a seed or favourited. A **seed comparison** screen puts the
-current seed next to up to seven others and reports biome diversity, water share, the dominant
-biome and a spawn score.
+The seed screen brings the seed box with Random and Save, the search criteria, and the results,
+history, favourites and saved-seed lists together in one place. Searches that hit are stored; a row
+applies its seed on click, favourites on shift+right-click and deletes on right-click. A **seed
+comparison** screen puts the current seed next to up to seven others and reports biome diversity,
+water share, the dominant biome and a spawn score.
 
 The **world analysis engine** works on a region you select: biome distribution, height range,
 mean height, slope statistics and flat-area ratio, plus a terrain cross-section, a height
@@ -85,28 +85,28 @@ It can also walk every dimension of the seed in one batch. Output goes to
 `config/world_preview/terrain_exports/`. There is also a plain "save the preview as PNG" button
 in the settings.
 
-**Waypoints** are named, coloured pins stored per seed and dimension: left-click the map to place
-one, left-click an existing pin to rename, recolour or delete it. The **measure tool** works with
-two clicks and reports the distance and the axis deltas; right-click clears it. **Spawn point
-override** puts a spawn pin on the map and applies those coordinates when the world is created,
-without cheats.
+**Waypoints** are named, coloured pins stored per seed and dimension. Switch on `Waypoints` and
+left-click the map to place one; left-click a pin again to rename, recolour or delete it. The
+**measure tool** works with two clicks and reports the distance and the axis deltas; right-click
+clears it. **Spawn point override** places a spawn pin during world creation and applies those
+coordinates as the world's spawn point, without cheats.
 
 For the heightmap view there is **hillshade** (simulated sun illumination, with azimuth,
 altitude, ambient and exaggeration) and **contour lines** at a configurable interval. The
 **noise parameter views** cover temperature, humidity, continentalness, erosion, depth, weirdness
-and peaks & valleys, each with its own colour gradient; noise maps are drawn as smooth gradients
-that line up with biome boundaries.
+and peaks & valleys, each with its own colour gradient and drawn as a smooth gradient.
 
 Smaller things: a **minimap** and live statistics, coordinates, per-biome block counts,
-**preloading** of the area around the viewport (optionally only when worker threads are idle), and
-a **mod compatibility framework** that adapts to modded chunk generators — currently Terralith,
-Biomes O' Plenty, TerraFirmaCraft, Oh The Biomes You'll Go, AstralsDimension, Nature's Spirit, Oh
-The Trees, Awaken, Witherstorm and TofuCraft. Mods that only add biomes or structures need no
-special handling at all. Sampling, export and analysis also cover **other dimensions**, including
-ones with non-standard height limits.
+**preloading** of the area around the viewport (optionally only when worker threads are idle),
+automatic **backup and migration** of the config files, and a **mod compatibility framework** that
+adapts to modded chunk generators — currently Terralith, Biomes O' Plenty, TerraFirmaCraft (off by
+default), Oh The Biomes You'll Go, Astral Sorcery, Nature's Spirit, Oh The Trees, Awaken, Wither
+Storm Mod and TofuCraft. Mods that are not on this list are left alone: biomes, structures and
+colour maps they add are picked up through the datapack mechanism. Sampling, export and analysis
+also cover **other dimensions**, including ones with non-standard height limits.
 
-**Performance** has had several passes over the render path, sampling and idle-frame cost, mostly
-aimed at dragging and at worlds loaded from cache. Ongoing rather than finished.
+**Performance** has had several passes over the render path, sampling and idle-frame cost. Ongoing
+rather than finished.
 
 ### Taken over from the original unchanged
 
@@ -115,7 +115,7 @@ aimed at dragging and at worlds loaded from cache. Ongoing rather than finished.
   Y layers.
 - Click-and-drag panning, arrow-key panning, `Home` to recentre on the origin.
 - Persistent seed storage, biome highlighting, the cache for in-game and world-creation
-  previews (with optional compression), config backup and migration, the thread-count setting.
+  previews (with optional compression), and the thread-count setting.
 - The in-game preview from the pause menu (singleplayer only).
 - The datapack mechanism for registering new biomes, structures and colour maps.
 
@@ -123,12 +123,13 @@ aimed at dragging and at worlds loaded from cache. Ongoing rather than finished.
 
 ## Usage
 
-> The screenshots in this section are placeholders — they are being redone for the current UI.
+> The screenshots in this section are placeholders, still to be redrawn for the current UI. The
+> notes below name the file each one will use.
 
 *World Preview* adds a `Preview` tab to the Singleplayer menu.
 
-> **Screenshot pending** — `img/preview-tab.png`: the Preview tab with its sidebar
-> (Biomes / Structures / Seeds), the map, and the scale bar at the bottom-left.
+> `img/preview-tab.png` — the Preview tab with its sidebar (Biomes / Structures / Seeds /
+> Analysis), the map, and the scale bar at the bottom-left.
 
 Opening it samples a random seed and draws a biome map. By default the Overworld is previewed,
 structures and the heightmap are off, and no noise samples are stored — all of that is
@@ -160,30 +161,30 @@ Switch from the toolbar in the preview:
 Structures are not a view of their own: once structure sampling is on, individual structure types
 are toggled from the structures list.
 
-> **Screenshots pending**, one per mode: `img/render-biomes.png`, `img/render-structures.png`,
-> `img/render-heightmap.png`, `img/render-y-int.png`, `img/render-noise.png`.
+> One per mode: `img/render-biomes.png`, `img/render-structures.png`, `img/render-heightmap.png`,
+> `img/render-y-int.png`, `img/render-noise.png`.
 
 ### Seed tools
 
 The `Seeds` button in the sidebar opens the seed hub: the seed box with Random and Save, the
 search criteria, and the results / history / favourites / saved-seeds tabs.
 
-> **Screenshot pending** — `img/seeds-hub.png`: the criteria panel on the left and the tabbed
-> results panel on the right.
+> `img/seeds-hub.png` — the criteria panel on the left and the tabbed results panel on the right.
 
 ### World analysis
 
-The `Analysis` button opens the analysis screen: region coordinates define the analysed area,
-with a stats panel, a terrain cross-section, a height histogram and biome/terrain share tabs.
+The `Analysis` button opens the analysis screen. Region coordinates define the analysed area, and
+the right-hand panel switches between a terrain profile, a height chart and a biome-share
+breakdown, next to a stats panel.
 
-> **Screenshot pending** — `img/analysis.png`.
+> `img/analysis.png` — the analysis screen with its region controls and chart tabs.
 
 ### In-game preview
 
 For singleplayer worlds a button is added to the pause menu, so you can open the preview
 without leaving the world.
 
-> **Screenshot pending** — `img/ingame.png`: the preview opened from the pause menu.
+> `img/ingame.png` — the preview opened from the pause menu.
 
 ---
 
@@ -209,9 +210,10 @@ terrain sits above its middle.
 **Q: My CPU is at 100%!**
 
 **A:** Lower the thread count in `Settings → General` (the setting is labelled *Number of biome
-sampling threads*). *World Preview* computes the biome preview, structures and heightmap as fast
-as it can, which is CPU-hungry by design. Limiting preloading to idle worker threads, and
-lowering the sampling precision, keep the load down without changing what is drawn.
+sampling threads*), and turn off *Enable drag preloading* there as well. *World Preview* computes
+the biome preview, structures and heightmap as fast as it can, which is CPU-hungry by design.
+Cutting *The amount of samples per chunk* on the `Resolution` page reduces the work further, at
+the cost of a coarser preview.
 
 ---
 
