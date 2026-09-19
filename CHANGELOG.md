@@ -87,3 +87,70 @@
 ### UI
 
 - Preview page: unified Biomes / Structures / Seeds rail buttons (gray-to-black translucent theme); selected tab no longer darkens its background — marked only by outline and full-white text, all three identical at rest
+
+## 1.4.1
+
+### Fixes
+
+- Fixed a `NullPointerException` crash caused by GLFW mouse button state polling (thanks to the contributor of PR #1)
+
+### Improvements
+
+- Removed unused code
+
+## 1.4.0
+
+### New Features
+
+- Added a biome colour intelligence system: biomes the mod does not know (from mods and datapacks) are no longer coloured by a hash, but resolved through layers — exact overrides, climate category, vegetation affinity, elevation and colour temperature — with Lab-space blending between adjacent biomes
+- Added a biome rarity analyzer: rare biomes in the viewport get a luminance boost and a warm halo, common biomes are dimmed slightly, so rare biomes stand out without making the map unreadable
+- Added per-noise-type colour gradients: temperature, humidity, continentalness, erosion, depth, weirdness and peaks/valleys each get their own gradient, with sRGB or Lab interpolation and optional banding for a topographic look
+- Biome display names are generated from the biome id (for example `snowy_taiga` → `Snowy Taiga`)
+
+### Improvements
+
+- **The scroll wheel now zooms the map by default** — it used to move along the Y axis. `Ctrl`+scroll always zooms and `Alt`+scroll always adjusts Y, whatever the setting says
+- Chunks nearest the viewport centre are now sampled first (centre-out spiral instead of a random order), which makes the map appear to load several times faster
+- Fixed the early-abort guard preventing the same range from being re-queued, for example after a drag
+- More accurate world-to-screen mapping (double-precision arithmetic)
+
+## 1.3.5
+
+### New Features
+
+- Added terrain map export: export the terrain distribution of the current seed as PNG images from the General settings page, with a configurable radius and blocks-per-pixel resolution, classification into 9 terrain categories, an optional contour overlay and progress with remaining-time estimate; saved to `config/world_preview/terrain_exports/`
+- Added hillshade rendering: simulated sun illumination over the heightmap view for a better sense of 3D terrain, with configurable azimuth (0-360°), altitude (0-90°), ambient light (0-1) and vertical exaggeration (0.1-5.0)
+- Added contour lines: topographic contours over the heightmap preview, with a configurable interval (5-64 blocks) and optional minor lines at one fifth of the interval (major lines brown, minor lines olive)
+- Added config backup, loading and version migration
+
+### Improvements
+
+- Large-area terrain export is much faster thanks to a lightweight biome sampler
+
+## 1.3.4
+
+### New Features
+
+- Added spawn pin mode: a `Spawn` button next to the settings button in the world creation preview toggles pin placement; left-click the map to place or move the pin, right-click to remove it
+- The pin's coordinates are applied as the world's spawn point when the world is created — no cheats required
+- The spawn pin is only available during world creation, not in the in-game preview
+
+### Improvements
+
+- The button text reflects the current state (`Spawn` / `Spawn ✓`), and the pin coordinates are saved to config and restored when the world creation screen is reopened
+
+## 1.3.3
+
+### New Features
+
+- Added seed search (first version): right-click a biome in the biome list to search seeds containing it
+- Added a visible-block count to the biome list, and a toggle for the analysis button
+- Added search settings (minimum area share, maximum distance)
+
+### Improvements
+
+- Reorganized the settings page into sections
+
+### Fixes
+
+- Fixed feedback on the PNG export button
