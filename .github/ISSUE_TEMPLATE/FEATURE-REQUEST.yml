@@ -1,0 +1,20 @@
+name: Feature Request
+description: Request new features for this World Preview fork
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Feature Description
+
+        Please describe your request in as much detail as possible.
+
+        This tracker belongs to the **community fork** of World Preview
+        (Minecraft 1.21.11, 26.1.2 and 26.2; Fabric and NeoForge).
+  - type: textarea
+    id: feature-request
+    attributes:
+      label: Feature Request
+      placeholder: Your feature request goes here!
+    validations:
+      required: true

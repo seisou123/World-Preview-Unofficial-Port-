@@ -1,0 +1,86 @@
+name: Bug Report
+description: File a bug report for the community fork (Minecraft 1.21.11 / 26.1.2 / 26.2)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Help us help you
+
+        Please provide as much information as possible in order to help us address your issue!
+
+        This tracker belongs to the **community fork** of World Preview, which supports Minecraft
+        **1.21.11, 26.1.2 and 26.2** on **Fabric and NeoForge**. If you are running the original
+        mod on Minecraft 1.21 or older, please report your issue to the
+        [original project](https://modrinth.com/mod/world-preview) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: If possible, also provide links to your used mods.
+      placeholder: Tell us what the issue is!
+    validations:
+      required: true
+  - type: dropdown
+    id: mc-version
+    attributes:
+      label: Minecraft Version
+      description: Which Minecraft version are you using?
+      multiple: false
+      options:
+        - "26.2"
+        - "26.1.2"
+        - "1.21.11"
+        - Other (unsupported)
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: modloader
+    attributes:
+      label: Mod loader
+      description: Which mod loader are you using?
+      multiple: false
+      options:
+        - Fabric
+        - NeoForge
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: wp-version
+    attributes:
+      label: World Preview Version
+      description: Which version of this fork are you using? It is part of the jar file name.
+      multiple: false
+      options:
+        - "1.5.3"
+        - "1.5.2"
+        - "1.5.1"
+        - "1.5.0"
+        - "1.4.2"
+        - "1.4.1"
+        - "1.4.0"
+        - "1.3.5"
+        - "1.3.4"
+        - "1.3.3"
+        - Other / older build (unsupported)
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: mc-logs
+    attributes:
+      label: Minecraft Logs
+      description: See [this guide for getting the latest minecraft logs](https://minecrafthopper.net/help/guides/getting-minecraft-latest-log/)!
+      placeholder: Paste your latest Minecraft log here!
+    validations:
+      required: true
+  - type: textarea
+    id: more-info
+    attributes:
+      label: Additional Information
+      description: For any other helpful details!
+      placeholder: Any additional information, such as screenshots (if applicable) or more context.
+    validations:
+      required: false
