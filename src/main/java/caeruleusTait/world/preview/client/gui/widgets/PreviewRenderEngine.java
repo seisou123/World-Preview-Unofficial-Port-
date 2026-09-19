@@ -691,8 +691,8 @@ class PreviewRenderEngine {
 
     // === Overlays ===
 
-    void renderStructures(List<RenderHelper> renderData, GuiGraphicsExtractor GuiGraphicsExtractor) {
-        renderStructures(renderData, GuiGraphicsExtractor, true);
+    void renderStructures(List<RenderHelper> renderData, GuiGraphicsExtractor guiGraphicsExtractor) {
+        renderStructures(renderData, guiGraphicsExtractor, true);
     }
 
     /**
@@ -700,7 +700,7 @@ class PreviewRenderEngine {
      *     the last heavy render is still valid, and re-adding the same
      *     structures every idle frame made the grid grow without bound.
      */
-    void renderStructures(List<RenderHelper> renderData, GuiGraphicsExtractor GuiGraphicsExtractor, boolean updateHoverGrid) {
+    void renderStructures(List<RenderHelper> renderData, GuiGraphicsExtractor guiGraphicsExtractor, boolean updateHoverGrid) {
         // Render-skip frames pass the cached list, which is null until the
         // first heavy render (and after invalidateRenderCache): nothing to draw.
         if (!host.config().sampleStructures || renderData == null) {
@@ -774,9 +774,9 @@ class PreviewRenderEngine {
                     // Items are always 16 GUI pixels; center on texCenter in GUI space
                     final int itemX = map.textureToScreenXRound(texCenter.x(), host.getX()) - 8;
                     final int itemZ = map.textureToScreenZRound(texCenter.z(), host.getY()) - 8;
-                    GuiGraphicsExtractor.item(item, itemX, itemZ);
+                    guiGraphicsExtractor.item(item, itemX, itemZ);
                 } else if (iconTexture != null) {
-                    WorldPreviewClient.renderTexture(GuiGraphicsExtractor, iconTexture, rXMin, rZMin, rXMax, rZMax);
+                    WorldPreviewClient.renderTexture(guiGraphicsExtractor, iconTexture, rXMin, rZMin, rXMax, rZMax);
                 }
 
                 if (updateHoverGrid) {
@@ -792,13 +792,13 @@ class PreviewRenderEngine {
         }
     }
 
-    void renderSpawnPin(GuiGraphicsExtractor GuiGraphicsExtractor) {
+    void renderSpawnPin(GuiGraphicsExtractor guiGraphicsExtractor) {
         BlockPos pinPos = host.spawnPinPos();
         if (pinPos == null) return;
-        renderStickyIcon(GuiGraphicsExtractor, playerIcon, pinPos);
+        renderStickyIcon(guiGraphicsExtractor, playerIcon, pinPos);
     }
 
-    void renderPlayerAndSpawn(GuiGraphicsExtractor GuiGraphicsExtractor) {
+    void renderPlayerAndSpawn(GuiGraphicsExtractor guiGraphicsExtractor) {
         if (!host.config().showPlayer) {
             return;
         }
@@ -806,17 +806,17 @@ class PreviewRenderEngine {
         PreviewDisplayDataProvider.PlayerData playerData =
                 host.dataProvider().getPlayerData(host.minecraft().getUser().getProfileId());
         if (playerData.currentPos() != null) {
-            renderStickyIcon(GuiGraphicsExtractor, playerIcon, playerData.currentPos());
+            renderStickyIcon(guiGraphicsExtractor, playerIcon, playerData.currentPos());
         }
         if (playerData.spawnPos() != null) {
-            renderStickyIcon(GuiGraphicsExtractor, spawnIcon, playerData.spawnPos());
+            renderStickyIcon(guiGraphicsExtractor, spawnIcon, playerData.spawnPos());
         }
     }
 
     /**
      * Render the player and spawn icons in double the size
      */
-    private void renderStickyIcon(GuiGraphicsExtractor GuiGraphicsExtractor, IconData iconData, BlockPos pos) {
+    private void renderStickyIcon(GuiGraphicsExtractor guiGraphicsExtractor, IconData iconData, BlockPos pos) {
         final Minecraft minecraft = host.minecraft();
         final double guiScale = minecraft.getWindow().getGuiScale();
         final NativeImage icon = iconData.img;
@@ -840,7 +840,7 @@ class PreviewRenderEngine {
         final int rXMax = host.getX() + (int) Math.ceil((texStartX + icon.getWidth() * 2) / guiScale);
         final int rZMax = host.getY() + (int) Math.ceil((texStartZ + icon.getHeight() * 2) / guiScale);
 
-        WorldPreviewClient.renderTexture(GuiGraphicsExtractor, iconData.texture, rXMin, rZMin, rXMax, rZMax);
+        WorldPreviewClient.renderTexture(guiGraphicsExtractor, iconData.texture, rXMin, rZMin, rXMax, rZMax);
     }
 
     // === Visible-count reporting ===

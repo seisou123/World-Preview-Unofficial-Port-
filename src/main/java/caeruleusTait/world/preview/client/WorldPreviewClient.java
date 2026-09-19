@@ -63,11 +63,11 @@ public class WorldPreviewClient {
     }
 
     public static void renderTexture(AbstractTexture texture, double xMin, double yMin, double xMax, double yMax) {
-        // Legacy method - tries to get guiGraphicsExtractor from current screen
+        // Legacy method - tries to get GuiGraphics from current screen
         Minecraft mc = Minecraft.getInstance();
         if (mc.screen != null) {
-            // Can't easily get guiGraphicsExtractor here, so we skip rendering
-            // Callers should use the guiGraphicsExtractor version instead
+            // Can't easily get GuiGraphics here, so we skip rendering
+            // Callers should use the GuiGraphics version instead
         }
     }
 
