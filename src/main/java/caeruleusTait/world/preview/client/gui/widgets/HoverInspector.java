@@ -290,7 +290,7 @@ class HoverInspector {
     /**
      * Split a Component into multiple Components by newline characters.
      * <p>
-     * MC 1.21.11's {@code setTooltipForNextFrame(Font, Component, int, int)}
+     * MC 1.21.11+/26.x's {@code setTooltipForNextFrame(Font, Component, int, int)}
      * calls {@code Component.getVisualOrderText()} which flattens the entire
      * component into a single {@code FormattedCharSequence}.  Newline
      * characters in that path are rendered as literal "LF" glyphs instead
@@ -315,7 +315,7 @@ class HoverInspector {
         return result;
     }
 
-    void updateTooltip(GuiGraphicsExtractor GuiGraphicsExtractor, double mouseX, double mouseY) {
+    void updateTooltip(GuiGraphicsExtractor guiGraphicsExtractor, double mouseX, double mouseY) {
         // Cache hover info — re-query when the mouse moves OR the map center
         // changes (including in-progress drag offsets via center()). Hover
         // world coordinates depend on both; mouse-only cache caused stale or
@@ -361,7 +361,7 @@ class HoverInspector {
         // Draw the hover data bar ourselves. Minecraft's tooltip renderer uses
         // the full screen as its layout surface, so a widget scissor does not
         // reliably keep it inside this map. A local panel gives us hard bounds.
-        renderHoverPanel(GuiGraphicsExtractor, resolved, mouseX, mouseY);
+        renderHoverPanel(guiGraphicsExtractor, resolved, mouseX, mouseY);
     }
 
     /**
@@ -498,7 +498,7 @@ class HoverInspector {
         return new ResolvedTooltip(tooltipComponent.getString(), lines, panelWidth, panelHeight);
     }
 
-    private void renderHoverPanel(GuiGraphicsExtractor GuiGraphicsExtractor, ResolvedTooltip resolved,
+    private void renderHoverPanel(GuiGraphicsExtractor guiGraphicsExtractor, ResolvedTooltip resolved,
                                   double mouseX, double mouseY) {
         final Minecraft minecraft = host.minecraft();
         final float textScale = 0.8F;
@@ -539,27 +539,27 @@ class HoverInspector {
         panelX = Math.max(mapLeft, Math.min(panelX, mapRight - panelWidth));
         panelY = Math.max(mapTop, Math.min(panelY, mapBottom - panelHeight));
 
-        GuiGraphicsExtractor.enableScissor(host.getX(), host.getY(), host.getX() + host.widgetWidth(), host.getY() + host.widgetHeight());
+        guiGraphicsExtractor.enableScissor(host.getX(), host.getY(), host.getX() + host.widgetWidth(), host.getY() + host.widgetHeight());
         try {
-            GuiGraphicsExtractor.fill(panelX - 1, panelY - 1,
+            guiGraphicsExtractor.fill(panelX - 1, panelY - 1,
                     panelX + panelWidth + 1, panelY + panelHeight + 1, 0xFF666666);
-            GuiGraphicsExtractor.fill(panelX, panelY,
+            guiGraphicsExtractor.fill(panelX, panelY,
                     panelX + panelWidth, panelY + panelHeight, 0xF0100010);
 
-            GuiGraphicsExtractor.pose().pushMatrix();
-            GuiGraphicsExtractor.pose().translate(panelX + panelPadding, panelY + panelPadding);
-            GuiGraphicsExtractor.pose().scale(textScale, textScale);
+            guiGraphicsExtractor.pose().pushMatrix();
+            guiGraphicsExtractor.pose().translate(panelX + panelPadding, panelY + panelPadding);
+            guiGraphicsExtractor.pose().scale(textScale, textScale);
             int lineY = 0;
             for (FormattedCharSequence line : lines) {
                 if ((lineY * textScale) >= panelHeight - panelPadding) {
                     break;
                 }
-                GuiGraphicsExtractor.text(minecraft.font, line, 0, lineY, 0xFFFFFFFF, false);
+                guiGraphicsExtractor.text(minecraft.font, line, 0, lineY, 0xFFFFFFFF, false);
                 lineY += minecraft.font.lineHeight;
             }
-            GuiGraphicsExtractor.pose().popMatrix();
+            guiGraphicsExtractor.pose().popMatrix();
         } finally {
-            GuiGraphicsExtractor.disableScissor();
+            guiGraphicsExtractor.disableScissor();
         }
     }
 }

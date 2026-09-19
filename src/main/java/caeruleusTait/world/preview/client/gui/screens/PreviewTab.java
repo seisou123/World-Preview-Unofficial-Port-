@@ -232,7 +232,7 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
                 ,
                 (closeableResourceManager, reloadableServerResources, layeredRegistryAccess, cookie) -> {
                     // Do NOT close closeableResourceManager here.
-                    // In MC 1.21.11, the vanilla resource pack's ZipFileSystem is shared
+                    // In MC 1.21.11+/26.x, the vanilla resource pack's ZipFileSystem is shared
                     // between this temporary resource manager and the game's main
                     // resource manager. Closing it here invalidates the vanilla jar's
                     // zip channel for ALL subsequent reads, causing
