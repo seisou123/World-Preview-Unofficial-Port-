@@ -9,7 +9,7 @@ structures, heightmap and Y-layer intersections.
 > NeoForge, plus a number of extra features.
 > All credit for the mod itself belongs to its authors. Licensed under Apache-2.0.
 
-**Download** → [Releases](../../releases) · **Report a bug** → [Issues](../../issues)
+**Download** → [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) · [GitHub Releases](../../releases) · **Report a bug** → [Issues](../../issues)
 
 ---
 
@@ -23,12 +23,17 @@ structures, heightmap and Y-layer intersections.
 
 Minecraft versions older than 1.21.11 are not supported.
 
-> The Modrinth and CurseForge pages belong to the original project and do not include this
-> fork's builds. Please download from [Releases](../../releases) in this repository.
+> The original project's pages ([Modrinth](https://modrinth.com/mod/world-preview),
+> [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview)) do not include this
+> fork's builds. This fork ships on
+> [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) and
+> through [Releases](../../releases).
 
 ## Installation
 
-1. Download the jar for your **exact** Minecraft version **and** mod loader from [Releases](../../releases).
+1. Download the jar for your **exact** Minecraft version **and** mod loader, from
+   [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) or
+   [Releases](../../releases).
    Asset names look like `world_preview-<mod version>-<minecraft version>-<Fabric|NeoForge>.jar`;
    the `.dev` and `.sources` variants are for developers and are not meant to be played.
 2. Put the jar into the `mods` folder of your Minecraft instance.
