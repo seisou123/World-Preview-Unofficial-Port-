@@ -39,7 +39,7 @@ public class PreviewBlock {
         // Resolve rendering-derived section resolution from the global mod
         // instance. In headless environments (unit tests, tools) there is no
         // mod instance; fall back to full resolution and no compression so the
-        // storage stays usable without a Fabric runtime.
+        // storage stays usable without the mod being loaded.
         final WorldPreview preview = WorldPreview.get();
         final int quartStride;
         final boolean compression;

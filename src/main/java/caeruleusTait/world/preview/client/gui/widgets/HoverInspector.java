@@ -291,7 +291,7 @@ class HoverInspector {
     /**
      * Split a Component into multiple Components by newline characters.
      * <p>
-     * MC 1.21.11's {@code setTooltipForNextFrame(Font, Component, int, int)}
+     * MC 1.21.11+/26.x's {@code setTooltipForNextFrame(Font, Component, int, int)}
      * calls {@code Component.getVisualOrderText()} which flattens the entire
      * component into a single {@code FormattedCharSequence}.  Newline
      * characters in that path are rendered as literal "LF" glyphs instead

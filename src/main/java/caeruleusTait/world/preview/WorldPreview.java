@@ -217,7 +217,7 @@ public class WorldPreview {
      * Scans for installed mods and registers compatibility strategies.
      * Called during onInitialize() after basic setup.
      *
-     * <p>Uses Fabric Loader to enumerate installed mods and populates
+     * <p>Uses the loader's mod list to enumerate installed mods and populates
      * the {@link ModCompatRegistry} with detected mod IDs.
      *
      * <p>Also registers built-in compatibility strategies for known
@@ -240,7 +240,7 @@ public class WorldPreview {
         // Register known mod compatibility strategies
         KnownModCompat.registerAll(registry);
 
-        // Detect installed mods using Fabric Loader
+        // Detect installed mods using the loader's mod list
         try {
             java.util.Set<String> modIds = ModCompatRegistry.detectInstalledMods();
             registry.setInstalledMods(modIds);

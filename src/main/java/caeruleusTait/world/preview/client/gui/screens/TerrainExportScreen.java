@@ -46,7 +46,7 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
 /**
  * Terrain map export screen (sub-screen switch mode).
- * Adapted for MC 26.2 GuiGraphics API.
+ * Adapted for the MC 1.21.11 GuiGraphics API.
  */
 public final class TerrainExportScreen extends Screen {
 
