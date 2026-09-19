@@ -197,15 +197,11 @@ without leaving the world.
 Y axis instead and you need `Ctrl`+scroll to zoom. `Alt`+scroll always moves along Y.
 A blank Y-intersections view is a different problem; see the next entry.
 
----
-
 **Q: The Y-intersections view is completely white / black.**
 
 **A:** The preview starts at roughly one third of the world height (≈ Y 64 in the Overworld).
 If you still see nothing, scroll to a lower Y layer — or to a higher one, in a dimension whose
 terrain sits above its middle.
-
----
 
 **Q: My CPU is at 100%!**
 
@@ -215,20 +211,14 @@ the biome preview, structures and heightmap as fast as it can, which is CPU-hung
 Cutting *The amount of samples per chunk* on the `Resolution` page reduces the work further, at
 the cost of a coarser preview.
 
----
-
 **Q: Will older Minecraft versions be supported?**
 
 **A:** No. This fork targets 1.21.11 and later. For 1.20/1.21 use the original mod.
-
----
 
 **Q: Does this run on a server, or in multiplayer?**
 
 **A:** It is a client-side mod and singleplayer-only. Install it on the client; a server does not
 need it, and the preview is not available on a server world.
-
----
 
 **Q: Where is the config file, and what else does the mod write to disk?**
 
@@ -236,14 +226,10 @@ need it, and the preview is not available on a server world.
 automatically. Terrain exports land in `config/world_preview/terrain_exports/` and analysis
 reports in `config/world_preview/reports/`.
 
----
-
 **Q: How do I add support for new biomes, structures or colour maps?**
 
 **A:** The same way as in the original mod: through the Minecraft datapack mechanism. The
 data format is unchanged by this fork.
-
----
 
 **Q: Fabric or NeoForge? Do I need anything else?**
 
