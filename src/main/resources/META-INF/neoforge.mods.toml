@@ -1,6 +1,6 @@
 modLoader = "javafml"
 loaderVersion = "${loader_version_range}"
-issueTrackerURL = "https://modrinth.com/mod/world-preview-fork"
+issueTrackerURL = "https://github.com/seisou123/World-Preview-Unofficial-Port-/issues"
 license = "${mod_license}"
 
 [[mods]]
