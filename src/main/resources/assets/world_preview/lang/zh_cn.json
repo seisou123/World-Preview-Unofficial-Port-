@@ -27,7 +27,7 @@
   "world_preview.preview.btn-cycle.STRUCTURES": "结构",
   "world_preview.preview.btn-cycle.structures.disabled.tooltip": "结构采样已禁用，可在设置中启用",
   "world_preview.preview.msg.loading": "§l正在初始化预览……§r",
-  "world_preview.preview.error.setup-failed": "§c§l世界预览启动失败！§r\n\n很可能因为模组冲突导致。\n详情查询FAQ:\nhttps://github.com/caeruleusDraconis/world-preview/",
+  "world_preview.preview.error.setup-failed": "§c§l世界预览启动失败！§r\n\n很可能因为模组冲突导致。\n详情查询FAQ:\nhttps://github.com/seisou123/World-Preview-Unofficial-Port-/issues",
   "world_preview.preview-settings.title": "预览设置",
   "world_preview.preview-display.tooltip": "生物群系：%s\n坐标：%s\n高度：%s",
   "world_preview.preview-display.tooltip.controls": "生物群系：%s\n坐标：%s\n高度：%s",
