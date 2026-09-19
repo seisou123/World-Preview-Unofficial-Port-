@@ -149,8 +149,8 @@ public class BiomesTab implements Tab {
             }
         };
 
-        // Input validation: in 26.2 EditBox.setFilter was removed.
-        // We use setResponder with revert-to-last-valid to enforce numeric limits.
+        // Input validation: EditBox.setFilter does not exist on all target versions
+        // (removed in 26.2), so we use setResponder with revert-to-last-valid.
         final String[] lastHue = { hueBox.getValue() };
         final String[] lastSat = { satBox.getValue() };
         final String[] lastVal = { valBox.getValue() };
