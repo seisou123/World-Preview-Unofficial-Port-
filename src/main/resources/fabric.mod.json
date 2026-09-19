@@ -15,7 +15,7 @@
 	},
 	"license": "Apache-2.0",
 	"icon": "assets/world_preview/icon.png",
-	"environment": "*",
+	"environment": "client",
 	"entrypoints": {
 		"main": [
 			"caeruleusTait.world.preview.WorldPreview"
