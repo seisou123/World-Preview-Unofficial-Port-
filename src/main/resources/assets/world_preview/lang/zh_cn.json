@@ -365,7 +365,7 @@
   "world_preview.search.empty.saved": "还没有保存的种子，在上方输入后点击保存",
   "world_preview.search.biome.show_caves.short": "洞穴群系",
   "world_preview.preview.btn-waypoints": "航点",
-  "world_preview.preview.btn-waypoints.tooltip": "航点模式：左键点击地图放置航点，右键点击已有航点可删除",
+  "world_preview.preview.btn-waypoints.tooltip": "航点模式：左键点击地图放置航点；左键点击已有航点可重命名、改色或删除",
   "world_preview.preview.btn-measure": "测距",
   "world_preview.preview.btn-measure.tooltip": "测距模式：左键点击两个点测量距离，右键清除",
   "world_preview.preview.located": "已定位结构：%s, %s",
