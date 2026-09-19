@@ -1,5 +1,5 @@
 name: Feature Request
-description: Request new features for World-Preview
+description: Request new features for this World Preview fork
 labels: ["enhancement"]
 body:
   - type: markdown
@@ -8,6 +8,9 @@ body:
         # Feature Description
 
         Please describe your request in as much detail as possible.
+
+        This tracker belongs to the **community fork** of World Preview
+        (Minecraft 1.21.11, 26.1.2 and 26.2; Fabric and NeoForge).
   - type: textarea
     id: feature-request
     attributes:

@@ -103,6 +103,16 @@ These files existed in the original project and have been modified for this fork
 
 ---
 
+## Modified Repository and Documentation Files (3)
+
+- `README.md` — rewritten for this fork: supported Minecraft versions and loaders, the
+  scroll-wheel behaviour, and a per-item account of what this fork changed relative to upstream
+- `.github/ISSUE_TEMPLATE/BUG-REPORT.yml` — version and loader drop-downs updated to the
+  versions and loaders this fork actually ships
+- `.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml` — description updated for the fork
+
+---
+
 ## Summary of Changes
 
 - Upgraded from Minecraft 1.21 to 1.21.11 (Fabric Loader 0.19.3, Loom 1.17)

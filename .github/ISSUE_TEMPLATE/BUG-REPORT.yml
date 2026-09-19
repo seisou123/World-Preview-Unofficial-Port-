@@ -1,13 +1,18 @@
 name: Bug Report
-description: File a bug report
+description: File a bug report for the community fork (Minecraft 1.21.11 / 26.1.2 / 26.2)
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
-      value: "## Help us help you"
-  - type: markdown
-    attributes:
-      value: "Please provide as much information as possible in order to help us address your issue!"
+      value: |
+        ## Help us help you
+
+        Please provide as much information as possible in order to help us address your issue!
+
+        This tracker belongs to the **community fork** of World Preview, which supports Minecraft
+        **1.21.11, 26.1.2 and 26.2** on **Fabric and NeoForge**. If you are running the original
+        mod on Minecraft 1.21 or older, please report your issue to the
+        [original project](https://modrinth.com/mod/world-preview) instead.
   - type: textarea
     id: what-happened
     attributes:
@@ -17,56 +22,49 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: mc-version
     attributes:
       label: Minecraft Version
       description: Which Minecraft version are you using?
       multiple: false
       options:
-        - 1.21.1+
-        - 1.21.1
-        - 1.21.0
-        - 1.20.6
-        - 1.20.5
-        - 1.20.4
-        - 1.20.3
-        - 1.20.2
-        - 1.20.1
-        - 1.20
+        - "26.2"
+        - "26.1.2"
+        - "1.21.11"
         - Other (unsupported)
       default: 0
     validations:
       required: true
   - type: dropdown
+    id: modloader
     attributes:
-      label: Modloader (Fabric/Forge)
-      description: Which Modloader are you using?
+      label: Mod loader
+      description: Which mod loader are you using?
       multiple: false
       options:
         - Fabric
-        - Forge
+        - NeoForge
       default: 0
     validations:
       required: true
   - type: dropdown
+    id: wp-version
     attributes:
-      label: World-Preview Version
-      description: Which version of World-Preview are you using?
+      label: World Preview Version
+      description: Which version of this fork are you using? It is part of the jar file name.
       multiple: false
       options:
-        - 1.3.1
-        - 1.3.0
-        - 1.2.2
-        - 1.2.1
-        - 1.2.0
-        - 1.1.6
-        - 1.1.5
-        - 1.1.4
-        - 1.1.3
-        - 1.1.2
-        - 1.1.1
-        - 1.1.0
-        - 1.0.0
-        - Other (unsupported)
+        - "1.5.3"
+        - "1.5.2"
+        - "1.5.1"
+        - "1.5.0"
+        - "1.4.2"
+        - "1.4.1"
+        - "1.4.0"
+        - "1.3.5"
+        - "1.3.4"
+        - "1.3.3"
+        - Other / older build (unsupported)
       default: 0
     validations:
       required: true
@@ -81,9 +79,8 @@ body:
   - type: textarea
     id: more-info
     attributes:
-      label: Additional Information 
+      label: Additional Information
       description: For any other helpful details!
       placeholder: Any additional information, such as screenshots (if applicable) or more context.
     validations:
       required: false
-      

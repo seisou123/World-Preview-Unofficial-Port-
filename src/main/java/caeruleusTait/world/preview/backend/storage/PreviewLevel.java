@@ -152,12 +152,6 @@ public class PreviewLevel implements WorldGenLevel {
         throw new NotImplementedException("Not implemented");
     }
 
-        // getShade removed in MC 26.2
-    // @Override
-    // public float getShade(Direction direction, boolean shade) {
-    //     throw new NotImplementedException("Not implemented");
-    // }
-
     @Override
     public LevelLightEngine getLightEngine() {
         throw new NotImplementedException("Not implemented");
