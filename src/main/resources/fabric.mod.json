@@ -9,7 +9,9 @@
 		"Taiterio"
 	],
 	"contact": {
-		"homepage": "https://modrinth.com/mod/world-preview-fork"
+		"homepage": "https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port",
+		"sources": "https://github.com/seisou123/World-Preview-Unofficial-Port-",
+		"issues": "https://github.com/seisou123/World-Preview-Unofficial-Port-/issues"
 	},
 	"license": "Apache-2.0",
 	"icon": "assets/world_preview/icon.png",
