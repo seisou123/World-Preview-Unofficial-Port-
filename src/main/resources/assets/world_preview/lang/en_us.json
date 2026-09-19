@@ -365,7 +365,7 @@
   "world_preview.search.empty.saved": "No saved seeds yet - type a seed above and press Save",
   "world_preview.search.biome.show_caves.short": "Cave biomes",
   "world_preview.preview.btn-waypoints": "Waypoints",
-  "world_preview.preview.btn-waypoints.tooltip": "Waypoint mode: left-click the map to place a waypoint, right-click an existing waypoint to remove it",
+  "world_preview.preview.btn-waypoints.tooltip": "Waypoint mode: left-click the map to place a waypoint; left-click an existing waypoint to rename, recolour or delete it",
   "world_preview.preview.btn-measure": "Measure",
   "world_preview.preview.btn-measure.tooltip": "Measure mode: left-click two points to measure the distance, right-click to clear",
   "world_preview.preview.located": "Structure located at %s, %s",
