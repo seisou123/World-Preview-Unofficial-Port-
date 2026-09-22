@@ -168,6 +168,6 @@ public class HeightmapSettingsPage extends AbstractSettingsPage {
         cfg.heightmapMinY = 32;
         cfg.heightmapMaxY = 255;
         cfg.onlySampleInVisualRange = true;
-        // colorMap reset to first available - handled at runtime
+        cfg.colorMap = WorldPreviewConfig.defaults().colorMap;
     }
 }

@@ -34,7 +34,13 @@ public class ColormapReloadListener extends SimpleJsonResourceReloadListener {
         LOGGER.debug("Loading colormaps:");
         for (Map.Entry<Identifier, JsonElement> entry : map.entrySet()) {
             final ColorMap.RawColorMap value = GSON.fromJson(entry.getValue(), ColorMap.RawColorMap.class);
-            LOGGER.debug(" - {}: {} | {} entries", entry.getKey(), value.name(), value.data().size());
+            if (value == null) {
+                LOGGER.warn(" - {}: Invalid colormap entry", entry.getKey());
+                continue;
+            }
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug(" - {}: {} | {} entries", entry.getKey(), value.name(), value.data().size());
+            }
             previewMappingData.addColormap(new ColorMap(entry.getKey(), value));
         }
     }

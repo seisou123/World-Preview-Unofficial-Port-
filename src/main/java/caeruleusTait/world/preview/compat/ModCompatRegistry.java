@@ -132,20 +132,30 @@ public final class ModCompatRegistry {
      * @return a set of detected mod IDs
      */
     public static Set<String> detectInstalledMods() {
+        try {
+            return detectInstalledMods(net.fabricmc.loader.api.FabricLoader.getInstance());
+        } catch (Exception e) {
+            LOGGER.debug("Failed to detect mods via Fabric Loader: {}", e.getMessage());
+            return new java.util.HashSet<>();
+        }
+    }
+
+    /**
+     * Enumerates the mod IDs exposed by the given loader.
+     *
+     * <p>Split out from {@link #detectInstalledMods()} so the enumeration can be
+     * exercised against a stub loader: the singleton loader in a plain
+     * unit-test JVM has no mods to report.
+     *
+     * @param loader the loader to query
+     * @return a set of detected mod IDs
+     */
+    static Set<String> detectInstalledMods(net.fabricmc.loader.api.FabricLoader loader) {
         Set<String> modIds = new java.util.HashSet<>();
         try {
-            net.fabricmc.loader.api.FabricLoader fabricLoader =
-                    net.fabricmc.loader.api.FabricLoader.getInstance();
-            // Access the internal mod list field using reflection
-            java.lang.reflect.Field modListField = net.fabricmc.loader.api.FabricLoader.class
-                    .getDeclaredField("mods");
-            modListField.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            java.util.List<net.fabricmc.loader.api.ModContainer> modContainers =
-                    (java.util.List<net.fabricmc.loader.api.ModContainer>) modListField.get(fabricLoader);
-            if (modContainers != null) {
-                for (net.fabricmc.loader.api.ModContainer modContainer : modContainers) {
-                    String modId = modContainer.getMetadata().getId();
+            for (net.fabricmc.loader.api.ModContainer modContainer : loader.getAllMods()) {
+                String modId = modContainer.getMetadata().getId();
+                if (modId != null && !modId.isBlank()) {
                     modIds.add(modId);
                 }
             }

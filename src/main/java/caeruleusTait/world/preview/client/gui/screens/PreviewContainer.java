@@ -2535,7 +2535,7 @@ public void onScreenReentry() {
         // noise sampling for that pixel.
         final PreviewData.BiomeData[] biomeDataById = previewData.biomeId2BiomeData();
         final TerrainCategory[] categoryById = new TerrainCategory[biomeDataById.length];
-        final byte[] estimatedHeightById = new byte[biomeDataById.length];
+        final short[] estimatedHeightById = new short[biomeDataById.length];
         try {
             Registry<Biome> biomeRegistry = workManager.worldgenContext().registryAccess()
                     .compositeAccess().lookupOrThrow(Registries.BIOME);

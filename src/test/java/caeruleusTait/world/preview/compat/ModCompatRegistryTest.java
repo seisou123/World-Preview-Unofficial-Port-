@@ -1,6 +1,11 @@
 package caeruleusTait.world.preview.compat;
 
 import org.junit.jupiter.api.*;
+
+import java.lang.reflect.Proxy;
+import java.util.Collection;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -79,6 +84,74 @@ class ModCompatRegistryTest {
         assertTrue(registry.all().isEmpty());
         assertTrue(registry.installedMods().isEmpty());
         assertTrue(registry.disabledMods().isEmpty());
+    }
+
+    // ---- detectInstalledMods integration ----
+
+    /**
+     * The enumeration must read the loader's public {@code getAllMods()} API.
+     * A stub loader stands in for Fabric Loader: the real singleton has no mods
+     * to report in a plain unit-test JVM.
+     */
+    @Test
+    void detectInstalledModsEnumeratesLoaderMods() {
+        net.fabricmc.loader.api.FabricLoader loader = stubLoader(List.of("minecraft", "terralith"));
+
+        java.util.Set<String> detected = ModCompatRegistry.detectInstalledMods(loader);
+
+        assertEquals(java.util.Set.of("minecraft", "terralith"), detected);
+    }
+
+    @Test
+    void detectInstalledModsIgnoresBlankAndNullIds() {
+        net.fabricmc.loader.api.FabricLoader loader = stubLoader(
+                java.util.Arrays.asList("minecraft", "", null, "terralith"));
+
+        java.util.Set<String> detected = ModCompatRegistry.detectInstalledMods(loader);
+
+        assertEquals(java.util.Set.of("minecraft", "terralith"), detected);
+    }
+
+    /**
+     * Detection must feed the registry's enabled check: before this fix the
+     * detection returned an empty set, so {@code isModEnabled} was always false.
+     */
+    @Test
+    void detectedModsDriveIsModEnabled() {
+        registry.setInstalledMods(ModCompatRegistry.detectInstalledMods(
+                stubLoader(List.of("minecraft", "terralith"))));
+
+        assertTrue(registry.isModEnabled("terralith"));
+        assertFalse(registry.isModEnabled("biomesoplenty"));
+    }
+
+    /** Detection against the real loader must stay exception-free outside Knot. */
+    @Test
+    void detectInstalledModsIsSafeWithoutKnot() {
+        assertNotNull(ModCompatRegistry.detectInstalledMods());
+    }
+
+    /** Builds a FabricLoader whose getAllMods() returns containers for the given ids. */
+    private static net.fabricmc.loader.api.FabricLoader stubLoader(Collection<String> modIds) {
+        ClassLoader cl = ModCompatRegistryTest.class.getClassLoader();
+        return (net.fabricmc.loader.api.FabricLoader) Proxy.newProxyInstance(cl,
+                new Class<?>[]{net.fabricmc.loader.api.FabricLoader.class},
+                (proxy, method, args) -> {
+                    if ("getAllMods".equals(method.getName())) {
+                        return modIds.stream().map(id -> stubContainer(cl, id)).toList();
+                    }
+                    return null;
+                });
+    }
+
+    private static net.fabricmc.loader.api.ModContainer stubContainer(ClassLoader cl, String modId) {
+        net.fabricmc.loader.api.metadata.ModMetadata metadata =
+                (net.fabricmc.loader.api.metadata.ModMetadata) Proxy.newProxyInstance(cl,
+                        new Class<?>[]{net.fabricmc.loader.api.metadata.ModMetadata.class},
+                        (proxy, method, args) -> "getId".equals(method.getName()) ? modId : null);
+        return (net.fabricmc.loader.api.ModContainer) Proxy.newProxyInstance(cl,
+                new Class<?>[]{net.fabricmc.loader.api.ModContainer.class},
+                (proxy, method, args) -> "getMetadata".equals(method.getName()) ? metadata : null);
     }
 
     @Test

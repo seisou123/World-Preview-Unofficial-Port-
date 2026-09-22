@@ -117,7 +117,7 @@ public final class ConfigMigrator {
         setDefaultIfMissing(root, "searchMinAreaPercent", 0);
         setDefaultIfMissing(root, "searchMaxDistance", 0);
         // Ensure analysis button field
-        setDefaultIfMissing(root, "showAnalysisButton", false);
+        setDefaultIfMissing(root, "showAnalysisButton", true);
         // Ensure showBiomeCounts
         setDefaultIfMissing(root, "showBiomeCounts", false);
         root.addProperty("configVersion", 4);
