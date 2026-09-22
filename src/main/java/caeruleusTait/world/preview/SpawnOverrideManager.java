@@ -10,7 +10,9 @@ package caeruleusTait.world.preview;
  */
 public final class SpawnOverrideManager {
 
-    private static boolean spawnOverrideApplied = false;
+    // Written from the client thread (reset) and the server tick thread
+    // (markApplied), read from the server tick thread.
+    private static volatile boolean spawnOverrideApplied = false;
 
     private SpawnOverrideManager() {}
 

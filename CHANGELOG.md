@@ -1,3 +1,25 @@
+## 1.5.4
+
+### Fixes
+
+- Fixed the Reset to Defaults button in the settings screen doing nothing: it now restores the current page's fields to their defaults, so the values shown there no longer drift from the saved config
+- Fixed the exported terrain height field giving peaks the lowest value instead of the highest, caused by a byte overflow in the terrain classifier
+- Fixed a single malformed entry discarding a whole resource file: biome colour maps, structure maps and colormaps now skip the offending entry and keep the rest
+- Fixed mod compatibility on Fabric: installed mods are enumerated again, so the compatibility adapters for supported modded chunk generators are selected and the sampling side honours their capability flags
+- Fixed contour lines breaking up on sloped terrain: the interpolated crossing was placed on the wrong cell edge, and an out-of-range interpolation parameter is now clamped
+- Fixed the hue bar in the colour picker drawing a black-to-white gradient instead of the hue spectrum
+- Fixed the render-complete marker being recorded before the preview texture was generated, so a failed pass is retried instead of being treated as rendered
+- Fixed a shared icon image being freed twice: the preview and structure-list textures now wrap a private copy of it
+- Hardened two cross-thread state paths (preview teardown and the spawn-override flag) against stale or torn reads
+
+### Improvements
+
+- The analysis area (the Analysis button in the preview sidebar) is now enabled by default, matching the seed search button; config files that do not yet contain the setting pick up the new default automatically
+
+### Internal
+
+- Added tests for the settings Reset button, the colormap endpoints, midpoint and direction, installed-mod detection, the terrain classifier's category heights and the contour landing points
+
 ## 1.5.3
 
 ### Fixes
