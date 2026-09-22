@@ -22,7 +22,7 @@ public class WorldPreviewConfig {
     public boolean showStatistics = false;
     public boolean showCoordinates = false;
     public boolean showBiomeCounts = false;
-    public boolean showAnalysisButton = false;
+    public boolean showAnalysisButton = true;
     public boolean showSeedSearchButton = true;
     public int searchMinAreaPercent = 0;
     public int searchMaxDistance = 0;

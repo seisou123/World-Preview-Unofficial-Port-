@@ -173,8 +173,9 @@ search criteria, and the results / history / favourites / saved-seeds tabs.
 
 ### World analysis
 
-The `Analysis` button opens the analysis screen. Region coordinates define the analysed area, and
-the right-hand panel switches between a terrain profile, a height chart and a biome-share
+The `Analysis` button opens the analysis screen; it is shown by default and can be hidden in
+`Settings → General → Enable analysis area`. Region coordinates define the analysed area, and the
+right-hand panel switches between a terrain profile, a height chart and a biome-share
 breakdown, next to a stats panel.
 
 > `img/analysis.png` — the analysis screen with its region controls and chart tabs.

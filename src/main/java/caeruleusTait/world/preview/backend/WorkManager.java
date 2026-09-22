@@ -334,8 +334,10 @@ public class WorkManager {
             queueIsRunning = false;
             pendingTopLeft = null;
             pendingBottomRight = null;
-            futures.clear();
-            queueFutures.clear();
+            synchronized (futures) {
+                futures.clear();
+                queueFutures.clear();
+            }
             executorService = null;
             queueChunksService = null;
             previewStorageCacheManager = null;
@@ -642,6 +644,16 @@ public class WorkManager {
         final List<ChunkPos> chunks = ChunkPos.rangeClosed(topLeft, bottomRight).toList();
         int units = 0;
 
+        // Capability flags of the adapter the compat registry selected for this
+        // chunk generator.  Consulting them is what makes mod detection
+        // observable: a mod-specific adapter is only selected while its mod is
+        // installed and not disabled, so an absent/disabled mod falls back to
+        // the vanilla adapter, whose flags are both true.
+        final caeruleusTait.world.preview.compat.ChunkGeneratorAdapter adapter =
+                sampleUtils == null ? null : sampleUtils.chunkGeneratorAdapter();
+        final boolean structuresSupported = adapter == null || adapter.supportsStructures();
+        final boolean heightmapSupported = adapter == null || adapter.supportsHeightmap();
+
         // Main biomes
         if (epochSnapshot != sessionEpoch.get() || shouldEarlyAbortQueuing) {
             // Early abort: no batches were created for this range.  Clear the
@@ -656,12 +668,12 @@ public class WorkManager {
         units += queueForLevel(chunks, topLeftBlock.getY(), 4096, PreviewStorage.FLAG_BIOME, this::workUnitFactory);
 
         // Structures
-        if (config.sampleStructures && shouldContinueQueuing(epochSnapshot)) {
+        if (config.sampleStructures && structuresSupported && shouldContinueQueuing(epochSnapshot)) {
             units += queueForLevel(chunks, 0, 256, PreviewStorage.FLAG_STRUCT_START, (pos, y) -> new StructStartWorkUnit(this, sampleUtils, pos, previewData));
         }
 
         // Height map
-        if (config.sampleHeightmap && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null) {
+        if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null) {
             LongSet queuedChunks = new LongOpenHashSet(chunks.size());
             List<ChunkPos> heightMapChunks = new ArrayList<>(chunks.size());
             final int sectionSizeExponent = PreviewSection.SHIFT - PreviewSection.QUART_TO_SECTION_SHIFT;
@@ -673,7 +685,7 @@ public class WorkManager {
                 }
             }
             units += queueForLevel(heightMapChunks, 0, 1, PreviewStorage.FLAG_HEIGHT, (pos, y) -> new HeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData));
-        } else if (config.sampleHeightmap && shouldContinueQueuing(epochSnapshot)) {
+        } else if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot)) {
             units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_HEIGHT, (pos, y) -> new SlowHeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, previewData));
         }
 

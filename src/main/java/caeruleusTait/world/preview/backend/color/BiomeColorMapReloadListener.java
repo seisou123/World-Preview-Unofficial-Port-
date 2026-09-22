@@ -6,6 +6,7 @@ import caeruleusTait.world.preview.WorldPreview;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.minecraft.IdentifierException;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.util.profiling.ProfilerFiller;
@@ -71,13 +72,14 @@ public class BiomeColorMapReloadListener extends BaseMultiJsonResourceReloadList
         final JsonObject obj = jsonElement.getAsJsonObject();
 
         for (var entry : obj.entrySet()) {
-            final Identifier location = Identifier.parse(entry.getKey());
+            final Identifier location;
             final PreviewMappingData.ColorEntry value = new PreviewMappingData.ColorEntry();
             final JsonElement rawEl = entry.getValue();
 
             value.dataSource = dataSource;
 
             try {
+                location = Identifier.parse(entry.getKey());
                 JsonObject raw = rawEl.getAsJsonObject();
                 JsonElement nameEl = raw.get("name");
                 JsonElement colorEl = raw.get("color");
@@ -98,12 +100,14 @@ public class BiomeColorMapReloadListener extends BaseMultiJsonResourceReloadList
                 } else {
                     throw new IllegalStateException("No color was provided!");
                 }
-            } catch (IllegalStateException | UnsupportedOperationException | NullPointerException e) {
-                LOGGER.warn("   - {}: Invalid color entry format: {}", location, e.getMessage());
+            } catch (IllegalStateException | UnsupportedOperationException | NullPointerException | NumberFormatException | IdentifierException e) {
+                LOGGER.warn("   - {}: Invalid color entry format: {}", entry.getKey(), e.getMessage());
                 continue;
             }
 
-            LOGGER.debug("   - {}: {}", location, String.format("0x%06X", (value.color & 0xFFFFFF)));
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("   - {}: {}", location, String.format("0x%06X", (value.color & 0xFFFFFF)));
+            }
             res.put(location, value);
         }
 
