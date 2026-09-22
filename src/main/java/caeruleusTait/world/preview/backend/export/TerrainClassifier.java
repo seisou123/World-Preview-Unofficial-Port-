@@ -170,20 +170,20 @@ public final class TerrainClassifier {
      * uses for its estimated-height fallback).
      *
      * @param cat terrain category
-     * @return estimated surface height as a byte
+     * @return estimated surface height as a short
      */
-    public static byte categoryHeight(TerrainCategory cat) {
+    public static short categoryHeight(TerrainCategory cat) {
         return switch (cat) {
-            case DEEP_OCEAN -> (byte) 30;
-            case OCEAN -> (byte) 50;
-            case RIVER -> (byte) 55;
-            case BEACH -> (byte) 63;
-            case PLAINS -> (byte) 70;
-            case FOREST -> (byte) 75;
-            case HILLS -> (byte) 90;
-            case MOUNTAIN -> (byte) 120;
-            case PEAK -> (byte) 160;
-            case UNKNOWN -> (byte) 70;
+            case DEEP_OCEAN -> 30;
+            case OCEAN -> 50;
+            case RIVER -> 55;
+            case BEACH -> 63;
+            case PLAINS -> 70;
+            case FOREST -> 75;
+            case HILLS -> 90;
+            case MOUNTAIN -> 120;
+            case PEAK -> 160;
+            case UNKNOWN -> 70;
         };
     }
 }

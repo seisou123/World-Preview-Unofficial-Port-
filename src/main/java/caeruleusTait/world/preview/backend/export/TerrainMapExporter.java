@@ -93,7 +93,7 @@ public final class TerrainMapExporter {
 
         TerrainCategory category(short id);
 
-        byte estimatedHeight(short id);
+        short estimatedHeight(short id);
     }
 
     /** Storage-backed biome facts: probe plus per-id resolver pair. */
@@ -105,7 +105,7 @@ public final class TerrainMapExporter {
      * precomputed once from the preview biome list, so the export hot path
      * performs no holder or tag lookups.
      */
-    public record IdTableResolver(TerrainCategory[] byId, byte[] estById) implements BiomeIdResolver {
+    public record IdTableResolver(TerrainCategory[] byId, short[] estById) implements BiomeIdResolver {
         @Override
         public boolean known(short id) {
             return id >= 0 && id < byId.length && byId[id] != null;
@@ -117,7 +117,7 @@ public final class TerrainMapExporter {
         }
 
         @Override
-        public byte estimatedHeight(short id) {
+        public short estimatedHeight(short id) {
             return known(id) ? estById[id] : TerrainClassifier.categoryHeight(TerrainCategory.UNKNOWN);
         }
     }
@@ -475,7 +475,7 @@ public final class TerrainMapExporter {
     /**
      * Roughly estimate terrain height from biome.
      */
-    private static byte estimateHeight(Holder<Biome> biomeHolder) {
+    private static short estimateHeight(Holder<Biome> biomeHolder) {
         if (biomeHolder == null) return 0;
         return TerrainClassifier.categoryHeight(TerrainClassifier.classify(biomeHolder));
     }

@@ -128,7 +128,7 @@ class TerrainMapExporterBiomeFactsTest {
     void idTableResolverGuardsMisalignedIds() {
         TerrainMapExporter.IdTableResolver resolver = new TerrainMapExporter.IdTableResolver(
                 new TerrainCategory[]{TerrainCategory.DEEP_OCEAN, null, TerrainCategory.OCEAN},
-                new byte[]{30, 0, 50});
+                new short[]{30, 0, 50});
 
         assertFalse(resolver.known((short) -1), "negative storage id must not be trusted");
         assertFalse(resolver.known((short) 3), "out-of-range id must not be trusted");
@@ -147,17 +147,28 @@ class TerrainMapExporterBiomeFactsTest {
     void categoryHeightMatchesLegacyEstimateLevels() {
         // Pins the switch extracted from TerrainMapExporter.estimateHeight so
         // the per-id table cannot silently drift from the fallback path.
-        // PEAK is (byte) 160 == -96: byte arithmetic identical to the legacy
-        // switch (whose value was widened to int and clamped to offset 0).
-        assertEquals((byte) 30, TerrainClassifier.categoryHeight(TerrainCategory.DEEP_OCEAN));
-        assertEquals((byte) 50, TerrainClassifier.categoryHeight(TerrainCategory.OCEAN));
-        assertEquals((byte) 55, TerrainClassifier.categoryHeight(TerrainCategory.RIVER));
-        assertEquals((byte) 63, TerrainClassifier.categoryHeight(TerrainCategory.BEACH));
-        assertEquals((byte) 70, TerrainClassifier.categoryHeight(TerrainCategory.PLAINS));
-        assertEquals((byte) 75, TerrainClassifier.categoryHeight(TerrainCategory.FOREST));
-        assertEquals((byte) 90, TerrainClassifier.categoryHeight(TerrainCategory.HILLS));
-        assertEquals((byte) 120, TerrainClassifier.categoryHeight(TerrainCategory.MOUNTAIN));
-        assertEquals((byte) 160, TerrainClassifier.categoryHeight(TerrainCategory.PEAK));
-        assertEquals((byte) 70, TerrainClassifier.categoryHeight(TerrainCategory.UNKNOWN));
+        assertEquals((short) 30, TerrainClassifier.categoryHeight(TerrainCategory.DEEP_OCEAN));
+        assertEquals((short) 50, TerrainClassifier.categoryHeight(TerrainCategory.OCEAN));
+        assertEquals((short) 55, TerrainClassifier.categoryHeight(TerrainCategory.RIVER));
+        assertEquals((short) 63, TerrainClassifier.categoryHeight(TerrainCategory.BEACH));
+        assertEquals((short) 70, TerrainClassifier.categoryHeight(TerrainCategory.PLAINS));
+        assertEquals((short) 75, TerrainClassifier.categoryHeight(TerrainCategory.FOREST));
+        assertEquals((short) 90, TerrainClassifier.categoryHeight(TerrainCategory.HILLS));
+        assertEquals((short) 120, TerrainClassifier.categoryHeight(TerrainCategory.MOUNTAIN));
+        assertEquals((short) 160, TerrainClassifier.categoryHeight(TerrainCategory.PEAK));
+        assertEquals((short) 70, TerrainClassifier.categoryHeight(TerrainCategory.UNKNOWN));
+    }
+
+    @Test
+    void categoryHeightsArePositiveAndPeakIsHighest() {
+        // A narrower return type used to wrap PEAK's 160 into -96, handing the
+        // highest terrain the lowest value in the exported height field.
+        for (TerrainCategory category : TerrainCategory.values()) {
+            assertTrue(TerrainClassifier.categoryHeight(category) > 0,
+                    category + " must estimate above the height-field floor");
+        }
+        assertTrue(TerrainClassifier.categoryHeight(TerrainCategory.PEAK)
+                        > TerrainClassifier.categoryHeight(TerrainCategory.MOUNTAIN),
+                "PEAK must estimate above MOUNTAIN");
     }
 }

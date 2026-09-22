@@ -249,24 +249,38 @@ Minecraft.getInstance().player.displayClientMessage(resultMsg, false);
 
     @Override
     public void reset() {
-        cfg.setNumThreads(Math.max(Runtime.getRuntime().availableProcessors() - 1, 1));
-        cfg.buildFullVertChunk = false;
-        cfg.backgroundSampleVertChunk = false;
-        cfg.sampleStructures = false;
-        cfg.sampleHeightmap = false;
-        cfg.sampleIntersections = false;
-        cfg.storeNoiseSamples = false;
-        cfg.showControls = true;
-        cfg.showFrameTime = false;
-        cfg.showMinimap = false;
-        cfg.showStatistics = false;
-        cfg.showCoordinates = false;
-        cfg.scrollWheelZooms = false;
-        cfg.enablePreload = true;
-        cfg.preloadOnlyWhenIdle = true;
-        cfg.preloadRadius = 128;
-        cfg.showInPauseMenu = true;
-        cfg.showPlayer = true;
-        cfg.showSeedSearchButton = true;
+        WorldPreviewConfig defaults = WorldPreviewConfig.defaults();
+        cfg.setNumThreads(defaults.numThreads());
+        cfg.buildFullVertChunk = defaults.buildFullVertChunk;
+        cfg.backgroundSampleVertChunk = defaults.backgroundSampleVertChunk;
+        cfg.sampleStructures = defaults.sampleStructures;
+        cfg.sampleHeightmap = defaults.sampleHeightmap;
+        cfg.sampleIntersections = defaults.sampleIntersections;
+        cfg.storeNoiseSamples = defaults.storeNoiseSamples;
+        cfg.showBiomeCounts = defaults.showBiomeCounts;
+        cfg.showAnalysisButton = defaults.showAnalysisButton;
+        cfg.showSeedSearchButton = defaults.showSeedSearchButton;
+        cfg.searchMinAreaPercent = defaults.searchMinAreaPercent;
+        cfg.searchMaxDistance = defaults.searchMaxDistance;
+        cfg.showControls = defaults.showControls;
+        cfg.showFrameTime = defaults.showFrameTime;
+        cfg.showMinimap = defaults.showMinimap;
+        cfg.showStatistics = defaults.showStatistics;
+        cfg.showCoordinates = defaults.showCoordinates;
+        cfg.scrollWheelZooms = defaults.scrollWheelZooms;
+        cfg.enablePreload = defaults.enablePreload;
+        cfg.preloadOnlyWhenIdle = defaults.preloadOnlyWhenIdle;
+        cfg.preloadRadius = defaults.preloadRadius;
+        cfg.showInPauseMenu = defaults.showInPauseMenu;
+        cfg.showPlayer = defaults.showPlayer;
+        cfg.usePerNoiseTypeGradients = defaults.usePerNoiseTypeGradients;
+        cfg.enableHillshade = defaults.enableHillshade;
+        cfg.hillshadeAzimuth = defaults.hillshadeAzimuth;
+        cfg.hillshadeAltitude = defaults.hillshadeAltitude;
+        cfg.hillshadeAmbient = defaults.hillshadeAmbient;
+        cfg.hillshadeExaggeration = defaults.hillshadeExaggeration;
+        cfg.enableContours = defaults.enableContours;
+        cfg.contourInterval = defaults.contourInterval;
+        cfg.contourMinorLines = defaults.contourMinorLines;
     }
 }

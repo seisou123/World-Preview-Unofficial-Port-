@@ -257,7 +257,7 @@ public class SettingsScreen extends Screen {
         resetButton = Button.builder(
                 Component.translatable("world_preview.settings.reset_defaults"),
                 b -> {
-                    pageRegistry.resetAll();
+                    resetPage(currentPage);
                     rebuildCurrentPage();
                 }
         ).bounds(panelLeft() + 12, bottomY, 120, 20).build();
@@ -289,6 +289,17 @@ public class SettingsScreen extends Screen {
         pageRegistry.clear();
         for (AbstractSettingsPage page : pages) {
             pageRegistry.register(page.category(), page);
+        }
+    }
+
+    /**
+     * Restores the given page's fields to their defaults. Backs the footer Reset
+     * button: {@code pageRegistry.resetAll()} only resets {@code ConfigBinding}s
+     * and no page registers any, so the button previously did nothing.
+     */
+    static void resetPage(AbstractSettingsPage page) {
+        if (page != null) {
+            page.reset();
         }
     }
 

@@ -5,6 +5,7 @@ package caeruleusTait.world.preview.backend.color;
 import caeruleusTait.world.preview.WorldPreview;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import net.minecraft.IdentifierException;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.util.profiling.ProfilerFiller;
@@ -47,13 +48,14 @@ public class StructureMapReloadListener extends BaseMultiJsonResourceReloadListe
         final JsonObject obj = jsonElement.getAsJsonObject();
 
         for (var entry : obj.entrySet()) {
-            final Identifier location = Identifier.parse(entry.getKey());
+            final Identifier location;
             final PreviewMappingData.StructureEntry value = new PreviewMappingData.StructureEntry();
             final JsonElement rawEl = entry.getValue();
 
             value.dataSource = dataSource;
 
             try {
+                location = Identifier.parse(entry.getKey());
                 if (rawEl.isJsonPrimitive()) {
                     if (rawEl.getAsString().equals("hidden")) {
                         continue;
@@ -80,8 +82,8 @@ public class StructureMapReloadListener extends BaseMultiJsonResourceReloadListe
                         value.texture = "world_preview:textures/structure/unknown.png";
                     }
                 }
-            } catch (IllegalStateException | UnsupportedOperationException | NullPointerException e) {
-                LOGGER.warn("   - {}: Invalid structure entry format: {}", location, e.getMessage());
+            } catch (IllegalStateException | UnsupportedOperationException | NullPointerException | NumberFormatException | IdentifierException e) {
+                LOGGER.warn("   - {}: Invalid structure entry format: {}", entry.getKey(), e.getMessage());
                 continue;
             }
 
