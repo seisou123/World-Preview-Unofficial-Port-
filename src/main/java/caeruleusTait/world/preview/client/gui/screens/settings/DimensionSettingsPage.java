@@ -71,12 +71,8 @@ public class DimensionSettingsPage extends AbstractSettingsPage {
 
     @Override
     public void reset() {
-        java.util.List<Identifier> keys = previewContainer.levelStemKeys();
-        if (keys != null && !keys.isEmpty()) {
-            rs.dimension = keys.stream()
-                    .sorted(Comparator.comparing(Identifier::toString))
-                    .findFirst()
-                    .orElse(null);
-        }
+        // RenderSettings' default is null, which the container resolves to the
+        // Overworld once the level stems are known.
+        rs.dimension = null;
     }
 }

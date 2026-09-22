@@ -85,9 +85,17 @@ public class ColorChooser extends AbstractWidget {
         leftX = rightX + SEPARATOR;
         rightX = leftX + hBarWidth;
 
-        int white = 0xFFFFFFFF;
-        int black = 0xFF000000;
-        guiGraphics.fillGradient(leftX, topY, rightX, botY, white, black);
+        // fillGradient interpolates only between two colors, so the hue
+        // spectrum is drawn as strips (top = hue 1, bottom = hue 0), matching
+        // the strip technique used for the SV square above.
+        int hueStrips = 32;
+        for (int s = 0; s < hueStrips; s++) {
+            int stripTop = topY + s * svSquareSize / hueStrips;
+            int stripBottom = topY + (s + 1) * svSquareSize / hueStrips;
+            if (stripBottom <= stripTop) continue;
+            float stripHue = 1f - (float) s / hueStrips;
+            guiGraphics.fill(leftX, stripTop, rightX, stripBottom, Color.HSBtoRGB(stripHue, 1f, 1f));
+        }
 
         // Render hue indicator
         int hueY = topY + Math.round((1f - hue) * svSquareSize);

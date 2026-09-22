@@ -508,8 +508,6 @@ resizeImage();
                     // must perform its one-time black fill+upload again.
                     blackStateUploaded = false;
 
-                    throttle.markRendered(currentCenter, currentWriteCounter);
-
                     engine.beginFrameCounts();
                     hoverInspector.clearGridEntries();
                     // Structure hover grid was rebuilt; force tooltip re-query.
@@ -523,6 +521,11 @@ resizeImage();
                     // Upload the modified NativeImage data to the GPU texture.
                     engine.uploadMainTexture();
                     throttle.markTextureUploaded();
+                    // Only commit the render as done once the heavy path has
+                    // actually produced and uploaded the texture; committing
+                    // before generation would let a failed pass be recorded as
+                    // rendered and skip the retry.
+                    throttle.markRendered(currentCenter, currentWriteCounter);
 
                     // Render the main texture
                     WorldPreviewClient.renderTexture(guiGraphics, engine.mainTexture(), xMin, yMin, xMax, yMax);

@@ -92,7 +92,7 @@ class TerrainMapExporterFactsExportTest {
                 (blockX, blockZ) -> (short) 1,
                 new TerrainMapExporter.IdTableResolver(
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
-                        new byte[]{0, (byte) 50}));
+                        new short[]{0, 50}));
         exportAndCheck(facts, TerrainCategory.OCEAN.pixelColor());
     }
 
@@ -103,7 +103,7 @@ class TerrainMapExporterFactsExportTest {
                 (blockX, blockZ) -> null,
                 new TerrainMapExporter.IdTableResolver(
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
-                        new byte[]{0, (byte) 50}));
+                        new short[]{0, 50}));
         exportAndCheck(facts, TerrainCategory.PLAINS.pixelColor());
     }
 
@@ -114,7 +114,7 @@ class TerrainMapExporterFactsExportTest {
                 (blockX, blockZ) -> (short) 7,
                 new TerrainMapExporter.IdTableResolver(
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
-                        new byte[]{0, (byte) 50}));
+                        new short[]{0, 50}));
         exportAndCheck(facts, TerrainCategory.PLAINS.pixelColor());
     }
 }

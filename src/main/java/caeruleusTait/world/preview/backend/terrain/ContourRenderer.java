@@ -166,13 +166,13 @@ public final class ContourRenderer {
                 drawEdgePoint(colors, width, x, y, tLeft, 1, lineColor, alphaF);
                 drawEdgePoint(colors, width, x, y + 1, tBottom, 0, lineColor, alphaF);
             }
-            case 3, 12 -> { // Horizontal line
+            case 3, 12 -> { // Horizontal line: crosses the left and right edges
                 drawEdgePoint(colors, width, x, y, tLeft, 1, lineColor, alphaF);
-                drawEdgePoint(colors, width, x, y + 1, tBottom, 0, lineColor, alphaF);
-            }
-            case 6, 9 -> { // Vertical line
-                drawEdgePoint(colors, width, x, y, tTop, 0, lineColor, alphaF);
                 drawEdgePoint(colors, width, x + 1, y, tRight, 1, lineColor, alphaF);
+            }
+            case 6, 9 -> { // Vertical line: crosses the top and bottom edges
+                drawEdgePoint(colors, width, x, y, tTop, 0, lineColor, alphaF);
+                drawEdgePoint(colors, width, x, y + 1, tBottom, 0, lineColor, alphaF);
             }
             case 5 -> { // Saddle: top-left + bottom-right
                 drawEdgePoint(colors, width, x, y, tTop, 0, lineColor, alphaF);
@@ -195,7 +195,12 @@ public final class ContourRenderer {
      */
     private static float intersectPos(int h0, int h1, int level) {
         if (h0 == h1) return 0.5f;
-        return (float) (level - h0) / (float) (h1 - h0);
+        // Clamp: an edge that does not actually cross the level would yield a
+        // t outside [0,1], placing the point on the wrong pixel.
+        float t = (float) (level - h0) / (float) (h1 - h0);
+        if (t < 0f) return 0f;
+        if (t > 1f) return 1f;
+        return t;
     }
 
     /**
