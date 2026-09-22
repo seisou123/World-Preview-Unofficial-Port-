@@ -54,7 +54,8 @@ class PreviewRenderEngine {
             // Unregister before close so TextureManager does not retain the id.
             WorldPreviewClient.unregisterTexture(texture);
             texture.close();
-            // NativeImage owned by PreviewContainer for structure icons
+            // Only the private image copy is freed here; the shared source
+            // image stays owned by PreviewContainer / the provider.
         }
     }
 
@@ -165,6 +166,23 @@ class PreviewRenderEngine {
         return previewTexture;
     }
 
+    /**
+     * Creates a DynamicTexture over a PRIVATE copy of the given image.
+     * Vanilla's DynamicTexture.close() unconditionally frees the wrapped
+     * NativeImage, and the unregister path reaches it via
+     * TextureManager.release. The provider's icon images are shared, so
+     * wrapping them directly lets a teardown free pixels another owner still
+     * uses; the copy keeps same format/size so copyFrom is a straight memCopy.
+     */
+    private static DynamicTexture privateCopyTexture(String label, NativeImage source) {
+        if (source == null) {
+            return null;
+        }
+        NativeImage copy = new NativeImage(source.format(), source.getWidth(), source.getHeight(), true);
+        copy.copyFrom(source);
+        return new DynamicTexture(() -> label, copy);
+    }
+
     /** Loads world-dependent rendering inputs (icons, colormaps, count arrays). */
     void reloadData() {
         closeIconTextures();
@@ -182,9 +200,14 @@ class PreviewRenderEngine {
         PreviewDisplayDataProvider provider = host.dataProvider();
         structureRenderInfoMap = provider.renderStructureMap();
         structureItems = provider.structureItems();
-        structureIcons = Arrays.stream(provider.structureIcons()).map(x -> new IconData(x, new DynamicTexture(() -> "struct_icon", x))).toArray(IconData[]::new);
-        playerIcon = new IconData(provider.playerIcon(), new DynamicTexture(() -> "player_icon", provider.playerIcon()));
-        spawnIcon = new IconData(provider.spawnIcon(), new DynamicTexture(() -> "spawn_icon", provider.spawnIcon()));
+        // Provider icon images are shared with PreviewContainer (structure
+        // icons) and its player/spawn images, and the unregister path does
+        // reach DynamicTexture.close(), which frees the wrapped image. Every
+        // texture therefore wraps a private copy; rendering keeps reading
+        // pixels from the shared IconData.img.
+        structureIcons = Arrays.stream(provider.structureIcons()).map(x -> new IconData(x, privateCopyTexture("struct_icon", x))).toArray(IconData[]::new);
+        playerIcon = new IconData(provider.playerIcon(), privateCopyTexture("player_icon", provider.playerIcon()));
+        spawnIcon = new IconData(provider.spawnIcon(), privateCopyTexture("spawn_icon", provider.spawnIcon()));
         playerIcon.texture.upload();
         spawnIcon.texture.upload();
         Arrays.stream(structureIcons).map(IconData::texture).forEach(DynamicTexture::upload);

@@ -100,7 +100,12 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             this.item = item;
             this.itemStack = this.item == null ? null : new ItemStack(this.item, 1);
             this.icon = icon;
-            this.iconTexture = new DynamicTexture(() -> "wp_structure_icon", this.icon);
+            // icon pixels are shared with PreviewContainer's structure icon
+            // array; DynamicTexture.close() frees the wrapped image, so wrap a
+            // private copy instead.
+            NativeImage iconCopy = new NativeImage(icon.format(), icon.getWidth(), icon.getHeight(), true);
+            iconCopy.copyFrom(icon);
+            this.iconTexture = new DynamicTexture(() -> "wp_structure_icon", iconCopy);
             this.iconWidth = this.icon.getWidth();
             this.iconHeight = this.icon.getHeight();
             this.showByDefault = showByDefault;
