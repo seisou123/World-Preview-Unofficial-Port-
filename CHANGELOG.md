@@ -19,6 +19,7 @@
 ### Internal
 
 - Added tests for the settings Reset button, the colormap endpoints, midpoint and direction, installed-mod detection, the terrain classifier's category heights and the contour landing points
+- Added regression coverage for the shipped `viridis.json` interpolation direction; the existing production code is intentionally unchanged
 
 ## 1.5.3
 
