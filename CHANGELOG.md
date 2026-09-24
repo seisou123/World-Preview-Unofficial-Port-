@@ -11,6 +11,10 @@
 - Fixed the render-complete marker being recorded before the preview texture was generated, so a failed pass is retried instead of being treated as rendered
 - Fixed a shared icon image being freed twice: the preview and structure-list textures now wrap a private copy of it
 - Hardened two cross-thread state paths (preview teardown and the spawn-override flag) against stale or torn reads
+- Fixed the heightmap scan missing the topmost partial noise cell when the visual Y-range limit was on: terrain whose surface sits in that band (e.g. between Y 240 and 255 with the default range) was reported lower than it is
+- Fixed the preview disk cache not distinguishing height sampling settings: the cache key now encodes the sampled Y range and the visual-range limit losslessly, and the cache format was bumped so existing caches recompute once instead of risking reuse of height data sampled with a different range
+- Fixed the Dimension settings page Reset snapping to the first dimension in the list instead of returning to the default (Overworld)
+- Fixed the preview keeping the previous zoom scale after changing the resolution on the settings screen and pressing Done
 
 ### Improvements
 
@@ -19,6 +23,7 @@
 ### Internal
 
 - Added tests for the settings Reset button, the colormap endpoints, midpoint and direction, installed-mod detection, the terrain classifier's category heights and the contour landing points
+- Added tests for the heightmap scan bounds, the preview cache key layout, colormap entry tolerance, the dimension reset fallback and render settings round-trips
 - Added regression coverage for the shipped `viridis.json` interpolation direction; the existing production code is intentionally unchanged
 
 ## 1.5.3
