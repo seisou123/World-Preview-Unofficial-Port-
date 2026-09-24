@@ -34,8 +34,14 @@ public interface PreviewStorageCacheManager {
 
     /** Bumped to 2 when Java serialization cache I/O was disabled for safety.
      *  Bumped to 3 when the cache key gained world identity + sampling config
-     *  components (old v2 caches cannot prove which world they belong to). */
-    int CACHE_FORMAT_VERSION = 3;
+     *  components (old v2 caches cannot prove which world they belong to).
+     *  Bumped to 4 when the height-range key components became lossless
+     *  (offset-biased 10-bit fields that can represent negative Y) and the
+     *  {@code onlySampleInVisualRange} flag joined the key; v3 keys clamped the
+     *  range to 0..255 (colliding -64 with 0 and anything above 255 with 255)
+     *  and dropped the flag, so two different height-sampling configs could
+     *  share a filename.  Payload format unchanged. */
+    int CACHE_FORMAT_VERSION = 4;
 
     /** Zip entry name for the binary payload. */
     String CACHE_ZIP_ENTRY = "bin";
@@ -56,12 +62,9 @@ public interface PreviewStorageCacheManager {
         flags |= (settings.samplerType.ordinal() & 0b1111) << 4;
         flags |= (PreviewSection.SHIFT & 0b1111) << 8;
         flags |= (PreviewBlock.PREVIEW_BLOCK_SHIFT & 0b1111) << 12;
-        flags |= cfg.enableCompression ? 1L << 16 : 0;
-        // Sampling-config components: which noise channels exist and which
-        // height range was sampled are part of the data identity.
-        flags |= cfg.storeNoiseSamples ? 1L << 17 : 0;
-        flags |= (long) (Math.max(0, Math.min(255, cfg.heightmapMinY)) & 0xFF) << 18;
-        flags |= (long) (Math.max(0, Math.min(255, cfg.heightmapMaxY)) & 0xFF) << 26;
+        // Sampling-config components: which noise channels exist, which height
+        // range was sampled and in which mode are part of the data identity.
+        flags |= configSamplingFlags(cfg);
 
         // World-identity component: seed alone cannot prove cache ownership —
         // the same seed with a different generator/datapack/registry layout
@@ -84,6 +87,28 @@ public interface PreviewStorageCacheManager {
                 .replace(";", "_")
                 .replace("/", "_")
                 .replace("\\", "_");
+    }
+
+    /**
+     * Config-derived components of the cache key: everything that changes the
+     * identity of the sampled height/noise data without changing the seed.
+     *
+     * <p>Bit layout (v4): bit 16 {@code enableCompression}, bit 17
+     * {@code storeNoiseSamples}, bits 18..27 {@code heightmapMinY} and bits
+     * 28..37 {@code heightmapMaxY} — the latter two as
+     * {@code (clamp(v, -64, 512) + 64) & 0x3FF}, lossless across the value
+     * window the settings UI accepts (-64..512; v3 clamped to 0..255, which
+     * collided -64 with 0 and anything above 255 with 255) — and bit 38
+     * {@code onlySampleInVisualRange} (not encoded at all in v3).
+     */
+    static long configSamplingFlags(WorldPreviewConfig cfg) {
+        long flags = 0;
+        flags |= cfg.enableCompression ? 1L << 16 : 0;
+        flags |= cfg.storeNoiseSamples ? 1L << 17 : 0;
+        flags |= (long) ((Math.max(-64, Math.min(512, cfg.heightmapMinY)) + 64) & 0x3FF) << 18;
+        flags |= (long) ((Math.max(-64, Math.min(512, cfg.heightmapMaxY)) + 64) & 0x3FF) << 28;
+        flags |= cfg.onlySampleInVisualRange ? 1L << 38 : 0;
+        return flags;
     }
 
     /** Clears only the preview cache represented by this provider. Analysis data lives elsewhere. */

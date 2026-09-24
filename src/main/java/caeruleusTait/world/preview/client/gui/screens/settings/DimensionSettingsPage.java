@@ -16,6 +16,16 @@ import static caeruleusTait.world.preview.client.WorldPreviewComponents.*;
 
 public class DimensionSettingsPage extends AbstractSettingsPage {
 
+    /**
+     * The Overworld level-stem key, spelled literally to mirror
+     * {@code LevelStem.OVERWORLD.identifier()} as used by PreviewContainer's
+     * null fallback in updateSettings_real.  Kept as a plain Identifier because
+     * touching {@code LevelStem} class-initializes DimensionType and
+     * BuiltInRegistries, which requires bootstrap and would break headless
+     * unit tests of {@link #displayDimension}.
+     */
+    private static final Identifier OVERWORLD = Identifier.withDefaultNamespace("overworld");
+
     private final RenderSettings rs;
     private final PreviewContainer previewContainer;
 
@@ -47,11 +57,12 @@ public class DimensionSettingsPage extends AbstractSettingsPage {
         Identifier[] dims = keys.stream()
                 .sorted(Comparator.comparing(Identifier::toString))
                 .toArray(Identifier[]::new);
-        Identifier selected = rs.dimension;
-        if (selected == null || !keys.contains(selected)) {
-            selected = dims[0];
-            rs.dimension = selected;
-        }
+        // Display-only initial selection: never write back into the pending
+        // settings.  rs.dimension == null means "default" (the container
+        // resolves it to the Overworld once the level stems are known), and
+        // coercing it here made rebuildCurrentPage() promote the pending value
+        // to an explicit dimension before Done could save the default.
+        Identifier selected = displayDimension(rs.dimension, keys);
 
         CycleButton<Identifier> dimBtn = CycleButton.<Identifier>builder(
                 id -> {
@@ -74,5 +85,29 @@ public class DimensionSettingsPage extends AbstractSettingsPage {
         // RenderSettings' default is null, which the container resolves to the
         // Overworld once the level stems are known.
         rs.dimension = null;
+    }
+
+    /**
+     * Display-only fallback for the dimension cycle button's initial value:
+     * keeps the current setting while it is still a valid key, otherwise
+     * prefers the Overworld (mirroring PreviewContainer's null fallback in
+     * updateSettings_real) and finally the first sorted key.  Pure — it never
+     * mutates the pending settings, so a null ("default") dimension stays null
+     * until the user actively picks one or Done hands it back to the container.
+     */
+    static Identifier displayDimension(Identifier current, java.util.List<Identifier> keys) {
+        if (keys == null || keys.isEmpty()) {
+            return null;
+        }
+        if (current != null && keys.contains(current)) {
+            return current;
+        }
+        if (keys.contains(OVERWORLD)) {
+            return OVERWORLD;
+        }
+        return keys.stream()
+                .sorted(Comparator.comparing(Identifier::toString))
+                .findFirst()
+                .orElse(null);
     }
 }
