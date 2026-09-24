@@ -33,15 +33,35 @@ public class ColormapReloadListener extends SimpleJsonResourceReloadListener {
 
         LOGGER.debug("Loading colormaps:");
         for (Map.Entry<Identifier, JsonElement> entry : map.entrySet()) {
-            final ColorMap.RawColorMap value = GSON.fromJson(entry.getValue(), ColorMap.RawColorMap.class);
+            tryAddColormap(previewMappingData, entry.getKey(), entry.getValue(), GSON);
+        }
+    }
+
+    /**
+     * Deserializes one colormap entry and adds it to {@code target}.  A malformed
+     * entry (unreadable JSON shape, missing/null {@code data}, fewer than 2 rows,
+     * a row without exactly 3 elements, out-of-range components) is skipped with
+     * a warning instead of aborting the whole colormap reload, so the remaining
+     * entries are still loaded.
+     *
+     * @return true when the entry was deserialized and added
+     */
+    static boolean tryAddColormap(PreviewMappingData target, Identifier key, JsonElement json, Gson gson) {
+        try {
+            final ColorMap.RawColorMap value = gson.fromJson(json, ColorMap.RawColorMap.class);
             if (value == null) {
-                LOGGER.warn(" - {}: Invalid colormap entry", entry.getKey());
-                continue;
+                LOGGER.warn(" - {}: Invalid colormap entry", key);
+                return false;
             }
             if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug(" - {}: {} | {} entries", entry.getKey(), value.name(), value.data().size());
+                LOGGER.debug(" - {}: {} | {} entries", key, value.name(),
+                        value.data() == null ? null : value.data().size());
             }
-            previewMappingData.addColormap(new ColorMap(entry.getKey(), value));
+            target.addColormap(new ColorMap(key, value));
+            return true;
+        } catch (RuntimeException e) {
+            LOGGER.warn(" - {}: Skipping invalid colormap entry: {}", key, e.getMessage());
+            return false;
         }
     }
 }

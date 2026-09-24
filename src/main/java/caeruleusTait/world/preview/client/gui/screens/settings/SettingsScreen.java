@@ -360,6 +360,17 @@ public class SettingsScreen extends Screen {
         worldPreview.saveConfig(configCandidate, renderCandidate, collectConfigBiomeColors());
         applyConfig(configCandidate, worldPreview.cfg());
         applyRenderSettings(renderCandidate, worldPreview.renderSettings());
+        // Re-derive the display's block scale from the freshly applied live
+        // settings.  PreviewDisplay recomputes scaleBlockPos only on explicit
+        // zoom/resize, and the resolution page's cycle-button call ran while
+        // the (not yet applied) pending settings were live, so it was a visual
+        // no-op.  The render-only close path below (resumeLight) never
+        // re-derives the scale either -- without this the preview keeps
+        // drawing at the old block scale until the user zooms or resizes.
+        // While the WorkManager is still suspended its queue pass is a no-op;
+        // resumeLight's resetQueuedRange/invalidateRenderCache re-queue with
+        // the new scale afterwards.
+        previewContainer.previewDisplay().applyIncrementalZoom();
         // Route through the suspend/resume splitter: a cheap resume when only
         // UI-level fields changed, the full rebuild path when structural
         // settings changed (resumeForRebuild applies patchColorData itself when
