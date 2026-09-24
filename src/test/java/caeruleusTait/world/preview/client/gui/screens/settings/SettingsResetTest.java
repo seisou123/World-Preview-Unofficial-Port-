@@ -1,11 +1,16 @@
 package caeruleusTait.world.preview.client.gui.screens.settings;
 
+import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.WorldPreviewConfig;
+import net.minecraft.resources.Identifier;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -97,5 +102,60 @@ class SettingsResetTest {
         assertEquals(WorldPreviewConfig.defaults().heightmapMaxY, cfg.heightmapMaxY);
         assertTrue(cfg.onlySampleInVisualRange);
         assertEquals(WorldPreviewConfig.defaults().colorMap, cfg.colorMap);
+    }
+
+    /** Dimension page's reset leaves the pending dimension unset (the default). */
+    @Test
+    void dimensionPageResetLeavesDimensionUnset() {
+        RenderSettings rs = RenderSettings.defaults();
+        rs.dimension = Identifier.parse("minecraft:the_nether");
+        DimensionSettingsPage page = new DimensionSettingsPage(rs, null);
+
+        SettingsScreen.resetPage(page);
+
+        assertNull(rs.dimension,
+                "reset() must restore the 'default' state (null), which the container resolves to the Overworld");
+    }
+
+    /** The display fallback keeps a still-valid dimension and mutates nothing. */
+    @Test
+    void displayDimensionKeepsExplicitValueWithoutMutatingAnything() {
+        RenderSettings rs = RenderSettings.defaults();
+        rs.dimension = Identifier.parse("minecraft:the_end");
+        List<Identifier> keys = List.of(
+                Identifier.parse("minecraft:overworld"),
+                Identifier.parse("minecraft:the_end"));
+
+        Identifier selected = DimensionSettingsPage.displayDimension(rs.dimension, keys);
+
+        assertEquals(Identifier.parse("minecraft:the_end"), selected);
+        assertEquals(Identifier.parse("minecraft:the_end"), rs.dimension,
+                "the display fallback must not write back into the pending settings");
+    }
+
+    /** A null (default) dimension displays the Overworld when it is a level stem. */
+    @Test
+    void displayDimensionPrefersOverworldForNull() {
+        Identifier overworld = Identifier.parse("minecraft:overworld");
+        // "minecraft:aaa" would be the first sorted key — the Overworld must win anyway.
+        assertEquals(overworld, DimensionSettingsPage.displayDimension(null,
+                List.of(Identifier.parse("minecraft:aaa"), overworld)));
+    }
+
+    /** Without an Overworld stem the display falls back to the first sorted key. */
+    @Test
+    void displayDimensionFallsBackToFirstSortedKeyWithoutOverworld() {
+        assertEquals(Identifier.parse("minecraft:aaa"), DimensionSettingsPage.displayDimension(null,
+                List.of(Identifier.parse("minecraft:zzz"), Identifier.parse("minecraft:aaa"))));
+    }
+
+    /** A stale dimension key (no longer among the stems) displays the fallback. */
+    @Test
+    void displayDimensionFallsBackWhenCurrentIsUnknown() {
+        Identifier overworld = Identifier.parse("minecraft:overworld");
+
+        assertEquals(overworld, DimensionSettingsPage.displayDimension(
+                Identifier.parse("minecraft:gone"),
+                List.of(overworld)));
     }
 }

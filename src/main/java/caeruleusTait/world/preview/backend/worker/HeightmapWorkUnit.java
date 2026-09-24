@@ -57,11 +57,23 @@ public class HeightmapWorkUnit extends WorkUnit {
         final int cellWidth = noiseSettings.getCellWidth();
         final int cellHeight = noiseSettings.getCellHeight();
 
-        final int minY = config.onlySampleInVisualRange ? config.heightmapMinY : noiseSettings.minY();
-        final int maxY = config.onlySampleInVisualRange ? config.heightmapMaxY : minY + noiseSettings.height();
-        final int cellMinY = Mth.floorDiv(minY, noiseSettings.getCellHeight());
-        final int cellCountY = Mth.floorDiv(maxY - minY, noiseSettings.getCellHeight());
-        final int cellOffsetY = config.onlySampleInVisualRange ? cellMinY -  Mth.floorDiv(noiseSettings.minY(), noiseSettings.getCellHeight()): 0;
+        // Y-scan geometry: intersect the requested range with the noise cell
+        // grid and include the topmost partial cell.  The pre-fix arithmetic
+        // (cellCountY = floorDiv(maxY - minY, cellHeight)) dropped that cell,
+        // so surfaces sitting in its band were never sampled and heights were
+        // reported too low.  See {@link #cellScan}.
+        final CellScan scan = cellScan(
+                config.heightmapMinY,
+                config.heightmapMaxY,
+                config.onlySampleInVisualRange,
+                noiseSettings.minY(),
+                noiseSettings.height(),
+                cellHeight);
+        final int cellMinY = scan.cellStart();
+        final int cellCountY = scan.cellCount();
+        final int cellOffsetY = scan.cellOffset();
+        final int effMinY = scan.effMinY();
+        final int effMaxY = scan.effMaxY();
 
         final int minBlockX = chunkPos.getMinBlockX();
         final int minBlockZ = chunkPos.getMinBlockZ();
@@ -105,6 +117,11 @@ public class HeightmapWorkUnit extends WorkUnit {
                         // Iterate over block in cell Y X Z
                         for (int yInCell = cellHeight - 1; yInCell >= 0 && count > 0; --yInCell) {
                             final int y = (cellMinY + cellY) * cellHeight + yInCell;
+                            if (y < effMinY || y > effMaxY) {
+                                // The cell straddles the effective range boundary;
+                                // this y lies outside the requested band.
+                                continue;
+                            }
                             noiseChunk.updateForY(y, (double) yInCell / (double) cellHeight);
 
                             for (int idx = 0; idx < count; ++idx) {
@@ -141,6 +158,55 @@ public class HeightmapWorkUnit extends WorkUnit {
         }
 
         return List.of(res);
+    }
+
+    /**
+     * Pure arithmetic of the fast-path Y scan: the effective block-Y range plus
+     * the cell span covering it on the NoiseChunk cell grid.
+     *
+     * <p>Vanilla {@code NoiseChunk} builds its grid with
+     * {@code cellCountY = floorDiv(noiseHeight, cellHeight)} and
+     * {@code cellNoiseMinY = floorDiv(noiseMinY, cellHeight)}; grid cell 0 is
+     * the cell containing {@code noiseMinY} and {@code selectCellYZ} indexes the
+     * slice arrays directly, so a cell index outside {@code [0, cellCountY)}
+     * would throw.  The effective range is therefore clamped to the grid's block
+     * extent before the cell span is derived, and the span is computed from
+     * {@code floorDiv(effMaxY, cellHeight)} so the topmost PARTIAL cell (one
+     * whose top lies above {@code effMaxY}) is still scanned; the per-y skip in
+     * {@link #doWork} discards the overshoot inside it.  Full mode (visual off)
+     * returns the aligned grid unchanged, which is exactly what the pre-fix
+     * code scanned there.
+     *
+     * @param cfgMinY inclusive lower bound of the configured heightmap range
+     * @param cfgMaxY inclusive upper bound of the configured heightmap range
+     * @param onlyVisual value of {@code onlySampleInVisualRange}
+     * @param noiseMinY bottom block Y of the noise grid
+     * @param noiseHeight block height of the noise grid
+     * @param cellHeight noise cell height in blocks
+     */
+    record CellScan(int cellStart, int cellCount, int cellOffset, int effMinY, int effMaxY) {
+        static final CellScan EMPTY = new CellScan(0, 0, 0, 1, 0);
+    }
+
+    static CellScan cellScan(int cfgMinY, int cfgMaxY, boolean onlyVisual, int noiseMinY, int noiseHeight, int cellHeight) {
+        final int gridCellStart = Mth.floorDiv(noiseMinY, cellHeight);
+        final int gridCellCount = Mth.floorDiv(noiseHeight, cellHeight);
+        final int gridBottomY = gridCellStart * cellHeight;
+        final int gridTopY = (gridCellStart + gridCellCount) * cellHeight - 1;
+
+        if (!onlyVisual) {
+            return new CellScan(gridCellStart, gridCellCount, 0, gridBottomY, gridTopY);
+        }
+
+        final int effMinY = Math.max(cfgMinY, gridBottomY);
+        final int effMaxY = Math.min(cfgMaxY, gridTopY);
+        if (effMinY > effMaxY) {
+            return CellScan.EMPTY;
+        }
+
+        final int cellStart = Mth.floorDiv(effMinY, cellHeight);
+        final int cellEnd = Mth.floorDiv(effMaxY, cellHeight);
+        return new CellScan(cellStart, cellEnd - cellStart + 1, cellStart - gridCellStart, effMinY, effMaxY);
     }
 
     @Override
