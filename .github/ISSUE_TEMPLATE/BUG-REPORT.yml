@@ -54,6 +54,7 @@ body:
       description: Which version of this fork are you using? It is part of the jar file name.
       multiple: false
       options:
+        - "1.5.4"
         - "1.5.3"
         - "1.5.2"
         - "1.5.1"
