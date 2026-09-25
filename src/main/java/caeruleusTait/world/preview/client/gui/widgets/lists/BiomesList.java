@@ -6,6 +6,7 @@ import caeruleusTait.world.preview.backend.color.PreviewData;
 import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.gui.screens.PreviewContainer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
@@ -82,6 +83,19 @@ public class BiomesList extends BaseObjectSelectionList<BiomesList.BiomeEntry> {
             // Make sure that the top entry is visible
             super.setScrollAmount(maxScroll);
         }
+    }
+
+    /**
+     * Width the list needs so no row text (and, when counts are shown, the
+     * right-aligned count badge) touches the scrollbar column; the floating
+     * panel clamps this via PreviewContainer#clampFloatingPanelWidth.
+     */
+    public int preferredContentWidth(Font font, boolean showCounts) {
+        int maxNameWidth = 0;
+        for (BiomeEntry entry : children()) {
+            maxNameWidth = Math.max(maxNameWidth, font.width(entry.renderedName()));
+        }
+        return PreviewContainer.biomesPanelWidth(maxNameWidth, showCounts);
     }
 
     public class BiomeEntry extends BaseObjectSelectionList.Entry<BiomeEntry> {
@@ -208,12 +222,17 @@ public class BiomesList extends BaseObjectSelectionList<BiomesList.BiomeEntry> {
             return Component.translatable("narrator.select", this.name);
         }
 
+        /** The exact string renderContent draws (italic marker for third-party namespaces). */
+        String renderedName() {
+            return isPrimaryNamespace ? name : "§o" + name;
+        }
+
         @Override
         public void renderContent(@NotNull GuiGraphics guiGraphics, int mouseX, int mouseY, boolean hovered, float partialTick) {
             int top = getContentY();
             int left = getContentX();
             guiGraphics.fill(left + 3, top + 1, left + 13, top + 11, nativeColor(color));
-            String formatName = isPrimaryNamespace ? name : "§o" + name;
+            String formatName = renderedName();
             // Invisible biomes use slightly darker gray for subtle contrast with visible ones
             int nameColor = visibleCount > 0 ? 0xFFFFFFFF : 0xFF777777;
             guiGraphics.drawString(BiomesList.this.minecraft.font, formatName, left + 16, top + 2, nameColor);

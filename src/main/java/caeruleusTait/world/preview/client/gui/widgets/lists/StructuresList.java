@@ -3,9 +3,11 @@
 package caeruleusTait.world.preview.client.gui.widgets.lists;
 
 import caeruleusTait.world.preview.client.WorldPreviewClient;
+import caeruleusTait.world.preview.client.gui.screens.PreviewContainer;
 import caeruleusTait.world.preview.client.gui.widgets.ToggleButton;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
@@ -71,6 +73,19 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             // Make sure that the top entry is visible
             super.setScrollAmount(maxScroll);
         }
+    }
+
+    /**
+     * Width the list needs so no row name collides with the eye toggle or the
+     * scrollbar column; the floating panel clamps this via
+     * PreviewContainer#clampFloatingPanelWidth.
+     */
+    public int preferredContentWidth(Font font) {
+        int maxNameWidth = 0;
+        for (StructureEntry entry : children()) {
+            maxNameWidth = Math.max(maxNameWidth, font.width(entry.renderedName()));
+        }
+        return PreviewContainer.structuresPanelWidth(maxNameWidth);
     }
 
     public class StructureEntry extends BaseObjectSelectionList.Entry<StructuresList.StructureEntry> implements StructureRenderInfo {
@@ -163,6 +178,11 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             return Component.empty();
         }
 
+        /** The exact string renderContent draws (italic marker for third-party namespaces). */
+        String renderedName() {
+            return isPrimaryNamespace ? name : "§o" + name;
+        }
+
                 @Override
         public void renderContent(
                 GuiGraphics guiGraphics,
@@ -183,7 +203,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             } else if (iconTexture != null && !textureClosed) {
                 WorldPreviewClient.renderTexture(guiGraphics, iconTexture, xMin, yMin, xMax, yMax);
             }
-            String formatName = isPrimaryNamespace ? name : "§o" + name;
+            String formatName = renderedName();
             guiGraphics.drawString(minecraft.font, formatName, left + 16 + 4, top + 6, 0xFFFFFFFF);
             toggleVisible.setPosition(getRowRight() - 22, top);
             toggleVisible.render(guiGraphics, mouseX, mouseY, partialTick);

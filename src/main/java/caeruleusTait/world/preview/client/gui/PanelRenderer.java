@@ -84,6 +84,57 @@ public final class PanelRenderer {
     }
 
     /**
+     * Rectangle-bounded empty-state hint: a centered single line while the
+     * text fits the rectangle (12px side margin), split around the space
+     * nearest the middle into two centered lines when too wide, otherwise a
+     * centered hint clamped to the rectangle so it can never paint outside
+     * its panel.
+     */
+    public static void emptyHint(GuiGraphics g, Font font, int x, int y, int w, int h, Component text) {
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        if (w >= 12 && h >= font.lineHeight && font.width(text) <= w - 12) {
+            g.drawCenteredString(font, text, x + w / 2, y + (h - font.lineHeight) / 2, 0xFF808080);
+            return;
+        }
+        String raw = text.getString();
+        int split = splitNearMiddleSpace(raw);
+        if (split > 0 && w >= 12 && h >= 2 * font.lineHeight + 2) {
+            Component top = Component.literal(raw.substring(0, split));
+            Component bottom = Component.literal(raw.substring(split + 1));
+            if (Math.max(font.width(top), font.width(bottom)) <= w - 12) {
+                int lineH = font.lineHeight;
+                int y0 = y + (h - 2 * lineH - 2) / 2;
+                g.drawCenteredString(font, top, x + w / 2, y0, 0xFF808080);
+                g.drawCenteredString(font, bottom, x + w / 2, y0 + lineH + 2, 0xFF808080);
+                return;
+            }
+        }
+        // Spaceless over-wide text (or a rectangle too small for either
+        // layout): draw the centered hint inside a scissor bound to the
+        // rectangle.
+        g.enableScissor(x, y, x + w, y + h);
+        g.drawCenteredString(font, text, x + w / 2, y + Math.max(0, (h - font.lineHeight) / 2), 0xFF808080);
+        g.disableScissor();
+    }
+
+    /** Index of the space nearest the string's middle, or -1 when there is none. */
+    private static int splitNearMiddleSpace(String s) {
+        int mid = s.length() / 2;
+        int best = -1;
+        int bestDist = Integer.MAX_VALUE;
+        for (int i = s.indexOf(' '); i >= 0; i = s.indexOf(' ', i + 1)) {
+            int dist = Math.abs(i - mid);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /**
      * Bottom status strip: a translucent dark band starting 20px below the
      * footer action row's top (so the status can never cover the action
      * buttons) and reaching down to the bottom of the gui-scaled screen, with

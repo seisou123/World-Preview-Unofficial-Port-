@@ -3,6 +3,7 @@ package caeruleusTait.world.preview.client.gui.widgets;
 import caeruleusTait.world.preview.backend.analysis.AnalysisDataState;
 import caeruleusTait.world.preview.backend.analysis.ProfilePoint;
 import caeruleusTait.world.preview.backend.analysis.ProfileResult;
+import caeruleusTait.world.preview.client.gui.PanelRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -47,6 +48,8 @@ public final class ProfileChart extends AbstractWidget {
     private int seaLevelY = -1;
     /** Mean-height reference line; null = hidden. */
     @Nullable private Double meanHeight;
+    /** Title line; swapped for the short key on narrow columns. */
+    private Component title = Component.translatable("world_preview.analysis.profile");
 
     public ProfileChart(int x, int y, int width, int height) {
         super(x, y, width, height, Component.translatable("world_preview.analysis.profile"));
@@ -77,14 +80,27 @@ public final class ProfileChart extends AbstractWidget {
         this.meanHeight = mean;
     }
 
+    /**
+     * Draws the short title ({@code world_preview.analysis.profile.short})
+     * instead of the full one; used on narrow right columns where the full
+     * title would run into the direction button.
+     */
+    public void setCompactTitle(boolean compact) {
+        this.title = Component.translatable(compact
+                ? "world_preview.analysis.profile.short"
+                : "world_preview.analysis.profile");
+    }
+
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fill(getX(), getY(), getX() + width, getY() + height, 0xAA101418);
-        graphics.drawString(Minecraft.getInstance().font, Component.translatable("world_preview.analysis.profile"), getX() + 6, getY() + 6, 0xFFFFFFFF);
+        graphics.drawString(Minecraft.getInstance().font, title, getX() + 6, getY() + 6, 0xFFFFFFFF);
         if (result == null) {
             // No profile yet at all (screen opened / fresh run) — dedicated
             // empty-state hint rather than the generic pending text.
-            graphics.drawString(Minecraft.getInstance().font, Component.translatable("world_preview.analysis.empty.profile"), getX() + 6, getY() + 22, 0xFFE0E4E8);
+            PanelRenderer.emptyHint(graphics, Minecraft.getInstance().font,
+                    getX(), getY(), width, height,
+                    Component.translatable("world_preview.analysis.empty.profile"));
             return;
         }
         List<ProfilePoint> points = result.points();
@@ -113,6 +129,9 @@ public final class ProfileChart extends AbstractWidget {
         int right = getX() + width - 8;
         int top = getY() + 24;
         int bottom = getY() + height - 12;
+        if (right <= left || bottom <= top) {
+            return;
+        }
 
         // Extend the domain to the reference lines and pad both ends, so the
         // lines (and a margin around the terrain) always fit the chart.
