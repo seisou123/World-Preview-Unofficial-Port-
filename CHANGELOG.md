@@ -2,29 +2,30 @@
 
 ### Fixes
 
-- Fixed the Reset to Defaults button in the settings screen doing nothing: it now restores the current page's fields to their defaults, so the values shown there no longer drift from the saved config
-- Fixed the exported terrain height field giving peaks the lowest value instead of the highest, caused by a byte overflow in the terrain classifier
+- Fixed the settings screen Reset buttons doing nothing or snapping to the wrong value: each page's Reset now restores that page's defaults
+- Fixed the exported terrain height field giving peaks the lowest value instead of the highest
 - Fixed a single malformed entry discarding a whole resource file: biome colour maps, structure maps and colormaps now skip the offending entry and keep the rest
-- Fixed mod compatibility on Fabric: installed mods are enumerated again, so the compatibility adapters for supported modded chunk generators are selected and the sampling side honours their capability flags
-- Fixed contour lines breaking up on sloped terrain: the interpolated crossing was placed on the wrong cell edge, and an out-of-range interpolation parameter is now clamped
-- Fixed the hue bar in the colour picker drawing a black-to-white gradient instead of the hue spectrum
-- Fixed the render-complete marker being recorded before the preview texture was generated, so a failed pass is retried instead of being treated as rendered
-- Fixed a shared icon image being freed twice: the preview and structure-list textures now wrap a private copy of it
-- Hardened two cross-thread state paths (preview teardown and the spawn-override flag) against stale or torn reads
-- Fixed the heightmap scan missing the topmost partial noise cell when the visual Y-range limit was on: terrain whose surface sits in that band (e.g. between Y 240 and 255 with the default range) was reported lower than it is
-- Fixed the preview disk cache not distinguishing height sampling settings: the cache key now encodes the sampled Y range and the visual-range limit losslessly, and the cache format was bumped so existing caches recompute once instead of risking reuse of height data sampled with a different range
-- Fixed the Dimension settings page Reset snapping to the first dimension in the list instead of returning to the default (Overworld)
-- Fixed the preview keeping the previous zoom scale after changing the resolution on the settings screen and pressing Done
+- Fixed mod compatibility on Fabric: installed mods are enumerated again, so the modded chunk generator adapters are selected again
+- Fixed contour lines breaking up on sloped terrain and the hue bar drawing a black-to-white gradient instead of the hue spectrum
+- Fixed a shared icon image being freed twice, the render-complete marker being recorded before the preview texture was generated, and two cross-thread state paths reading stale or torn values
+- Fixed the heightmap scan missing the topmost partial noise cell when the visual Y-range limit was on, and the preview disk cache not distinguishing height sampling settings: existing caches recompute once after this update
+- Fixed the preview keeping the previous zoom scale after changing the resolution on the settings screen
+- Fixed the floating biome and structure panels covering the rail buttons and the scale bar so that covered text no longer shows through, and the Waypoints and Measure buttons scrolling their labels inside the button
+- Fixed empty-state hints in the analysis panels overflowing narrow panels: over-wide hints now wrap or are clipped to the panel
 
 ### Improvements
 
-- The analysis area (the Analysis button in the preview sidebar) is now enabled by default, matching the seed search button; config files that do not yet contain the setting pick up the new default automatically
+- The analysis area is now enabled by default, matching the seed search button
+- The analysis screen's right column now has a Map tab beside the Profile, Heights and Biomes tabs, and all four pages share one area that ends at the same bottom edge
+- The profile direction button moved into the profile page's title row; box-selecting on the map switches to the map page, and starting an analysis switches to the profile page
+- The scale bar on narrow maps is more compact
+- An Expand control opens the current analysis page as a near-fullscreen overlay; Collapse, Esc or the inventory key return to the panel layout, and the tab row stays usable inside the overlay
+- The floating panels open directly below their toggle button and size their width to the longest list entry
 
 ### Internal
 
-- Added tests for the settings Reset button, the colormap endpoints, midpoint and direction, installed-mod detection, the terrain classifier's category heights and the contour landing points
-- Added tests for the heightmap scan bounds, the preview cache key layout, colormap entry tolerance, the dimension reset fallback and render settings round-trips
-- Added regression coverage for the shipped `viridis.json` interpolation direction; the existing production code is intentionally unchanged
+- Added tests for the settings Reset button, the terrain classifier, the heightmap scan bounds, the preview cache key, the contour landing points and render settings round-trips
+- Added tests for the floating panel width policy and the overlay tab layout
 
 ## 1.5.3
 
