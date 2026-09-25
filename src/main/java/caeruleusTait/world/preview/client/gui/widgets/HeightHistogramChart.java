@@ -62,7 +62,7 @@ public final class HeightHistogramChart extends AbstractWidget {
 
         int[] histogram = metrics == null ? null : metrics.heightHistogram();
         if (histogram == null || histogram.length == 0 || maxCount(histogram) <= 0) {
-            PanelRenderer.emptyHint(graphics, font, getX() + width / 2, getY() + height / 2, EMPTY_HINT);
+            PanelRenderer.emptyHint(graphics, font, getX(), getY(), width, height, EMPTY_HINT);
             return;
         }
         long maxCount = maxCount(histogram);

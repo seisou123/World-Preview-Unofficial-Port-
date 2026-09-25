@@ -159,7 +159,7 @@ public final class BiomeSharePanel extends AbstractWidget {
         graphics.drawString(font, TITLE, getX() + 6, getY() + 6, TEXT);
 
         if (rows.isEmpty()) {
-            PanelRenderer.emptyHint(graphics, font, getX() + width / 2, getY() + height / 2, EMPTY_HINT);
+            PanelRenderer.emptyHint(graphics, font, getX(), getY(), width, height, EMPTY_HINT);
             return;
         }
 
