@@ -56,8 +56,8 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
 /**
  * Panelized region analysis screen: region selector + action toolbar on top,
- * the {@link AnalysisOverviewPanel} on the left, and map preview + profile
- * chart on the right (the tab row between them lands with the chart tasks).
+ * the {@link AnalysisOverviewPanel} on the left, and a tabbed right column
+ * (map / profile / heights / biomes) whose pages share one content area.
  *
  * <p>Session semantics are unchanged from the pre-redesign screen: stale
  * detection on worldgen-context replacement (lock controls + error line),
@@ -78,9 +78,11 @@ public final class WorldAnalysisScreen extends Screen {
 
     /** Region side presets cycled by the size button, in blocks. */
     private static final int[] REGION_PRESETS = {256, 512, 1024, 2048, 4096};
+    /** Gap between adjacent tab buttons, in the panel row and in the overlay band. */
+    private static final int TAB_GAP = 4;
 
-    /** Right-panel chart tabs (the widgets toggled by the tab row). */
-    private enum ChartTab { PROFILE, HEIGHT, BIOMES }
+    /** Right-panel tabs; the enum order is the tab row order (map first). */
+    private enum ChartTab { MAP, PROFILE, HEIGHT, BIOMES }
 
     /**
      * Structure types probed for the "nearest structures" section. A
@@ -107,7 +109,8 @@ public final class WorldAnalysisScreen extends Screen {
     private final HeightHistogramChart histogramChart;
     private final BiomeSharePanel sharePanel;
     private final List<AbstractWidget> selectorFields;
-    /** The three chart tab buttons, left of the direction button in the tab band. */
+    /** The four tab buttons (map + three charts) in the right column's top band. */
+    private final TranslucentButton tabMapButton;
     private final TranslucentButton tabProfileButton;
     private final TranslucentButton tabHeightButton;
     private final TranslucentButton tabBiomesButton;
@@ -127,13 +130,21 @@ public final class WorldAnalysisScreen extends Screen {
     private final TranslucentButton locateButton;
     private final TranslucentButton directionButton;
     private final TranslucentButton exportReportButton;
+    /** The single overlay trigger: Expand in the toolbar row, Collapse in the overlay band. */
+    private final TranslucentButton overlayButton;
     private TranslucentButton closeButton;
 
     /** Profile line preset cycled by {@link #directionButton} (label shows the current one). */
     private ProfileChart.Direction profileDirection = ProfileChart.Direction.DIAGONAL;
 
-    /** Visible right-panel chart; initial tab is the profile chart. */
-    private ChartTab activeTab = ChartTab.PROFILE;
+    /** Visible right-panel content; initial tab is the map. */
+    private ChartTab activeTab = ChartTab.MAP;
+    /**
+     * True while the fullscreen overlay (the map or a chart blown up over the
+     * whole window) is open; {@link #layoutWidgets()} switches to the overlay
+     * geometry whenever this is set.
+     */
+    private boolean overlayOpen;
     /** Terrain/biome-diversity insights for the share panel, at most 1s stale while its tab is visible. */
     @Nullable private RegionInsights shareInsights;
     private long lastInsightsMillis;
@@ -210,6 +221,9 @@ public final class WorldAnalysisScreen extends Screen {
                 WorldPreviewComponents.ANALYSIS_ACTION_LOCATE, ignored -> locateCenter());
         this.directionButton = new TranslucentButton(font, 0, 0, 90, 20,
                 profileDirectionLabel(), ignored -> cycleProfileDirection());
+        this.tabMapButton = new TranslucentButton(font, 0, 0, 60, 20,
+                Component.translatable("world_preview.analysis.tab.map"),
+                ignored -> switchToTab(ChartTab.MAP));
         this.tabProfileButton = new TranslucentButton(font, 0, 0, 60, 20,
                 Component.translatable("world_preview.analysis.tab.profile"),
                 ignored -> switchToTab(ChartTab.PROFILE));
@@ -222,6 +236,8 @@ public final class WorldAnalysisScreen extends Screen {
         this.exportReportButton = new TranslucentButton(font, 0, 0, 90, 20,
                 WorldPreviewComponents.ANALYSIS_EXPORT_REPORT, ignored -> exportReport());
         this.exportReportButton.active = false;
+        this.overlayButton = new TranslucentButton(font, 0, 0, 56, 20,
+                WorldPreviewComponents.ANALYSIS_ACTION_EXPAND, ignored -> toggleOverlay());
     }
 
     public AnalysisSession session() {
@@ -288,6 +304,9 @@ public final class WorldAnalysisScreen extends Screen {
 
     /** Toggles the map box-select mode; the button highlight follows the live mode flag. */
     private void toggleBoxSelect() {
+        // The drag events and the hint bar only exist on the map, so the map
+        // tab is the correct place to enter the mode from.
+        switchToTab(ChartTab.MAP);
         var display = previewContainer.previewDisplay();
         display.setRegionSelectMode(!display.isRegionSelectMode());
         syncBoxSelectState();
@@ -346,6 +365,8 @@ public final class WorldAnalysisScreen extends Screen {
         // A fresh run invalidates the previously computed spawn/top-biome data.
         overviewPanel.setSpawn(null, null, List.of());
         topBiomes = List.of();
+        // Switch to the profile page so its streaming refresh is visible.
+        switchToTab(ChartTab.PROFILE);
         clearChartTabs();
         rebuildProfile();
         refreshStructures();
@@ -704,15 +725,49 @@ public final class WorldAnalysisScreen extends Screen {
         sharePanel.setSelected(biomeId);
     }
 
-    /** Shows only the active tab's chart widget. */
+    /** Shows the active tab's right-column content and hides the rest. */
     private void applyTabVisibility() {
+        previewContainer.previewDisplay().visible = activeTab == ChartTab.MAP;
         profileChart.visible = activeTab == ChartTab.PROFILE;
         histogramChart.visible = activeTab == ChartTab.HEIGHT;
         sharePanel.visible = activeTab == ChartTab.BIOMES;
+        directionButton.visible = activeTab == ChartTab.PROFILE;
+    }
+
+    private void toggleOverlay() {
+        if (overlayOpen) {
+            closeOverlay();
+        } else {
+            openOverlay();
+        }
+    }
+
+    /**
+     * Opens the fullscreen overlay. The relayout moves the tab row into the
+     * overlay band, hides the base widgets and rebuilds the display texture
+     * for the larger rectangle; dropping the render cache also clears any
+     * in-progress interaction and makes the new viewport queue sampling
+     * immediately.
+     */
+    private void openOverlay() {
+        overlayOpen = true;
+        // A coordinate field left focused would keep eating keyboard input
+        // while its widget is hidden.
+        setFocused(null);
+        layoutWidgets();
+        previewContainer.previewDisplay().invalidateRenderCache();
+    }
+
+    /** Closes the overlay and restores the normal panel layout. */
+    private void closeOverlay() {
+        overlayOpen = false;
+        layoutWidgets();
+        previewContainer.previewDisplay().invalidateRenderCache();
     }
 
     private TranslucentButton activeTabButton() {
         return switch (activeTab) {
+            case MAP -> tabMapButton;
             case PROFILE -> tabProfileButton;
             case HEIGHT -> tabHeightButton;
             case BIOMES -> tabBiomesButton;
@@ -794,10 +849,12 @@ public final class WorldAnalysisScreen extends Screen {
         addRenderableWidget(alignViewportButton);
         addRenderableWidget(presetButton);
         addRenderableWidget(directionButton);
+        addRenderableWidget(tabMapButton);
         addRenderableWidget(tabProfileButton);
         addRenderableWidget(tabHeightButton);
         addRenderableWidget(tabBiomesButton);
         addRenderableWidget(exportReportButton);
+        addRenderableWidget(overlayButton);
         closeButton = new TranslucentButton(Minecraft.getInstance().font, 0, 0, 90, 20,
                 CommonComponents.GUI_BACK, ignored -> onClose());
         addRenderableWidget(closeButton);
@@ -845,6 +902,7 @@ public final class WorldAnalysisScreen extends Screen {
     }
 
     private void layoutWidgets() {
+        restoreBaseVisibility();
         int left = 8;
         int top = 24;
         // Reserve a footer strip so the action row is never covered by panels.
@@ -858,10 +916,12 @@ public final class WorldAnalysisScreen extends Screen {
         int rightX = left + leftW + 6;
         int rightW = Math.max(60, width - rightX - 8);
 
-        // Row 1: region selector fields + Match-View / size buttons. The
-        // selector keeps a minimum width on narrow screens; the buttons are
-        // right-shifted (never past the screen edge) so they cannot overlap.
-        int row1ButtonsW = 80 + 4 + 82;
+        // Row 1: region selector fields + Match-View / size / expand buttons.
+        // The selector keeps a minimum width on narrow screens; the buttons
+        // are right-shifted (never past the screen edge) so they cannot
+        // overlap. The overlay trigger reserves its slot inside the group, so
+        // Match View + Size + Expand always fit as one right-shifted unit.
+        int row1ButtonsW = 80 + 4 + 82 + 4 + 56;
         int selectorRight = Math.max(left + 150, left + leftW - row1ButtonsW - 4);
         selectorRight = Math.min(selectorRight, width - 8 - row1ButtonsW - 6);
         int selectorW = Math.max(120, selectorRight - left);
@@ -869,6 +929,8 @@ public final class WorldAnalysisScreen extends Screen {
         int row1X = Math.min(left + selectorW + 6, width - 8 - row1ButtonsW);
         place(alignViewportButton, row1X, top + 18, 80, 20);
         place(presetButton, row1X + 84, top + 18, 82, 20);
+        place(overlayButton, row1X + 170, top + 18, 56, 20);
+        overlayButton.setMessage(WorldPreviewComponents.ANALYSIS_ACTION_EXPAND);
 
         // Row 2: analysis actions.
         int row2Y = top + 44;
@@ -887,53 +949,163 @@ public final class WorldAnalysisScreen extends Screen {
         overviewPanel.setWidth(leftW);
         overviewPanel.setHeight(Math.max(60, height - 8 - panelsTop));
 
-        // Vertical budget: map + 4px gap + 22px tab band + chart must fit
-        // between panelsTop and panelBottom. The map's 70px comfort floor
-        // yields first on short windows (a hard floor used to push the chart
-        // past panelBottom into the footer row); the chart absorbs the rest
-        // and always ends exactly at panelBottom.
-        int available = Math.max(0, panelBottom - panelsTop);
-        int mapCap = Math.max(24, available - 66);
-        int mapH = Math.min(Math.max(70, available * 45 / 100), mapCap);
-        previewContainer.previewDisplay().setPosition(rightX, panelsTop);
-        previewContainer.previewDisplay().setSize(rightW, mapH);
-        // Chart tab row in the reserved band: three tab buttons LEFT of the
-        // direction preset button, which keeps the band's right end. The
-        // direction button yields width first (down to 50px) so the tabs can
-        // never overlap it on narrow right columns.
-        int tabsY = panelsTop + mapH + 4;
-        int directionW = Math.min(90, Math.max(50, rightW - 84));
-        int directionX = Math.max(rightX, rightX + rightW - directionW);
-        place(directionButton, directionX, tabsY, directionW, 20);
-        int tabGap = 4;
+        // The tab row sits at the top of the right column; the map and the
+        // three chart widgets take turns sharing one rectangle below it, so
+        // every page ends exactly at panelBottom (applyTabVisibility decides
+        // which one is drawn).
+        int tabsY = panelsTop;
         // 24px floor: the widest label may overflow its button on very narrow
         // columns, but the buttons themselves must never collide.
-        int tabW = Math.max(24, Math.min(64, (directionX - tabGap - rightX - 2 * tabGap) / 3));
-        place(tabProfileButton, rightX, tabsY, tabW, 20);
-        place(tabHeightButton, rightX + tabW + tabGap, tabsY, tabW, 20);
-        place(tabBiomesButton, rightX + 2 * (tabW + tabGap), tabsY, tabW, 20);
-        // The three chart widgets share one rectangle; visibility decides
-        // which one is drawn (applyTabVisibility). No floor here: the map
-        // budget above already reserved the band, so the chart ends exactly
-        // at panelBottom even on short windows.
-        int chartH = Math.max(1, panelBottom - tabsY - 22);
+        int tabW = overlayTabWidth(rightW);
+        place(tabMapButton, rightX, tabsY, tabW, 20);
+        place(tabProfileButton, rightX + tabW + TAB_GAP, tabsY, tabW, 20);
+        place(tabHeightButton, rightX + 2 * (tabW + TAB_GAP), tabsY, tabW, 20);
+        place(tabBiomesButton, rightX + 3 * (tabW + TAB_GAP), tabsY, tabW, 20);
+        int contentY = tabsY + 22;
+        int contentH = Math.max(1, panelBottom - contentY);
+        previewContainer.previewDisplay().setPosition(rightX, contentY);
+        previewContainer.previewDisplay().setSize(rightW, contentH);
         profileChart.setX(rightX);
-        profileChart.setY(tabsY + 22);
+        profileChart.setY(contentY);
         profileChart.setWidth(rightW);
-        profileChart.setHeight(chartH);
+        profileChart.setHeight(contentH);
         histogramChart.setX(rightX);
-        histogramChart.setY(tabsY + 22);
+        histogramChart.setY(contentY);
         histogramChart.setWidth(rightW);
-        histogramChart.setHeight(chartH);
+        histogramChart.setHeight(contentH);
         sharePanel.setX(rightX);
-        sharePanel.setY(tabsY + 22);
+        sharePanel.setY(contentY);
         sharePanel.setWidth(rightW);
-        sharePanel.setHeight(chartH);
+        sharePanel.setHeight(contentH);
+        // Direction preset button: top-right of the profile page's title row.
+        // Its bottom (contentY + 22) stays above the chart's drawing domain
+        // (top = getY() + 24); on narrow columns it yields width so the
+        // short profile title still fits.
+        int dirW = Math.min(90, Math.max(44, rightW - 120));
+        place(directionButton, rightX + rightW - dirW - 4, contentY + 2, dirW, 20);
+        profileChart.setCompactTitle(rightW < 200);
 
         place(exportReportButton, width - 190, footerTop, 90, 20);
         if (closeButton != null) {
             place(closeButton, width - 96, footerTop, 90, 20);
         }
+
+        // Single layout exit: with the overlay open the geometry above is
+        // replaced wholesale (and the base widgets re-hidden); the tab
+        // visibility matrix applies to both layouts, so every init / resize /
+        // open / close path keeps it in sync.
+        if (overlayOpen) {
+            layoutOverlay();
+        }
+        applyTabVisibility();
+    }
+
+    /**
+     * Normal-layout visibility for every base widget. The overlay hides these
+     * wholesale (the screen's click dispatch is first-added-wins and the map
+     * never yields clicks to later-added widgets, so hiding is the only way
+     * to make the overlay the sole hit target); restoring at the top of the
+     * normal layout guarantees that closing the overlay brings every one of
+     * them back regardless of who hid them.
+     */
+    private void restoreBaseVisibility() {
+        regionSelector.visible = true;
+        for (AbstractWidget field : selectorFields) {
+            field.visible = true;
+        }
+        overviewPanel.visible = true;
+        startButton.visible = true;
+        pauseButton.visible = true;
+        cancelButton.visible = true;
+        alignViewportButton.visible = true;
+        presetButton.visible = true;
+        boxSelectButton.visible = true;
+        locateButton.visible = true;
+        exportReportButton.visible = true;
+        if (closeButton != null) {
+            closeButton.visible = true;
+        }
+    }
+
+    /**
+     * Overlay geometry: a near-fullscreen rectangle whose top band holds the
+     * (moved, not copied) four tab buttons plus the collapse trigger, and
+     * whose content area below is shared by the display and the three chart
+     * widgets per {@link #applyTabVisibility()}. The tab width recipe is the
+     * panel row's; the direction button sits at the content's top right and
+     * the compact profile title switches by the overlay content width.
+     * Idempotent — every open / resize / init path funnels here through
+     * {@link #layoutWidgets()}.
+     */
+    private void layoutOverlay() {
+        int ox = 8;
+        int oy = 8;
+        int ow = Math.max(60, width - 16);
+        int oh = Math.max(60, height - 16);
+        int contentY = oy + 26;
+        int contentH = Math.max(1, oh - 26);
+
+        // Hide every base widget; the tab buttons, the direction button, the
+        // display and the charts are moved / managed below.
+        regionSelector.visible = false;
+        for (AbstractWidget field : selectorFields) {
+            field.visible = false;
+        }
+        overviewPanel.visible = false;
+        startButton.visible = false;
+        pauseButton.visible = false;
+        cancelButton.visible = false;
+        alignViewportButton.visible = false;
+        presetButton.visible = false;
+        boxSelectButton.visible = false;
+        locateButton.visible = false;
+        exportReportButton.visible = false;
+        if (closeButton != null) {
+            closeButton.visible = false;
+        }
+
+        // Tab band across the top of the overlay rectangle.
+        int tabW = overlayTabWidth(ow);
+        place(tabMapButton, ox, oy + 1, tabW, 20);
+        place(tabProfileButton, ox + tabW + TAB_GAP, oy + 1, tabW, 20);
+        place(tabHeightButton, ox + 2 * (tabW + TAB_GAP), oy + 1, tabW, 20);
+        place(tabBiomesButton, ox + 3 * (tabW + TAB_GAP), oy + 1, tabW, 20);
+        overlayButton.setMessage(WorldPreviewComponents.ANALYSIS_ACTION_COLLAPSE);
+        place(overlayButton, ox + overlayCollapseX(ow), oy + 1, 66, 20);
+
+        // Content rectangle below the band; its bottom lands exactly on the
+        // overlay's bottom edge.
+        previewContainer.previewDisplay().setPosition(ox, contentY);
+        previewContainer.previewDisplay().setSize(ow, contentH);
+        profileChart.setX(ox);
+        profileChart.setY(contentY);
+        profileChart.setWidth(ow);
+        profileChart.setHeight(contentH);
+        histogramChart.setX(ox);
+        histogramChart.setY(contentY);
+        histogramChart.setWidth(ow);
+        histogramChart.setHeight(contentH);
+        sharePanel.setX(ox);
+        sharePanel.setY(contentY);
+        sharePanel.setWidth(ow);
+        sharePanel.setHeight(contentH);
+
+        // Direction preset: top-right of the content area (the profile page
+        // shows it via applyTabVisibility); the overlay is wide enough that
+        // the profile title never needs its compact form.
+        int dirW = Math.min(90, Math.max(44, ow - 120));
+        place(directionButton, ox + ow - dirW - 4, contentY + 2, dirW, 20);
+        profileChart.setCompactTitle(ow < 200);
+    }
+
+    /** Tab button width inside the overlay band (same recipe as the panel tab row). */
+    static int overlayTabWidth(int bandWidth) {
+        return Math.max(24, Math.min(48, (bandWidth - 3 * TAB_GAP) / 4));
+    }
+
+    /** Collapse trigger X inside the overlay band: right-aligned with a 4px margin. */
+    static int overlayCollapseX(int bandWidth) {
+        return bandWidth - 66 - 4;
     }
 
     public void resize(int width, int height) {
@@ -1057,11 +1229,15 @@ public final class WorldAnalysisScreen extends Screen {
         syncBoxSelectState();
         // Draw directly to avoid triggering the screen blur more than once per frame.
         graphics.fill(0, 0, width, height, 0xFF101018);
-        graphics.centeredText(font, WorldPreviewComponents.ANALYSIS_TITLE, width / 2, 8, 0xFFFFFFFF);
-        // Gray summary of the analysis plane (Y layer + sample step), right-aligned in the toolbar area.
-        Component viewInfo = Component.translatable("world_preview.analysis.y_step",
-                session.request().y(), session.request().sampleStep());
-        graphics.text(font, viewInfo, Math.max(0, width - 8 - font.width(viewInfo)), TOOLBAR_TOP + 6, 0xFF999999);
+        // The overlay band owns the top strip, so the title and the Y/step
+        // summary would only bleed through between the band's buttons.
+        if (!overlayOpen) {
+            graphics.centeredText(font, WorldPreviewComponents.ANALYSIS_TITLE, width / 2, 8, 0xFFFFFFFF);
+            // Gray summary of the analysis plane (Y layer + sample step), right-aligned in the toolbar area.
+            Component viewInfo = Component.translatable("world_preview.analysis.y_step",
+                    session.request().y(), session.request().sampleStep());
+            graphics.text(font, viewInfo, Math.max(0, width - 8 - font.width(viewInfo)), TOOLBAR_TOP + 6, 0xFF999999);
+        }
         super.extractRenderState(graphics, mouseX, mouseY, partialTick);
         // Green selection line under the active chart tab (SeedSearchScreen pattern).
         PanelRenderer.tabSelectionLine(graphics, activeTabButton());
@@ -1092,6 +1268,14 @@ public final class WorldAnalysisScreen extends Screen {
 
     @Override
     public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+        // While the overlay is open, ESC / the inventory key collapse it
+        // first: vanilla's ESC branch and the inventory branch below would
+        // otherwise close the whole screen.
+        if (overlayOpen && (event.isEscape()
+                || (minecraft != null && minecraft.options.keyInventory.matches(event)))) {
+            closeOverlay();
+            return true;
+        }
         if (super.keyPressed(event)) {
             return true;
         }
@@ -1107,6 +1291,9 @@ public final class WorldAnalysisScreen extends Screen {
     public void onClose() {
         if (closed) return;
         closed = true;
+        // Whatever future path closes the screen while the overlay is up must
+        // not leak the overlay state into the next open.
+        overlayOpen = false;
         // The biome highlight picked in the share panel does not outlive the screen.
         previewContainer.previewDisplay().setSelectedBiomeId((short) -1);
         // Neither does the box-select state nor the analysis region overlay:
@@ -1115,6 +1302,9 @@ public final class WorldAnalysisScreen extends Screen {
         display.setRegionSelectMode(false);
         display.setRegionSelectCallback(null);
         display.setAnalysisRegionOverlay(null);
+        // The display widget is a single instance shared with the main
+        // preview screen, which expects it visible.
+        display.visible = true;
         // Always leave the screen first so a slow cleanup cannot freeze navigation.
         if (minecraft != null) {
             minecraft.gui.setScreen(parent);
