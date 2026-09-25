@@ -68,6 +68,8 @@ public class WorldPreviewComponents {
     public static final Component ANALYSIS_ACTION_PRESET = Component.translatable("world_preview.analysis.action.preset");
     public static final Component ANALYSIS_ACTION_BOXSELECT = Component.translatable("world_preview.analysis.action.boxselect");
     public static final Component ANALYSIS_ACTION_LOCATE = Component.translatable("world_preview.analysis.action.locate");
+    public static final Component ANALYSIS_ACTION_EXPAND = Component.translatable("world_preview.analysis.action.expand");
+    public static final Component ANALYSIS_ACTION_COLLAPSE = Component.translatable("world_preview.analysis.action.collapse");
     public static final Component ANALYSIS_REGION_INVALID = Component.translatable("world_preview.analysis.region.invalid");
     public static final Component ANALYSIS_REGION_CLAMPED = Component.translatable("world_preview.analysis.region.clamped");
     public static final Component ANALYSIS_RESTART_FAILED = Component.translatable("world_preview.analysis.restart_failed");

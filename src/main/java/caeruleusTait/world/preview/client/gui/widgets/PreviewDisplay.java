@@ -575,8 +575,8 @@ resizeImage();
             // screen width, not a fixed pixel count, so the rule holds at any
             // GUI scale.
             final boolean compact = width < minecraft.getWindow().getGuiScaledWidth() * 7 / 10;
-            final int tickStep = compact ? 8 : 10;
-            final int barPx = compact ? 32 : 48;
+            final int tickStep = compact ? 6 : 10;
+            final int barPx = compact ? 24 : 48;
             final double rawBlocks = barPx * blocksPerGuiPixel;
             // Snap to a friendly block count (1/2/5 * 10^n), then re-derive
             // the exact bar length so the label always matches the drawn line.
