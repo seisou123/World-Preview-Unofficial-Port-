@@ -236,6 +236,13 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     // Width of the floating panel when collapsed
     private static final int RAIL_WIDTH = 28;
     private static final int FLOATING_PANEL_WIDTH = 180;
+    /** Lower bound for the content-adapted floating panel width. */
+    static final int MIN_FLOATING_PANEL_WIDTH = 96;
+    /**
+     * Right-aligned ×count badge reserve (sign + ~6 digits) so live counter
+     * growth between layouts never pushes the badge into the name column.
+     */
+    static final int BIOME_COUNTS_RESERVE = 38;
 
     /** Grid step (px) used to lay out the 20x20 toolbar buttons with 2px gaps. */
     private static final int BUTTON_GRID_STEP = 22;
@@ -2027,6 +2034,31 @@ public void onScreenReentry() {
     }
 
     /**
+     * Preferred floating-panel width for the biome legend: the row text starts
+     * at +16 (10px colour swatch + 6px gap) and the scrollbar occupies the last
+     * 6px of the list; with counts enabled the badge hangs 10px+badgeWidth from
+     * the right edge.  2px clearance in both cases.
+     */
+    public static int biomesPanelWidth(int maxNameWidth, boolean showCounts) {
+        return showCounts ? 16 + maxNameWidth + BIOME_COUNTS_RESERVE + 12
+                          : 16 + maxNameWidth + 8;
+    }
+
+    /**
+     * Preferred floating-panel width for the structure list: text starts at
+     * +20 (2px inset + 18px icon slot) and the 20px eye toggle ends 2px before
+     * the 6px scrollbar column.
+     */
+    public static int structuresPanelWidth(int maxNameWidth) {
+        return 20 + maxNameWidth + 2 + 22 + 8;
+    }
+
+    /** Clamps a content-derived panel width to the hard bounds. */
+    static int clampFloatingPanelWidth(int preferredWidth) {
+        return Math.min(FLOATING_PANEL_WIDTH, Math.max(MIN_FLOATING_PANEL_WIDTH, preferredWidth));
+    }
+
+    /**
      * Collapsed layout: narrow 28px icon rail on the left edge.
      * The map fills the rest of the screen.  Clicking a rail icon
      * slides out a floating semi-transparent panel over the map.
@@ -2135,7 +2167,12 @@ public void onScreenReentry() {
         int seedBarY = bottom + 2;
         int btnW = BUTTON_GRID_STEP;
         int spawnW = (int)(btnW * 2.5);  // 2.5x button width
-        int toolsW = btnW * 4;           // waypoint + measure buttons (2 cells each)
+        // Waypoint/measure buttons widen to their fixed lang labels: the
+        // previous fixed 2-cell width overflowed ("Waypoints" needs 47px),
+        // which trips the vanilla scrolling-label marquee and clips glyphs.
+        int waypointsW = Math.max(btnW * 2, minecraft.font.width(WorldPreviewComponents.BTN_WAYPOINTS) + 8);
+        int measureW = Math.max(btnW * 2, minecraft.font.width(WorldPreviewComponents.BTN_MEASURE) + 8);
+        int toolsW = waypointsW + measureW;
         int seedEditWidth = (screenRectangle.right() - left - 4) - btnW * 2 - spawnW - toolsW - 8;
         if (seedEditWidth < 60) seedEditWidth = 60;
         seedEdit.setWidth(seedEditWidth);
@@ -2150,15 +2187,15 @@ public void onScreenReentry() {
         saveSeed.setY(seedBarY);
         btnX += btnW;
 
-        // Waypoint + measure buttons (2 grid cells each)
-        toggleWaypoints.setWidth(btnW * 2);
+        // Waypoint + measure buttons (label-fitted widths, see toolsW above)
+        toggleWaypoints.setWidth(waypointsW);
         toggleWaypoints.setX(btnX);
         toggleWaypoints.setY(seedBarY);
-        btnX += btnW * 2 + 2;
-        toggleMeasure.setWidth(btnW * 2);
+        btnX += waypointsW + 2;
+        toggleMeasure.setWidth(measureW);
         toggleMeasure.setX(btnX);
         toggleMeasure.setY(seedBarY);
-        btnX += btnW * 2 + 2;
+        btnX += measureW + 2;
 
         // toggleSetSpawn: 2.5x width, right of the tool buttons
         toggleSetSpawn.setWidth(spawnW);
@@ -2169,23 +2206,43 @@ public void onScreenReentry() {
         boolean showBiomesList = (floatingPanel == 0);
         boolean showStructuresList = (floatingPanel == 1);
 
-        // The analysis button now lives in the rail stack, so the floating
-        // panel no longer needs to skip an extra row for it.
-        int panelTop = top + LINE_HEIGHT + LINE_VSPACE;
-        int panelBottom = bottom - 4;
-        int panelHeight = panelBottom - panelTop;
+        // Anchor the panel directly below the rail button that opened it.
+        // The list background is deliberately translucent, so every rail
+        // button the panel covers is hidden: anything left underneath bleeds
+        // through and reads as garbled text over the map.  The active button
+        // stays visible above the panel (re-click closes).  The panel bottom
+        // keeps clear of the in-map scale bar / zoom slider (its hit zone
+        // spans bottom-21 .. bottom-6) and of the structure reset button at
+        // bottom - BUTTON_GRID_STEP.
+        int panelTop = showBiomesList
+                ? switchBiomes.getY() + switchBiomes.getHeight() + 2
+                : switchStructures.getY() + switchStructures.getHeight() + 2;
+        int panelBottom = bottom - BUTTON_GRID_STEP;
+        int panelHeight = Math.max(16, panelBottom - panelTop);
         int panelX = mapLeft + 4;
+
+        // Seed search / analysis always sit below either anchor button; the
+        // structures switch is additionally covered by the biomes panel.
+        boolean panelOpen = showBiomesList || showStructuresList;
+        seedSearchButton.visible = cfg.showSeedSearchButton && !panelOpen;
+        seedSearchButton.active = seedSearchButton.visible;
+        openAnalysis.visible = cfg.showAnalysisButton && !panelOpen;
+        openAnalysis.active = openAnalysis.visible;
+        switchStructures.visible = !showBiomesList;
+        switchStructures.active = switchStructures.visible;
 
         if (showBiomesList) {
             biomesList.setPosition(panelX, panelTop);
-            biomesList.setSize(FLOATING_PANEL_WIDTH, panelHeight);
+            biomesList.setSize(clampFloatingPanelWidth(
+                    biomesList.preferredContentWidth(minecraft.font, cfg.showBiomeCounts)), panelHeight);
             biomesList.visible = true;
             biomesList.active = true;
             structuresList.visible = false;
             structuresList.active = false;
         } else if (showStructuresList) {
             structuresList.setPosition(panelX, panelTop);
-            structuresList.setSize(FLOATING_PANEL_WIDTH, panelHeight);
+            structuresList.setSize(clampFloatingPanelWidth(
+                    structuresList.preferredContentWidth(minecraft.font)), panelHeight);
             structuresList.visible = true;
             structuresList.active = true;
             biomesList.visible = false;
