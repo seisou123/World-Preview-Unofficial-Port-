@@ -1,0 +1,205 @@
+// Modified from original World Preview (https://modrinth.com/mod/world-preview).
+// See CHANGES.md for details.
+package caeruleusTait.world.preview.backend.storage;
+
+import caeruleusTait.world.preview.RenderSettings;
+import caeruleusTait.world.preview.WorldPreview;
+import caeruleusTait.world.preview.WorldPreviewConfig;
+import caeruleusTait.world.preview.util.AtomicFiles;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
+
+/**
+ * Preview disk-cache helpers.
+ * <p>
+ * Uses a zip container with a single {@code bin} entry holding a non-Java-serialization
+ * binary payload (see {@link PreviewStorage#writeBinary} / {@link PreviewStorage#readBinary}).
+ * CACHE_FORMAT_VERSION 2 rejects legacy Java-serialized caches.
+ */
+public interface PreviewStorageCacheManager {
+
+    /** Bumped to 2 when Java serialization cache I/O was disabled for safety.
+     *  Bumped to 3 when the cache key gained world identity + sampling config
+     *  components (old v2 caches cannot prove which world they belong to).
+     *  Bumped to 4 when the height-range key components became lossless
+     *  (offset-biased 10-bit fields that can represent negative Y) and the
+     *  {@code onlySampleInVisualRange} flag joined the key; v3 keys clamped the
+     *  range to 0..255 (colliding -64 with 0 and anything above 255 with 255)
+     *  and dropped the flag, so two different height-sampling configs could
+     *  share a filename.  Payload format unchanged. */
+    int CACHE_FORMAT_VERSION = 4;
+
+    /** Zip entry name for the binary payload. */
+    String CACHE_ZIP_ENTRY = "bin";
+
+    PreviewStorage loadPreviewStorage(long seed, int yMin, int yMax);
+
+    void storePreviewStorage(long seed, PreviewStorage storage);
+
+    Path cacheDir();
+
+    default String cacheFileCompatPart() {
+        final WorldPreview worldPreview = WorldPreview.get();
+        final RenderSettings settings = worldPreview.renderSettings();
+        final WorldPreviewConfig cfg = worldPreview.cfg();
+
+        long flags = 0;
+        flags |= CACHE_FORMAT_VERSION & 0b1111;
+        flags |= (settings.samplerType.ordinal() & 0b1111) << 4;
+        flags |= (PreviewSection.SHIFT & 0b1111) << 8;
+        flags |= (PreviewBlock.PREVIEW_BLOCK_SHIFT & 0b1111) << 12;
+        // Sampling-config components: which noise channels exist, which height
+        // range was sampled and in which mode are part of the data identity.
+        flags |= configSamplingFlags(cfg);
+
+        // World-identity component: seed alone cannot prove cache ownership —
+        // the same seed with a different generator/datapack/registry layout
+        // (e.g. flat vs normal, mod list change) decodes biome ids differently.
+        // Prefer the live worldgen context identity; fall back to "" when the
+        // context is not available (identity unknown => new file on next store).
+        String identity = "";
+        try {
+            var workManager = worldPreview.workManager();
+            var context = workManager != null ? workManager.worldgenContext() : null;
+            if (context != null) {
+                identity = "-" + context.identity().shortKey();
+            }
+        } catch (Exception ignored) {
+            // Identity is best-effort; a cache miss is always safe.
+        }
+
+        return String.format("%s-%d-%d%s", settings.dimension, settings.pixelsPerChunk(), flags, identity)
+                .replace(":", "_")
+                .replace(";", "_")
+                .replace("/", "_")
+                .replace("\\", "_");
+    }
+
+    /**
+     * Config-derived components of the cache key: everything that changes the
+     * identity of the sampled height/noise data without changing the seed.
+     *
+     * <p>Bit layout (v4): bit 16 {@code enableCompression}, bit 17
+     * {@code storeNoiseSamples}, bits 18..27 {@code heightmapMinY} and bits
+     * 28..37 {@code heightmapMaxY} — the latter two as
+     * {@code (clamp(v, -64, 512) + 64) & 0x3FF}, lossless across the value
+     * window the settings UI accepts (-64..512; v3 clamped to 0..255, which
+     * collided -64 with 0 and anything above 255 with 255) — and bit 38
+     * {@code onlySampleInVisualRange} (not encoded at all in v3).
+     */
+    static long configSamplingFlags(WorldPreviewConfig cfg) {
+        long flags = 0;
+        flags |= cfg.enableCompression ? 1L << 16 : 0;
+        flags |= cfg.storeNoiseSamples ? 1L << 17 : 0;
+        flags |= (long) ((Math.max(-64, Math.min(512, cfg.heightmapMinY)) + 64) & 0x3FF) << 18;
+        flags |= (long) ((Math.max(-64, Math.min(512, cfg.heightmapMaxY)) + 64) & 0x3FF) << 28;
+        flags |= cfg.onlySampleInVisualRange ? 1L << 38 : 0;
+        return flags;
+    }
+
+    /** Clears only the preview cache represented by this provider. Analysis data lives elsewhere. */
+    default void clearCache() {
+        Path root = cacheDir();
+        if (root == null || !Files.exists(root)) return;
+        try (var stream = Files.walk(root)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .filter(path -> !path.equals(root))
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to clear preview cache: " + root, e);
+        }
+    }
+
+    /**
+     * Writes preview storage to a zip file (entry {@value #CACHE_ZIP_ENTRY}) via a temp file
+     * and atomic move.
+     */
+    default void writeCacheFile(PreviewStorage storage, Path outFile) {
+        Path parent = outFile.getParent();
+        if (parent != null) {
+            try {
+                Files.createDirectories(parent);
+            } catch (IOException e) {
+                WorldPreview.LOGGER.error("Failed to create preview cache directory {}", parent, e);
+                return;
+            }
+        }
+
+        Path tmp = outFile.resolveSibling(outFile.getFileName().toString() + ".tmp");
+        try {
+            try (OutputStream fos = Files.newOutputStream(tmp);
+                 BufferedOutputStream bos = new BufferedOutputStream(fos);
+                 ZipOutputStream zos = new ZipOutputStream(bos);
+                 DataOutputStream dos = new DataOutputStream(zos)) {
+                zos.putNextEntry(new ZipEntry(CACHE_ZIP_ENTRY));
+                storage.writeBinary(dos);
+                dos.flush();
+                zos.closeEntry();
+            }
+            AtomicFiles.moveReplace(tmp, outFile);
+            WorldPreview.LOGGER.debug("Wrote preview disk cache {}", outFile);
+        } catch (IOException e) {
+            WorldPreview.LOGGER.error("Failed to write preview disk cache {}", outFile, e);
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // best-effort cleanup
+            }
+        }
+    }
+
+    /**
+     * Reads a zip preview cache. On missing file, bad magic/version, or corrupt payload,
+     * returns empty storage (and renames the bad file to {@code .corrupt} when possible).
+     */
+    default PreviewStorage readCacheFile(int yMin, int yMax, Path inFile) {
+        if (!Files.exists(inFile)) {
+            return new PreviewStorage(yMin, yMax);
+        }
+
+        try (InputStream fis = Files.newInputStream(inFile);
+             BufferedInputStream bis = new BufferedInputStream(fis);
+             ZipInputStream zis = new ZipInputStream(bis)) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (CACHE_ZIP_ENTRY.equals(entry.getName())) {
+                    try (DataInputStream dis = new DataInputStream(zis)) {
+                        return PreviewStorage.readBinary(dis, yMin, yMax);
+                    }
+                }
+            }
+            throw new IOException("Missing zip entry '" + CACHE_ZIP_ENTRY + "'");
+        } catch (IOException e) {
+            WorldPreview.LOGGER.warn(
+                    "Ignoring corrupt or incompatible preview cache at {} (recompute): {}",
+                    inFile, e.toString());
+            renameCorrupt(inFile);
+            return new PreviewStorage(yMin, yMax);
+        }
+    }
+
+    private static void renameCorrupt(Path inFile) {
+        Path corrupt = inFile.resolveSibling(inFile.getFileName().toString() + ".corrupt");
+        try {
+            Files.move(inFile, corrupt, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            WorldPreview.LOGGER.debug("Could not rename corrupt preview cache to {}", corrupt, e);
+        }
+    }
+
+}
