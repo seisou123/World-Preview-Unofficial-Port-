@@ -1,0 +1,189 @@
+package caeruleusTait.world.preview.backend.export;
+
+import net.minecraft.core.Holder;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.biome.Biome;
+
+import java.util.Optional;
+
+/**
+ * Terrain classifier based on vanilla biome tags.
+ * <p>
+ * Classifies terrain by priority-matching multiple biome tags, unlike TFC's simple binary water/land approach.
+ * Classification strategy:
+ * <ol>
+ *   <li>Deep ocean: {@code is_ocean} and biome ID starts with "deep"</li>
+ *   <li>Ocean: {@code is_ocean}</li>
+ *   <li>River: {@code is_river}</li>
+ *   <li>Beach: {@code is_beach}</li>
+ *   <li>Peak: {@code is_mountain} and biome ID contains "peak"</li>
+ *   <li>Mountain: {@code is_mountain}</li>
+ *   <li>Hills: {@code is_hill}</li>
+ *   <li>Forest: {@code is_forest}</li>
+ *   <li>Plains: default land when no tag matches</li>
+ *   <li>Unclassified: not in the overworld biome registry</li>
+ * </ol>
+ */
+public final class TerrainClassifier {
+
+    private static final TagKey<Biome> IS_OCEAN = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_ocean"));
+    private static final TagKey<Biome> IS_RIVER = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_river"));
+    private static final TagKey<Biome> IS_BEACH = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_beach"));
+    private static final TagKey<Biome> IS_MOUNTAIN = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_mountain"));
+    private static final TagKey<Biome> IS_HILL = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_hill"));
+    private static final TagKey<Biome> IS_FOREST = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_forest"));
+    private static final TagKey<Biome> IS_OVERWORLD = TagKey.create(Registries.BIOME, new ResourceLocation("minecraft", "is_overworld"));
+
+    private TerrainClassifier() {}
+
+    /**
+     * Tag check that tolerates stand-alone holders. Stand-alone
+     * {@code Holder.Reference}s (biomes known to the biome source but absent
+     * from the registry, used e.g. by the biome list) have no bound tags and
+     * {@link Holder.Reference#is(TagKey)} throws for them; treat that as "no
+     * tag match" so classification falls through to the id-keyword heuristics.
+     */
+    private static boolean is(Holder<Biome> biomeHolder, TagKey<Biome> tagKey) {
+        try {
+            return biomeHolder.is(tagKey);
+        } catch (IllegalStateException unboundTags) {
+            return false;
+        }
+    }
+
+    /**
+     * Classify a biome Holder into a terrain category.
+     *
+     * @param biomeHolder Biome Holder
+     * @return The corresponding {@link TerrainCategory}
+     */
+    public static TerrainCategory classify(Holder<Biome> biomeHolder) {
+        if (biomeHolder == null) {
+            return TerrainCategory.UNKNOWN;
+        }
+
+        Optional<ResourceLocation> idOpt = biomeHolder.unwrapKey()
+                .map(key -> key.location());
+
+        String path = idOpt.map(ResourceLocation::getPath).orElse("").toLowerCase();
+        String namespace = idOpt.map(ResourceLocation::getNamespace).orElse("").toLowerCase();
+
+        // Check water biomes first
+        if (is(biomeHolder, IS_OCEAN)) {
+            return path.contains("deep") ? TerrainCategory.DEEP_OCEAN : TerrainCategory.OCEAN;
+        }
+        if (is(biomeHolder, IS_RIVER)) {
+            return TerrainCategory.RIVER;
+        }
+        if (is(biomeHolder, IS_BEACH)) {
+            return TerrainCategory.BEACH;
+        }
+
+        // Mountain biomes
+        if (is(biomeHolder, IS_MOUNTAIN)) {
+            return path.contains("peak") || path.contains("snowy_peaks")
+                    ? TerrainCategory.PEAK : TerrainCategory.MOUNTAIN;
+        }
+
+        // Hills
+        if (is(biomeHolder, IS_HILL)) {
+            return TerrainCategory.HILLS;
+        }
+
+        // Forest
+        if (is(biomeHolder, IS_FOREST)) {
+            return TerrainCategory.FOREST;
+        }
+
+        // Default land classification
+        if (is(biomeHolder, IS_OVERWORLD)) {
+            return TerrainCategory.PLAINS;
+        }
+
+        // ===== Fallback classification for modded biomes =====
+        // When a biome is not in vanilla tags (e.g. Terralith, BOP mod biomes),
+        // classify heuristically by biome ID keywords
+
+        // Water keywords
+        if (path.contains("ocean") || path.contains("sea") || path.contains("marine")) {
+            return path.contains("deep") || path.contains("abyss") ? TerrainCategory.DEEP_OCEAN : TerrainCategory.OCEAN;
+        }
+        if (path.contains("river") || path.contains("stream") || path.contains("creek")) {
+            return TerrainCategory.RIVER;
+        }
+        if (path.contains("beach") || path.contains("shore") || path.contains("coast") || path.contains("dunes")) {
+            return TerrainCategory.BEACH;
+        }
+
+        // Mountain keywords
+        if (path.contains("peak") || path.contains("summit") || path.contains("pinnacle")) {
+            return TerrainCategory.PEAK;
+        }
+        if (path.contains("mountain") || path.contains("alpine") || path.contains("highland")
+                || path.contains("cliff") || path.contains("ridge") || path.contains("volcano")) {
+            return TerrainCategory.MOUNTAIN;
+        }
+
+        // Hill keywords
+        if (path.contains("hill") || path.contains("foothill") || path.contains("rolling")) {
+            return TerrainCategory.HILLS;
+        }
+
+        // Forest keywords
+        if (path.contains("forest") || path.contains("woods") || path.contains("woodland")
+                || path.contains("jungle") || path.contains("taiga") || path.contains("grove")
+                || path.contains("dark_oak") || path.contains("birch")) {
+            return TerrainCategory.FOREST;
+        }
+
+        // Plains keywords
+        if (path.contains("plain") || path.contains("grass") || path.contains("meadow")
+                || path.contains("savanna") || path.contains("prairie") || path.contains("steppe")
+                || path.contains("field") || path.contains("valley")) {
+            return TerrainCategory.PLAINS;
+        }
+
+        // Special environments
+        if (path.contains("desert") || path.contains("wasteland") || path.contains("badlands")) {
+            return TerrainCategory.PLAINS;
+        }
+        if (path.contains("swamp") || path.contains("marsh") || path.contains("wetland")
+                || path.contains("bog") || path.contains("fen")) {
+            return TerrainCategory.FOREST;
+        }
+
+        // Default to plains for overworld namespace biomes
+        if (namespace.equals("minecraft") || namespace.contains("terralith")
+                || namespace.contains("biomesoplenty") || namespace.contains("oh_the_biomes")
+                || namespace.contains("natures") || namespace.contains("byg")) {
+            return TerrainCategory.PLAINS;
+        }
+
+        return TerrainCategory.UNKNOWN;
+    }
+
+    /**
+     * Rough per-category surface height estimate, in blocks above the
+     * dimension's yMin anchor (the levels the terrain export visualization
+     * uses for its estimated-height fallback).
+     *
+     * @param cat terrain category
+     * @return estimated surface height as a short
+     */
+    public static short categoryHeight(TerrainCategory cat) {
+        return switch (cat) {
+            case DEEP_OCEAN -> 30;
+            case OCEAN -> 50;
+            case RIVER -> 55;
+            case BEACH -> 63;
+            case PLAINS -> 70;
+            case FOREST -> 75;
+            case HILLS -> 90;
+            case MOUNTAIN -> 120;
+            case PEAK -> 160;
+            case UNKNOWN -> 70;
+        };
+    }
+}

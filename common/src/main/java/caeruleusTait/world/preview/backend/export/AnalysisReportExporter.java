@@ -1,0 +1,292 @@
+package caeruleusTait.world.preview.backend.export;
+
+import caeruleusTait.world.preview.util.AtomicFiles;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import org.jetbrains.annotations.Nullable;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+
+/**
+ * Builds and writes region analysis reports (CSV biome table + JSON summary).
+ * <p>
+ * Pure output formatting: no Minecraft types, safe to unit test.
+ * CSV uses LF line endings without BOM; JSON is written with the Gson
+ * instance supplied by the caller (expected to use pretty printing).
+ * </p>
+ */
+public final class AnalysisReportExporter {
+
+    /** Immutable snapshot of everything that goes into a report. */
+    public record ReportInput(
+            String seed,
+            String dimension,
+            String regionDescription,
+            long expectedSamples,
+            long presentSamples,
+            double coverage,
+            LinkedHashMap<String, long[]> biomeTable,
+            OptionalInt minHeight,
+            OptionalInt maxHeight,
+            OptionalDouble meanHeight,
+            OptionalDouble medianHeight,
+            OptionalDouble standardDeviation,
+            OptionalDouble meanSlope,
+            OptionalDouble maxSlope,
+            double flatRatio,
+            @Nullable String contextId,
+            double waterShare,
+            double shannonDiversity,
+            double effectiveBiomeCount,
+            LinkedHashMap<String, Long> terrainTable,
+            LinkedHashMap<String, Long> nearestStructures,
+            int[] heightHistogram,
+            int histogramMinY) {
+
+        /** Legacy constructor without lineage info. */
+        public ReportInput(
+                String seed, String dimension, String regionDescription,
+                long expectedSamples, long presentSamples, double coverage,
+                LinkedHashMap<String, long[]> biomeTable,
+                OptionalInt minHeight, OptionalInt maxHeight,
+                OptionalDouble meanHeight, OptionalDouble medianHeight, OptionalDouble standardDeviation,
+                OptionalDouble meanSlope, OptionalDouble maxSlope, double flatRatio) {
+            this(seed, dimension, regionDescription, expectedSamples, presentSamples, coverage,
+                    biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
+                    meanSlope, maxSlope, flatRatio, null);
+        }
+
+        /** Legacy constructor without the extended metrics; they default to 0 / empty. */
+        public ReportInput(
+                String seed, String dimension, String regionDescription,
+                long expectedSamples, long presentSamples, double coverage,
+                LinkedHashMap<String, long[]> biomeTable,
+                OptionalInt minHeight, OptionalInt maxHeight,
+                OptionalDouble meanHeight, OptionalDouble medianHeight, OptionalDouble standardDeviation,
+                OptionalDouble meanSlope, OptionalDouble maxSlope, double flatRatio,
+                String contextId) {
+            this(seed, dimension, regionDescription, expectedSamples, presentSamples, coverage,
+                    biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
+                    meanSlope, maxSlope, flatRatio, contextId,
+                    0.0, 0.0, 0.0,
+                    new LinkedHashMap<>(), new LinkedHashMap<>(), new int[0], 0);
+        }
+
+        public ReportInput {
+            seed = seed == null ? "unknown" : seed;
+            dimension = dimension == null ? "unknown" : dimension;
+            regionDescription = regionDescription == null ? "" : regionDescription;
+            biomeTable = copyBiomeTable(biomeTable);
+            minHeight = minHeight == null ? OptionalInt.empty() : minHeight;
+            maxHeight = maxHeight == null ? OptionalInt.empty() : maxHeight;
+            meanHeight = meanHeight == null ? OptionalDouble.empty() : meanHeight;
+            medianHeight = medianHeight == null ? OptionalDouble.empty() : medianHeight;
+            standardDeviation = standardDeviation == null ? OptionalDouble.empty() : standardDeviation;
+            meanSlope = meanSlope == null ? OptionalDouble.empty() : meanSlope;
+            maxSlope = maxSlope == null ? OptionalDouble.empty() : maxSlope;
+            contextId = contextId == null ? "unknown" : contextId;
+            // Non-finite doubles would corrupt the JSON (Gson writes NaN/Infinity
+            // literals); normalize them to 0.0 like the absent-stat defaults.
+            waterShare = finiteOrZero(waterShare);
+            shannonDiversity = finiteOrZero(shannonDiversity);
+            effectiveBiomeCount = finiteOrZero(effectiveBiomeCount);
+            terrainTable = copyStringLongTable(terrainTable);
+            nearestStructures = copyStringLongTable(nearestStructures);
+            heightHistogram = heightHistogram == null ? new int[0] : heightHistogram.clone();
+        }
+
+        private static double finiteOrZero(double value) {
+            return Double.isFinite(value) ? value : 0.0;
+        }
+
+        private static LinkedHashMap<String, Long> copyStringLongTable(LinkedHashMap<String, Long> source) {
+            LinkedHashMap<String, Long> copy = new LinkedHashMap<>();
+            if (source != null) {
+                for (Map.Entry<String, Long> e : source.entrySet()) {
+                    if (e.getKey() == null) {
+                        continue;
+                    }
+                    copy.put(e.getKey(), e.getValue() == null ? 0L : e.getValue());
+                }
+            }
+            return copy;
+        }
+
+        private static LinkedHashMap<String, long[]> copyBiomeTable(LinkedHashMap<String, long[]> source) {
+            LinkedHashMap<String, long[]> copy = new LinkedHashMap<>();
+            if (source != null) {
+                for (Map.Entry<String, long[]> e : source.entrySet()) {
+                    copy.put(e.getKey(), e.getValue() == null ? new long[]{0L} : e.getValue().clone());
+                }
+            }
+            return copy;
+        }
+
+        /** Biome rows sorted by descending count; shared by CSV and JSON output. */
+        private List<BiomeRow> sortedRows() {
+            List<Map.Entry<String, long[]>> entries = new ArrayList<>(biomeTable.entrySet());
+            entries.sort(Map.Entry.comparingByValue(Comparator.comparingLong((long[] counts) -> counts[0]).reversed()));
+            List<BiomeRow> rows = new ArrayList<>(entries.size());
+            for (Map.Entry<String, long[]> e : entries) {
+                rows.add(new BiomeRow(e.getKey(), e.getValue()[0], share(e.getValue()[0], presentSamples)));
+            }
+            return rows;
+        }
+    }
+
+    /** One formatted biome row; count desc order, share in percent. */
+    private record BiomeRow(String name, long count, double sharePercent) {}
+
+    public String buildCsv(ReportInput input) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("biome,count,share_percent\n");
+        if (input.presentSamples() <= 0) {
+            return sb.toString();
+        }
+        for (BiomeRow row : input.sortedRows()) {
+            sb.append(escapeCsv(row.name())).append(',')
+                    .append(row.count()).append(',')
+                    .append(String.format(Locale.ROOT, "%.2f", row.sharePercent())).append('\n');
+        }
+        // Summary metrics section appended after the biome table; the first
+        // table's header and row format stay unchanged (blank line separates them).
+        sb.append('\n');
+        sb.append("metric,value\n");
+        sb.append("water_share,").append(fmt(input.waterShare())).append('\n');
+        sb.append("shannon_diversity,").append(fmt(input.shannonDiversity())).append('\n');
+        sb.append("effective_biome_count,").append(fmt(input.effectiveBiomeCount())).append('\n');
+        return sb.toString();
+    }
+
+    public String buildJson(ReportInput input, Gson gson) {
+        JsonObject root = new JsonObject();
+        root.addProperty("seed", input.seed());
+        root.addProperty("dimension", input.dimension());
+        // Lineage: identity of the worldgen context the metrics were computed
+        // under, so a report can never be mistaken for another world's data.
+        root.addProperty("contextId", input.contextId());
+        root.addProperty("region", input.regionDescription());
+        root.addProperty("coverage", input.coverage());
+
+        JsonObject sampleCounts = new JsonObject();
+        sampleCounts.addProperty("expected", input.expectedSamples());
+        sampleCounts.addProperty("present", input.presentSamples());
+        root.add("sampleCounts", sampleCounts);
+
+        JsonObject heightStats = new JsonObject();
+        heightStats.addProperty("min", boxed(input.minHeight()));
+        heightStats.addProperty("max", boxed(input.maxHeight()));
+        heightStats.addProperty("mean", boxed(input.meanHeight()));
+        heightStats.addProperty("median", boxed(input.medianHeight()));
+        heightStats.addProperty("stddev", boxed(input.standardDeviation()));
+        root.add("heightStats", heightStats);
+
+        JsonObject slopeStats = new JsonObject();
+        slopeStats.addProperty("mean", boxed(input.meanSlope()));
+        slopeStats.addProperty("max", boxed(input.maxSlope()));
+        root.add("slopeStats", slopeStats);
+
+        root.addProperty("flatRatio", input.flatRatio());
+
+        // Extended metrics: water coverage, diversity insights, terrain mix,
+        // nearest structure distances and the height histogram.
+        root.addProperty("waterShare", input.waterShare());
+
+        JsonObject insights = new JsonObject();
+        insights.addProperty("shannonDiversity", input.shannonDiversity());
+        insights.addProperty("effectiveBiomeCount", input.effectiveBiomeCount());
+        root.add("insights", insights);
+
+        JsonArray terrain = new JsonArray();
+        for (Map.Entry<String, Long> e : input.terrainTable().entrySet()) {
+            JsonObject t = new JsonObject();
+            t.addProperty("category", e.getKey());
+            t.addProperty("count", e.getValue());
+            terrain.add(t);
+        }
+        root.add("terrain", terrain);
+
+        JsonArray structures = new JsonArray();
+        for (Map.Entry<String, Long> e : input.nearestStructures().entrySet()) {
+            JsonObject s = new JsonObject();
+            s.addProperty("structure", e.getKey());
+            s.addProperty("distanceBlocks", e.getValue());
+            structures.add(s);
+        }
+        root.add("nearestStructures", structures);
+
+        JsonObject hist = new JsonObject();
+        hist.addProperty("minY", input.histogramMinY());
+        JsonArray counts = new JsonArray();
+        for (int v : input.heightHistogram()) {
+            counts.add(v);
+        }
+        hist.add("counts", counts);
+        root.add("heightHistogram", hist);
+
+        JsonArray biomes = new JsonArray();
+        for (BiomeRow row : input.sortedRows()) {
+            JsonObject biome = new JsonObject();
+            biome.addProperty("name", row.name());
+            biome.addProperty("count", row.count());
+            biome.addProperty("sharePercent", row.sharePercent());
+            biomes.add(biome);
+        }
+        root.add("biomes", biomes);
+
+        // Null-valued members (absent stats) must survive serialization even though
+        // Gson drops them by default; deriving keeps the caller's formatting settings.
+        return gson.newBuilder().serializeNulls().create().toJson(root);
+    }
+
+    public List<Path> write(ReportInput input, Path outputDir, String baseName, Gson gson) throws IOException {
+        Files.createDirectories(outputDir);
+        Path csvPath = outputDir.resolve(baseName + ".csv");
+        Path jsonPath = outputDir.resolve(baseName + ".json");
+        AtomicFiles.writeStringAtomic(csvPath, buildCsv(input));
+        AtomicFiles.writeStringAtomic(jsonPath, buildJson(input, gson));
+        return List.of(csvPath, jsonPath);
+    }
+
+    private static double share(long count, long presentSamples) {
+        if (presentSamples <= 0) {
+            return 0.0;
+        }
+        return count * 100.0 / presentSamples;
+    }
+
+    /** Fixed 4-decimal formatting for the CSV summary metric rows. */
+    private static String fmt(double value) {
+        return String.format(Locale.ROOT, "%.4f", value);
+    }
+
+    private static Integer boxed(OptionalInt value) {
+        return value.isPresent() ? value.getAsInt() : null;
+    }
+
+    private static Double boxed(OptionalDouble value) {
+        return value.isPresent() ? value.getAsDouble() : null;
+    }
+
+    /**
+     * Minimal CSV field escaping: quote fields containing separators, quotes or newlines.
+     */
+    private static String escapeCsv(String field) {
+        if (field.indexOf(',') >= 0 || field.indexOf('"') >= 0 || field.indexOf('\n') >= 0
+                || field.indexOf('\r') >= 0) {
+            return '"' + field.replace("\"", "\"\"") + '"';
+        }
+        return field;
+    }
+}

@@ -1,0 +1,170 @@
+buildscript {
+    repositories {
+        maven { url = 'https://repo.spongepowered.org/repository/maven-public/' }
+        maven { url = 'https://maven.minecraftforge.net' }
+    }
+    dependencies {
+        // MixinGradle (refmap generation for Forge production runtime)
+        classpath 'org.spongepowered:mixingradle:0.7.38'
+    }
+}
+
+plugins {
+    id 'net.minecraftforge.gradle' version '6.0.54'
+    id 'maven-publish'
+}
+
+apply plugin: 'org.spongepowered.mixin'
+
+version = project.mod_version
+group = project.mod_group_id
+
+base {
+    archivesName = project.mod_archives_base_name
+}
+
+repositories {
+    mavenCentral()
+}
+
+// --- Shared multiloader sources: everything loader-neutral lives in ../common ---
+// The fabric module compiles the same common tree against Fabric mappings.
+sourceSets {
+    main {
+        java.srcDir rootProject.file('common/src/main/java')
+        resources.srcDir rootProject.file('common/src/main/resources')
+    }
+    test {
+        java.srcDir rootProject.file('common/src/test/java')
+        resources.srcDir rootProject.file('common/src/test/resources')
+    }
+}
+
+// 共享测量工具：单一副本在仓库同级 world-preview-tools/java，所有孪生/ml 工程共用。
+// 只作用于 test sourceSet —— 不进主 jar，不影响发布产物。
+sourceSets {
+    test {
+        java.srcDir rootProject.file('../world-preview-tools/java')
+    }
+}
+
+mixin {
+    add sourceSets.main, 'world_preview.refmap.json'
+    config 'world_preview.mixins.json'
+}
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+
+    // This property enables access transformers for use in development.
+    // It must be at "META-INF/accesstransformer.cfg" in the final mod jar.
+    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+
+            mods {
+                "${project.mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+        }
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${project.minecraft_version}-${project.forge_version}"
+
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+    testImplementation 'com.google.code.gson:gson:2.10.1'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+// Ensure UTF-8 encoding for compilation on all platforms (especially Windows with non-UTF-8 system locale)
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+javadoc {
+    options.encoding = 'UTF-8'
+}
+
+processResources {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            forge_version_range    : forge_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching('META-INF/mods.toml') {
+        expand replaceProperties
+    }
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+jar {
+    from(rootProject.file("LICENSE")) {
+        rename { "${it}_${project.base.archivesName.get()}" }
+    }
+    // Forge production runtime uses SRG names: reobfuscate the main jar.
+    finalizedBy 'reobfJar'
+}
+
+// --- Additional artifacts ---
+
+// Source ZIP: complete project source archive (includes build scripts, gradle config, etc.)
+tasks.register('sourceZip', Zip) {
+    archiveClassifier = 'src'
+    archiveExtension = 'zip'
+    from(rootProject.file('common')) {
+        into('common')
+    }
+    from(projectDir) {
+        include 'src/**'
+        into('forge')
+    }
+    from(rootProject.file('LICENSE')) {
+        into('.')
+    }
+    from(rootProject.file('CHANGES.md')) {
+        into('.')
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    destinationDirectory = layout.buildDirectory.dir('libs')
+}
+
+// Dev JAR: compiled classes only (mojang-mapped, no reobfuscation), usable as a
+// compile-time dependency in dev environments.
+tasks.register('devJar', Jar) {
+    archiveClassifier = 'dev'
+    from sourceSets.main.output
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// The default build produces the main JAR (reobf'd), the dev JAR and the sources
+// jar (via withSourcesJar). sourceZip stays on-demand.
+build.dependsOn 'devJar', 'sourcesJar'
