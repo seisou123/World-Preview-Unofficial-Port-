@@ -1,5 +1,7 @@
 ## 1.5.4
 
+Minecraft 26.3 and Minecraft 1.20.1 are now supported: 26.3 on Fabric and NeoForge, 1.20.1 on Fabric and Forge.
+
 ### Fixes
 
 - Fixed the settings screen Reset buttons doing nothing or snapping to the wrong value: each page's Reset now restores that page's defaults
