@@ -5,8 +5,8 @@ structures, heightmap and Y-layer intersections.
 
 > **This is an unofficial community fork** of
 > [World Preview](https://modrinth.com/mod/world-preview) by Caeruleus Draconis & Taiterio.
-> The original stopped at Minecraft 1.21. This fork adds 1.21.11, 26.1.2 and 26.2, on Fabric and
-> NeoForge, plus a number of extra features.
+> The original stopped at Minecraft 1.21. This fork adds 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2 and
+> 26.3, on Fabric and NeoForge (1.20.1 on Fabric and Forge), plus a number of extra features.
 > All credit for the mod itself belongs to its authors. Licensed under Apache-2.0.
 
 **Download** → [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) · [GitHub Releases](../../releases) · **Report a bug** → [Issues](../../issues)
@@ -15,13 +15,17 @@ structures, heightmap and Y-layer intersections.
 
 ## Supported versions
 
-| Minecraft | Fabric | NeoForge | Branch |
+| Minecraft | Fabric | NeoForge / Forge | Branch |
 |-----------|--------|----------|--------|
-| `1.21.11` | ✅ | ✅ | `1.21.11-fabric` / `1.21.11-neoforge` |
-| `26.1.2`  | ✅ | ✅ | `26.1.2-fabric` / `26.1.2-neoforge` |
-| `26.2`    | ✅ | ✅ | `26.2-fabric` / `26.2-neoforge` |
+| `1.20.1` | ✅ | ✅ (Forge) | `1.20.1` |
+| `1.21.1` | ✅ | ✅ | `1.21.1` |
+| `1.21.11` | ✅ | ✅ | `1.21.11` |
+| `26.1.2` | ✅ | ✅ | `26.1.2` |
+| `26.2` | ✅ | ✅ | `26.2` |
+| `26.3` | ✅ | ✅ | `26.3` |
 
-Minecraft versions older than 1.21.11 are not supported.
+1.20.1 is the Forge line; every other version uses NeoForge. Branches are named after their
+Minecraft version; the original per-loader branches remain under `legacy/<name>`.
 
 > The original project's pages ([Modrinth](https://modrinth.com/mod/world-preview),
 > [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview)) do not include this
@@ -35,9 +39,11 @@ Minecraft versions older than 1.21.11 are not supported.
    [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) or
    [Releases](../../releases).
    Asset names look like `world_preview-<mod version>-<minecraft version>-<Fabric|NeoForge>.jar`;
-   the `.dev` and `.sources` variants are for developers and are not meant to be played.
+   the 1.20.1 jars are `world_preview-<mod version>-1.20.1-Fabric.jar` and
+   `world_preview-<mod version>-1.20.1-Forge.jar`. The `.dev` and `.sources` variants are for
+   developers and are not meant to be played.
 2. Put the jar into the `mods` folder of your Minecraft instance.
-3. On Fabric you also need [Fabric API](https://modrinth.com/mod/fabric-api). NeoForge needs nothing extra.
+3. On Fabric you also need [Fabric API](https://modrinth.com/mod/fabric-api). NeoForge and Forge need nothing extra.
 
 ---
 
@@ -52,8 +58,8 @@ unchanged from upstream behaviour.
 |---|---|---|
 | **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be switched back in `Settings → General → Scroll wheel zooms map` |
 | **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two most zoomed-out steps (2 and 1 px per chunk) resample the map, so they take a moment |
-| **Minecraft version** | 1.20.x, 1.21.x | 1.21.11, 26.1.2, 26.2 |
-| **Mod loader** | Fabric, Forge | Fabric, NeoForge |
+| **Minecraft version** | 1.20.x, 1.21 | 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2, 26.3 |
+| **Mod loader** | Fabric, Forge, Quilt | Fabric, NeoForge; Forge on 1.20.1 |
 | **Settings screen** | a single screen | sidebar with separate pages, plus a *Reset to defaults* button |
 | **Starting Y layer** | the build limit | about one third of the world height (≈ Y 64 in the Overworld) |
 
@@ -212,9 +218,11 @@ the biome preview, structures and heightmap as fast as it can, which is CPU-hung
 Cutting *The amount of samples per chunk* on the `Resolution` page reduces the work further, at
 the cost of a coarser preview.
 
-**Q: Will older Minecraft versions be supported?**
+**Q: Will other Minecraft versions be supported?**
 
-**A:** No. This fork targets 1.21.11 and later. For 1.20/1.21 use the original mod.
+**A:** This fork targets exactly the versions in the table above — there are no builds for
+anything in between (1.21.2–1.21.10) or older. For 1.20.x and 1.21 you can use the original
+mod, which covers those versions on Fabric, Forge and Quilt.
 
 **Q: Does this run on a server, or in multiplayer?**
 
@@ -235,7 +243,7 @@ data format is unchanged by this fork.
 **Q: Fabric or NeoForge? Do I need anything else?**
 
 **A:** Pick the jar that matches both your Minecraft version and your loader. Fabric users
-also need Fabric API; NeoForge users do not need anything beyond NeoForge itself.
+also need Fabric API; NeoForge and Forge users do not need anything beyond the loader itself.
 
 ---
 
@@ -264,4 +272,4 @@ This is a limitation of the data TFC exposes, not a TFC bug.
 - User-visible release history: [CHANGELOG.md](CHANGELOG.md).
 - A per-file record of the upstream sources this fork modified ships as `CHANGES.md` in each
   version branch — for example
-  [1.21.11-fabric](https://github.com/seisou123/World-Preview-Unofficial-Port-/blob/1.21.11-fabric/CHANGES.md).
+  [1.21.11](https://github.com/seisou123/World-Preview-Unofficial-Port-/blob/1.21.11/CHANGES.md).
