@@ -1,23 +1,3 @@
-## Unreleased (1.20.1 backport)
-
-### New
-
-- First release of the fork for Minecraft 1.20.1: the full fork feature set (seed search hub,
-  world analysis, terrain map export, waypoints, measure tool, spawn pin, hillshade and contour
-  lines, noise parameter views, the settings sidebar and the floating panels) back-ported from
-  the 1.21.11-era code line
-- Ships as two jars built from one shared source tree:
-  `world_preview-<version>-1.20.1-Fabric.jar` (requires Fabric API) and
-  `world_preview-<version>-1.20.1-Forge.jar` (requires nothing extra); Java 17
-
-### Internal
-
-- Multi-loader restructure: loader-neutral code lives in a shared `common` tree compiled into
-  the Fabric and Forge modules
-- The default structure-visibility tag marks `minecraft:trial_chambers` (a 1.21 structure) as
-  optional, so the tag loads correctly on 1.20.1
-- Removed an unused leftover core-shader resource pair
-
 ## 1.5.4
 
 ### Fixes
