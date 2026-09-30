@@ -27,7 +27,7 @@ This branch is the `26.3` line of the table above. Rows marked `release assets`
 only` are shipped as jars and have no branch of their own yet.
 
 Minecraft versions other than those listed above are not covered by this fork; for older 1.20.x
-and 1.21.x releases outside this list, the original mod remains available.
+and 1.21 releases outside this list, the original mod remains available.
 
 > The original project's pages ([Modrinth](https://modrinth.com/mod/world-preview),
 > [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview)) do not include this
@@ -61,8 +61,8 @@ unchanged from upstream behaviour.
 |---|---|---|
 | **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be switched back in `Settings → General → Scroll wheel zooms map` |
 | **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two most zoomed-out steps (2 and 1 px per chunk) resample the map, so they take a moment |
-| **Minecraft version** | 1.20.x, 1.21.x | 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2, 26.3 |
-| **Mod loader** | Fabric, Forge | Fabric, NeoForge (1.21.1 and later); Fabric, Forge (1.20.1) |
+| **Minecraft version** | 1.20.x, 1.21 | 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2, 26.3 |
+| **Mod loader** | Fabric, Forge, Quilt | Fabric, NeoForge (1.21.1 and later); Fabric, Forge (1.20.1) |
 | **Settings screen** | a single screen | sidebar with separate pages, plus a *Reset to defaults* button |
 | **Starting Y layer** | the build limit | about one third of the world height (≈ Y 64 in the Overworld) |
 ### Added in this fork
@@ -223,7 +223,8 @@ the cost of a coarser preview.
 **Q: Will older Minecraft versions be supported?**
 
 **A:** This fork ships for 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2 and 26.3. Other Minecraft versions
-are not covered by this fork; for versions outside that list the original mod remains available.
+are not covered by this fork. For 1.20.x and 1.21 the original mod remains available, on Fabric,
+Forge and Quilt.
 **Q: Does this run on a server, or in multiplayer?**
 
 **A:** It is a client-side mod and singleplayer-only. Install it on the client; a server does not
