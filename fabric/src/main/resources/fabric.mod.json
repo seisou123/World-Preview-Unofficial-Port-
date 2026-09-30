@@ -1,0 +1,37 @@
+﻿{
+	"schemaVersion": 1,
+	"id": "world_preview",
+	"version": "${version}",
+	"name": "World preview",
+	"description": "Allows you to preview a map in the new world screen",
+	"authors": [
+		"Caeruleus Draconis",
+		"Taiterio"
+	],
+	"contact": {
+		"homepage": "https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port",
+		"sources": "https://github.com/seisou123/World-Preview-Unofficial-Port-",
+		"issues": "https://github.com/seisou123/World-Preview-Unofficial-Port-/issues"
+	},
+	"license": "Apache-2.0",
+	"icon": "assets/world_preview/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"main": [
+			"caeruleusTait.world.preview.WorldPreview"
+		],
+		"client": [
+			"caeruleusTait.world.preview.client.WorldPreviewClient"
+		]
+	},
+	"accessWidener": "world_preview.accesswidener",
+	"mixins": [
+		"world_preview.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.16.9",
+		"minecraft": ["~1.21.1"],
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
