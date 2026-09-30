@@ -1,0 +1,1162 @@
+// Modified from original World Preview (https://modrinth.com/mod/world-preview).
+// See CHANGES.md for details.
+package caeruleusTait.world.preview.client.gui.widgets;
+
+import caeruleusTait.world.preview.RenderSettings;
+import caeruleusTait.world.preview.WorldPreview;
+import caeruleusTait.world.preview.WorldPreviewConfig;
+import caeruleusTait.world.preview.backend.WorkManager;
+import caeruleusTait.world.preview.backend.analysis.Region;
+import caeruleusTait.world.preview.backend.storage.PreviewStorage;
+import caeruleusTait.world.preview.client.WorldPreviewClient;
+import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider;
+import caeruleusTait.world.preview.domain.preview.accuracy.QueueAabb;
+import caeruleusTait.world.preview.domain.preview.accuracy.ViewportMapping;
+import caeruleusTait.world.preview.domain.waypoint.Waypoint;
+import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.narration.NarrationElementOutput;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.sounds.SoundManager;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.QuartPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import org.jetbrains.annotations.Nullable;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.function.Supplier;
+
+
+import static caeruleusTait.world.preview.client.WorldPreviewComponents.MSG_ERROR_SETUP_FAILED;
+import static caeruleusTait.world.preview.client.WorldPreviewComponents.MSG_PREVIEW_SETUP_LOADING;
+
+public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
+    private final Minecraft minecraft;
+    private final PreviewDisplayDataProvider dataProvider;
+    private final WorkManager workManager;
+    private final RenderSettings renderSettings;
+    private final WorldPreviewConfig config;
+    private final PreviewDataVisualizer dataVisualizer;
+
+    /**
+     * Supplier that returns the list of all widgets in the same container.
+     * Used by {@link #isMouseOver(double, double)} to yield mouse priority to
+     * buttons, lists, and edit boxes that overlap the map area.
+     */
+    private Supplier<List<AbstractWidget>> occludingWidgetsSupplier = () -> List.of();
+
+    private Component coordinatesCopiedMsg = null;
+    private long coordinatesCopiedNanos = 0;
+    private Component transientHudMsg = null;
+    private long transientHudNanos = 0;
+    private static final long TRANSIENT_HUD_NANOS = 1_500_000_000L;
+
+    // Scale-bar zoom slider geometry (absolute screen coords), refreshed every
+    // frame in renderWidget and hit-tested by MapInteractionController.
+    private boolean zoomSliderVisible;
+    private int zoomSliderX0, zoomSliderY0, zoomSliderX1, zoomSliderY1;
+    private int zoomTrackX0, zoomTrackX1;
+
+    private int texWidth = 100;
+    private int texHeight = 100;
+
+    private short selectedBiomeId;
+    private boolean highlightCaves;
+
+        private double scaleBlockPos = 1;
+
+    @Nullable
+    public BlockPos screenToBlock(double mouseX, double mouseY) {
+        if (!isMouseOver(mouseX, mouseY)) return null;
+        final BlockPos center = center();
+        final int guiScale = (int) minecraft.getWindow().getGuiScale();
+        final int xPos = (int) ((mouseX - getX()) * guiScale * scaleBlockPos);
+        final int zPos = (int) ((mouseY - getY()) * guiScale * scaleBlockPos);
+        final int xMin = center.getX() - (int)(texWidth * scaleBlockPos / 2.0) - 1;
+        final int zMin = center.getZ() - (int)(texHeight * scaleBlockPos / 2.0) - 1;
+        return new BlockPos(xMin + xPos, center.getY(), zMin + zPos);
+    }
+
+    // --- Hover subsystem (grid + tooltip + caches) ---
+    final HoverInspector hoverInspector = new HoverInspector(this);
+
+    // --- Host accessors for collaborator classes (package-private) ---
+    Minecraft minecraft() { return minecraft; }
+    PreviewDisplayDataProvider dataProvider() { return dataProvider; }
+    WorkManager workManager() { return workManager; }
+    WorldPreviewConfig config() { return config; }
+    RenderSettings renderSettings() { return renderSettings; }
+    double scaleBlockPos() { return scaleBlockPos; }
+    short selectedBiomeId() { return selectedBiomeId; }
+    boolean highlightCaves() { return highlightCaves; }
+    int widgetWidth() { return width; }
+    int widgetHeight() { return height; }
+    boolean isDragging() { return interaction.isClicked() && (interaction.totalDragX() != 0 || interaction.totalDragZ() != 0); }
+    boolean isClicked() { return interaction.isClicked(); }
+    boolean isHoveredFlag() { return isHovered; }
+    boolean widgetIsMouseOver(double mouseX, double mouseY) { return isMouseOver(mouseX, mouseY); }
+
+    /** True when the scale-bar zoom slider was drawn this frame. */
+    boolean zoomSliderVisible() { return zoomSliderVisible; }
+    /** Hit-test a point against the zoom slider's padded bounds. */
+    boolean zoomSliderHit(double mouseX, double mouseY) {
+        return zoomSliderVisible
+                && mouseX >= zoomSliderX0 && mouseX <= zoomSliderX1
+                && mouseY >= zoomSliderY0 && mouseY <= zoomSliderY1;
+    }
+    /** Map a slider x position to the nearest ladder index (0 = most zoomed in). */
+    int zoomSliderIndexAt(double mouseX) {
+        final int count = RenderSettings.zoomLevelCount();
+        final double t = (mouseX - zoomTrackX0) / (double) Math.max(1, zoomTrackX1 - zoomTrackX0);
+        return Math.max(0, Math.min(count - 1, (int) Math.round(t * (count - 1))));
+    }
+
+    /** Updates the block-per-pixel scale and re-wires the minimap after a zoom change. */
+    void applyZoomToVisualizer() {
+        scaleBlockPos = renderSettings.toScaleSpec().blockScale();
+        dataVisualizer.updateRenderContext(engine.minimapImg(), engine.minimapTexture(), engine.colorMap(), texWidth, texHeight, scaleBlockPos);
+    }
+
+    void resetQueuedRange() {
+        lastQueuedRange = null;
+        lastQueueKey = null;
+    }
+
+    /**
+     * Applies a render-only zoom step (quartStride unchanged): re-derive the
+     * block scale, drop cached frames and re-queue sampling for the new field
+     * of view. The already stored quart data is reused by the storage;
+     * nothing is rebuilt.
+     */
+    public void applyIncrementalZoom() {
+        applyZoomToVisualizer();
+        invalidateRenderCache();
+        resetQueuedRange();
+        queueGeneration();
+    }
+
+    void showCopiedMessage(Component msg) {
+        coordinatesCopiedNanos = System.nanoTime();
+        coordinatesCopiedMsg = msg;
+    }
+
+    void showTransientHud(Component msg) {
+        transientHudNanos = System.nanoTime();
+        transientHudMsg = msg;
+    }
+
+    /** Shows a transient HUD message on the map (public for collaborators). */
+    public void showHud(Component msg) {
+        showTransientHud(msg);
+    }
+
+    /** Mirrors this widget's silent {@link #playDownSound} override. */
+    void playDownSound() {
+        // intentionally silent
+    }
+
+    /** Plays the standard AbstractWidget click sound (parent behavior). */
+    void playDownSoundSuper() {
+        super.playDownSound(minecraft.getSoundManager());
+    }
+
+    private Instant generationStart = null;
+
+    private final MapInteractionController interaction = new MapInteractionController(this);
+
+    final PreviewRenderThrottle throttle = new PreviewRenderThrottle();
+
+    // --- Black-state (loading/failure screen) upload guard (R8) ---
+    // fillBlackAndUpload() is a full-texture fill plus a full GPU upload; on
+    // the loading/failure screens it used to run every frame even though the
+    // texture is not modified while such a screen is shown.  One fill+upload
+    // is enough; reset when a live render path runs or the texture changes.
+    private boolean blackStateUploaded = false;
+
+    // Lazily-built lines of the setup-failure message (R8).  Only rebuilt on
+    // world data reload / render-cache invalidation; language-change staleness
+    // on the failure screen is acceptable.
+    private List<MutableComponent> setupFailLines = null;
+
+    // === Spawn pin API (delegated to the interaction controller) ===
+    public void setSpawnPinMode(boolean enabled) { interaction.setSpawnPinMode(enabled); }
+    public boolean isSpawnPinMode() { return interaction.isSpawnPinMode(); }
+    @Nullable public BlockPos spawnPinPos() { return interaction.spawnPinPos(); }
+    public void setSpawnPinPos(@Nullable BlockPos pos) { interaction.setSpawnPinPos(pos); }
+    public void setSpawnPinCallback(@Nullable java.util.function.Consumer<BlockPos> callback) { interaction.setSpawnPinCallback(callback); }
+
+    // === Waypoints & measure tool (v1.5) ===
+
+    /** Renders overlay content (waypoints) on top of the map inside the scissor. */
+    public interface WaypointRenderer {
+        void render(GuiGraphics guiGraphics, int xMin, int yMin, int xMax, int yMax);
+    }
+
+    @Nullable private WaypointRenderer waypointRenderer = null;
+
+    public void setWaypointRenderer(@Nullable WaypointRenderer renderer) {
+        this.waypointRenderer = renderer;
+    }
+
+    /** Whether the map is in one-shot "place waypoint" mode. */
+    public boolean isWaypointMode() { return interaction.isWaypointMode(); }
+
+    public void setWaypointMode(boolean enabled) { interaction.setWaypointMode(enabled); }
+
+    public void setWaypointPlaceCallback(@Nullable java.util.function.Consumer<BlockPos> callback) {
+        interaction.setWaypointPlaceCallback(callback);
+    }
+
+    public void setWaypointEditCallback(@Nullable java.util.function.Consumer<Waypoint> callback) {
+        interaction.setWaypointEditCallback(callback);
+    }
+
+    /** Delegates hit-testing to the waypoint overlay renderer. */
+    @Nullable
+    Waypoint waypointAt(double mouseX, double mouseY) {
+        return waypointRenderer instanceof WaypointOverlayRenderer overlay
+                ? overlay.waypointAt(mouseX, mouseY)
+                : null;
+    }
+
+    // === Measure tool state (owned by the interaction controller) ===
+
+    public boolean isMeasureMode() { return interaction.isMeasureMode(); }
+
+    public void setMeasureMode(boolean enabled) { interaction.setMeasureMode(enabled); }
+
+    // === Region select (analysis screen) ===
+
+    /** One-shot box-select mode owned by the interaction controller. */
+    public boolean isRegionSelectMode() { return interaction.isRegionSelectMode(); }
+
+    public void setRegionSelectMode(boolean enabled) { interaction.setRegionSelectMode(enabled); }
+
+    public void setRegionSelectCallback(@Nullable java.util.function.Consumer<Region> callback) {
+        interaction.setRegionSelectCallback(callback);
+    }
+
+    /**
+     * Analysis region rectangle drawn as a green outline while the analysis
+     * screen is open; cleared by the screen on close (shared widget instance).
+     */
+    @Nullable private Region analysisRegionOverlay = null;
+
+    public void setAnalysisRegionOverlay(@Nullable Region region) {
+        this.analysisRegionOverlay = region;
+    }
+
+    /**
+     * Centers the map on the given position and re-queues sampling for the
+     * new viewport (the same recipe as the pan finalize / locateStructure).
+     */
+    public void locateTo(BlockPos center) {
+        renderSettings().setCenter(center);
+        invalidateRenderCache();
+        resetQueuedRange();
+        queueGeneration();
+    }
+
+    /**
+     * Maps a block coordinate to widget-relative screen coords (GUI px).
+     * Never returns null: blocks outside the map simply project outside the
+     * widget bounds and are clipped by the caller's scissor.
+     */
+    BlockPos blockToScreen(int blockX, int blockZ) {
+        final BlockPos center = center();
+        final int guiScale = (int) minecraft.getWindow().getGuiScale();
+        final double scale = scaleBlockPos;
+        final double xMin = center.getX() - texWidth * scale / 2.0 - 1;
+        final double zMin = center.getZ() - texHeight * scale / 2.0 - 1;
+        final double sx = getX() + (blockX - xMin) / (guiScale * scale);
+        final double sz = getY() + (blockZ - zMin) / (guiScale * scale);
+        return new BlockPos((int) Math.round(sx), 0, (int) Math.round(sz));
+    }
+
+    private GenerationRange lastQueuedRange = null;
+
+    // (R7) Identity of everything that determines the queued generation range:
+    // viewport center (the same value the mapping/range is built from),
+    // texture size, scale (quart expand/stride) and preload radius.  When this
+    // key is unchanged, the computed range is identical to the last queued
+    // one, so queueGeneration() can skip building the per-frame mapping/AABB/
+    // range objects unless an unsampled-viewport probe or the initial-queue
+    // guarantee requires the full path.
+    private QueueGenerationKey lastQueueKey = null;
+
+    // --- Viewport force-load safety net ---
+    // When sampling is fully idle but the visible viewport still contains
+    // chunks without completed biome sampling (lost pending handoff in
+    // WorkManager, a batch that failed mid-pass, ...), queueGeneration
+    // re-issues the range via WorkManager.forceQueueRange.  Cooldown-limited
+    // so a permanently failing chunk retries at a bounded rate instead of
+    // hot-looping.
+    private static final long FORCE_QUEUE_COOLDOWN_NANOS = 1_000_000_000L;
+    private long lastForceQueueNanos = 0;
+
+    // --- Unsampled-viewport probe throttle (R7) ---
+    // queueGeneration() runs every frame; while sampling is idle the 3x3
+    // unsampled-area probe costs nine storage lookups (~18 monitor
+    // acquisitions per frame in the steady state) with no frequency limit.
+    // Cooldown-limit the probe so the idle steady state pays it at a bounded
+    // rate; the force-queue backstop itself keeps its own 1s cooldown.
+    private static final long UNSAMPLED_PROBE_COOLDOWN_NANOS = 250_000_000L;
+    private long lastUnsampledProbeNanos = 0;
+
+    // --- Center coordinate string cache ---
+    private String cachedCenterStr = null;
+    private int cachedCenterX = Integer.MIN_VALUE;
+    private int cachedCenterY = Integer.MIN_VALUE;
+    private int cachedCenterZ = Integer.MIN_VALUE;
+
+    private List<PreviewRenderEngine.RenderHelper> cachedRenderData = null;
+
+    private final PreviewRenderEngine engine = new PreviewRenderEngine(this);
+
+    public PreviewDisplay(Minecraft minecraft, PreviewDisplayDataProvider dataProvider, Component component) {
+        super(0, 0, 100, 100, component);
+        this.minecraft = minecraft;
+        this.workManager = WorldPreview.get().workManager();
+        this.dataProvider = dataProvider;
+        this.renderSettings = WorldPreview.get().renderSettings();
+        this.config = WorldPreview.get().cfg();
+        this.dataVisualizer = new PreviewDataVisualizer(minecraft, dataProvider, workManager);
+        resizeImage();
+    }
+
+    public void resizeImage() {
+        engine.createDisplayTextures(texWidth, texHeight);
+        scaleBlockPos = renderSettings.toScaleSpec().blockScale();
+        dataVisualizer.updateRenderContext(engine.minimapImg(), engine.minimapTexture(), engine.colorMap(), texWidth, texHeight, scaleBlockPos);
+        hoverInspector.resizeGrid(texWidth, texHeight);
+        // A new texture was created and uploaded with black, but the actual
+        // biome data has not been rendered into it yet.  Mark it so the next
+        // render frame performs a full generateRenderData + updateTexture cycle.
+        throttle.invalidateAfterResize();
+        // (R8) The texture was recreated; the next loading/failure frame must
+        // perform its one-time black fill+upload again.
+        blackStateUploaded = false;
+    }
+
+public void setSize(int width, int height) {
+// Only rebuild texture if dimensions actually changed
+int guiScale = (int) minecraft.getWindow().getGuiScale();
+int newTexWidth = width * guiScale;
+int newTexHeight = height * guiScale;
+
+if (this.width == width && this.height == height
+&& this.texWidth == newTexWidth && this.texHeight == newTexHeight) {
+return; // No change needed
+}
+
+this.width = width;
+this.height = height;
+this.texWidth = newTexWidth;
+this.texHeight = newTexHeight;
+resizeImage();
+}
+
+    /**
+     * Returns the internal texture width in pixels (widget width × GUI scale).
+     * Used by {@code PreviewContainer.queueEarlyPreviewRange()} so that the
+     * early-queue range matches the range computed by {@link #queueGeneration()}.
+     */
+    public int getTexWidth() {
+        return texWidth;
+    }
+
+    /**
+     * Returns the internal texture height in pixels (widget height × GUI scale).
+     * @see #getTexWidth()
+     */
+    public int getTexHeight() {
+        return texHeight;
+    }
+
+    public void reloadData() {
+        // Invalidate the render cache so the next frame does a full re-render
+        cachedRenderData = null;
+        // A new world configuration means the previously queued range is no
+        // longer valid (different seed/dimension/scale).  Drop the dedup guard
+        // so the next render frame re-queues sampling for the current center.
+        lastQueuedRange = null;
+        lastQueueKey = null;
+        // (R8) Reset the black-state upload guard and the cached failure
+        // message lines for the new world configuration.
+        blackStateUploaded = false;
+        setupFailLines = null;
+        // Force a fresh queue + render cycle for the new world data.
+        throttle.invalidateAll();
+
+        engine.reloadData();
+        dataVisualizer.updateRenderContext(engine.minimapImg(), engine.minimapTexture(), engine.colorMap(), texWidth, texHeight, scaleBlockPos);
+    }
+
+    public void close() {
+        engine.close();
+    }
+
+    public BlockPos center() {
+        if (interaction.totalDragX() == 0 && interaction.totalDragZ() == 0) {
+            return renderSettings.center();
+        }
+        return new BlockPos(
+                (int) (renderSettings.center().getX() + interaction.totalDragX()),
+                renderSettings.center().getY(),
+                (int) (renderSettings.center().getZ() + interaction.totalDragZ())
+        );
+    }
+
+    @Override
+    public void renderWidget(GuiGraphics guiGraphics, int x, int y, float f) {
+        // === FIX: GLFW mouse button state polling ===
+        interaction.endDragIfButtonsReleased();
+        final int colorBorder = 0xFF666666;
+
+        final int xMin = getX();
+        final int yMin = getY();
+        final int xMax = xMin + width;
+        final int yMax = yMin + height;
+
+        // --- Lightweight frame timing + adaptive throttle (see PreviewRenderThrottle) ---
+        final long frameStartNanos = System.nanoTime();
+        throttle.onFrameStart();
+
+        queueGeneration();
+        synchronized (dataProvider) {
+            if (dataProvider.setupFailed()) {
+                // (R8) The texture is not modified while this screen is shown:
+                // fill+upload black once instead of on every frame.
+                if (!blackStateUploaded) {
+                    engine.fillBlackAndUpload();
+                    blackStateUploaded = true;
+                }
+                WorldPreviewClient.renderTexture(guiGraphics, engine.mainTexture(), xMin, yMin, xMax, yMax);
+
+                // (R8) Build the message lines once; the per-frame stream +
+                // toList() allocated a list and one component per line.
+                if (setupFailLines == null) {
+                    setupFailLines = MSG_ERROR_SETUP_FAILED.getString().lines().map(Component::literal).toList();
+                }
+                final List<MutableComponent> lines = setupFailLines;
+
+                final int centerX = getX() + (width / 2);
+                final int centerY = getY() + (height / 2) - ((lines.size() / 2) * (minecraft.font.lineHeight + 4));
+
+                for (int i = 0; i < lines.size(); ++i) {
+                    final Component line = lines.get(i);
+                    final int offsetY = i * (minecraft.font.lineHeight + 4);
+                    guiGraphics.drawCenteredString(minecraft.font, line, centerX, centerY + offsetY, 0xFFFFFFFF);
+                }
+            } else if (dataProvider.isUpdating()) {
+                // (R8) Same once-only black fill+upload as the failure screen.
+                if (!blackStateUploaded) {
+                    engine.fillBlackAndUpload();
+                    blackStateUploaded = true;
+                }
+                WorldPreviewClient.renderTexture(guiGraphics, engine.mainTexture(), xMin, yMin, xMax, yMax);
+
+                final int centerX = getX() + (width / 2);
+                final int centerY = getY() + (height / 2);
+                guiGraphics.drawCenteredString(minecraft.font, MSG_PREVIEW_SETUP_LOADING, centerX, centerY, 0xFFFFFFFF);
+            } else {
+                // --- Render-skip optimization ---
+                // Check whether the preview data has changed since the last frame.
+                // During drag we throttle expensive re-uploads, but we must NOT
+                // early-return from renderWidget: that used to skip tooltips,
+                // borders, coordinates and minimap on alternate frames (flicker).
+                final boolean dragThrottleSkipHeavy = isDragging() && throttle.dragRenderThrottled(System.nanoTime());
+                // If the center position is the same and no worker thread has
+                // written new data, we can reuse the cached render data and
+                // skip the expensive generateRenderData + updateTexture + upload
+                // cycle entirely.  This eliminates ~100% of the per-frame render
+                // cost when the user is idle (not dragging, not scrolling).
+                final BlockPos currentCenter = center();
+                final PreviewStorage storage = workManager.previewStorage();
+                final long currentWriteCounter = storage != null ? storage.writeCounter() : 0;
+                final boolean needRerender = throttle.shouldRerender(
+                        dragThrottleSkipHeavy,
+                        storage != null,
+                        currentWriteCounter,
+                        currentCenter,
+                        cachedRenderData != null);
+
+                if (!needRerender) {
+                    // (R8) A live frame ran: the next loading/failure screen
+                    // must perform its one-time black fill+upload again.
+                    blackStateUploaded = false;
+                    // Reuse cached render data — just re-render the existing texture
+                    // and structures without regenerating or re-uploading.
+                    WorldPreviewClient.renderTexture(guiGraphics, engine.mainTexture(), xMin, yMin, xMax, yMax);
+
+                    guiGraphics.enableScissor(xMin, yMin, xMax, yMax);
+                    // Render-skip frame: reuse the hover grid from the last
+                    // heavy render instead of re-adding the same structures
+                    // (which grew the grid on every idle frame).
+                    engine.renderStructures(cachedRenderData, guiGraphics, false);
+                    engine.renderPlayerAndSpawn(guiGraphics);
+                    engine.renderSpawnPin(guiGraphics);
+                    renderOverlays(guiGraphics);
+                    guiGraphics.disableScissor();
+                } else {
+                    // (R8) A live frame ran: the next loading/failure screen
+                    // must perform its one-time black fill+upload again.
+                    blackStateUploaded = false;
+
+                    engine.beginFrameCounts();
+                    hoverInspector.clearGridEntries();
+                    // Structure hover grid was rebuilt; force tooltip re-query.
+                    // (C4) The grid feeds the tooltip content itself, so drop
+                    // both hover cache levels (query cache + resolved tooltip).
+                    hoverInspector.invalidateAll();
+                    final List<PreviewRenderEngine.RenderHelper> renderData = engine.generateRenderData();
+                    cachedRenderData = renderData;
+                    engine.updateTexture(renderData);
+
+                    // Upload the modified NativeImage data to the GPU texture.
+                    engine.uploadMainTexture();
+                    throttle.markTextureUploaded();
+                    // Only commit the render as done once the heavy path has
+                    // actually produced and uploaded the texture; committing
+                    // before generation would let a failed pass be recorded as
+                    // rendered and skip the retry.
+                    throttle.markRendered(currentCenter, currentWriteCounter);
+
+                    // Render the main texture
+                    WorldPreviewClient.renderTexture(guiGraphics, engine.mainTexture(), xMin, yMin, xMax, yMax);
+
+                    // Overlay structure icons — clip them to the preview area.
+                    guiGraphics.enableScissor(xMin, yMin, xMax, yMax);
+                    engine.renderStructures(renderData, guiGraphics);
+                    engine.renderPlayerAndSpawn(guiGraphics);
+                    engine.renderSpawnPin(guiGraphics);
+                    renderOverlays(guiGraphics);
+                    guiGraphics.disableScissor();
+
+                    // Sidebar biome list updates are noisy while dragging; defer.
+                    if (!isDragging()) {
+                        engine.biomesChanged();
+                    }
+                }
+
+                // Tooltip must be scheduled every frame (setComponentTooltipForNextFrame
+                // is single-frame). Always update while the map is shown �?including
+                // during drag �?so the hover data bar does not blink on/off.
+                double mouseX = (minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth()) / minecraft.getWindow()
+                        .getScreenWidth();
+                double mouseZ = (minecraft.mouseHandler.ypos() * minecraft.getWindow().getGuiScaledHeight()) / minecraft.getWindow()
+                        .getScreenHeight();
+                hoverInspector.updateTooltip(guiGraphics, mouseX, mouseZ);
+            }
+        }
+
+        // Create a border
+        guiGraphics.fill(xMin-1, yMin-1, xMax+1, yMin, colorBorder); // Right
+        guiGraphics.fill(xMax, yMin, xMax+1, yMax, colorBorder); // Down
+        guiGraphics.fill(xMin-1, yMax, xMax+1, yMax+1, colorBorder); // Left
+        guiGraphics.fill(xMin-1, yMin, xMin, yMax, colorBorder); // Up
+
+        // Permanent scale bar (bottom-left), now interactive: the bar reads the
+        // physical scale, the tick slider beside it is the zoom ladder - click
+        // or drag it to jump to a level (MapInteractionController routes the
+        // change through the same incremental/rebuild split as the wheel).
+        final int guiScale = Math.max(1, (int) minecraft.getWindow().getGuiScale());
+        final double blocksPerGuiPixel = scaleBlockPos / (double) guiScale;
+        zoomSliderVisible = false;
+        if (blocksPerGuiPixel > 0.0 && width >= 120) {
+            // The analysis screen re-uses this widget on a much narrower map
+            // (~46% of the screen vs the main preview's ~98%), where the
+            // full-size readout + slider would dominate. Compare against the
+            // screen width, not a fixed pixel count, so the rule holds at any
+            // GUI scale.
+            final boolean compact = width < minecraft.getWindow().getGuiScaledWidth() * 7 / 10;
+            final int tickStep = compact ? 6 : 10;
+            final int barPx = compact ? 24 : 48;
+            final double rawBlocks = barPx * blocksPerGuiPixel;
+            // Snap to a friendly block count (1/2/5 * 10^n), then re-derive
+            // the exact bar length so the label always matches the drawn line.
+            final double mag = Math.pow(10.0, Math.floor(Math.log10(rawBlocks)));
+            double nice = mag;
+            for (double m : new double[]{mag, 2 * mag, 5 * mag}) {
+                if (m <= rawBlocks * 1.15) {
+                    nice = m;
+                }
+            }
+            final int barW = Math.max(8, (int) Math.round(nice / blocksPerGuiPixel));
+            final int barX = xMin + 4;
+            final int barY = yMax - 8;
+            final Component label = Component.translatable("world_preview.preview-display.hud.scale_bar", (int) nice);
+            final int labelW = minecraft.font.width(label);
+
+            // Zoom slider: fixed track right of the bar readout, one tick per
+            // ladder level (16/8/4/2/1 px per chunk, left = most zoomed in).
+            // Pixel-drawn "+" / "-" end glyphs spell out the direction so the
+            // ticks do not read as decoration.
+            final int tickCount = RenderSettings.zoomLevelCount();
+            final int sliderX0 = barX + Math.max(barW, labelW) + (compact ? 10 : 12);
+            final int sliderX1 = sliderX0 + (tickCount - 1) * tickStep;
+            final int current = renderSettings.currentZoomLevel();
+
+            final double hmX = (minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth()) / minecraft.getWindow().getScreenWidth();
+            final double hmY = (minecraft.mouseHandler.ypos() * minecraft.getWindow().getGuiScaledHeight()) / minecraft.getWindow().getScreenHeight();
+            final boolean hover = zoomSliderHit(hmX, hmY);
+            // While hovering, preview which level a click would pick.
+            final int preview = hover ? zoomSliderIndexAt(hmX) : -1;
+
+            // Padded hit region over the whole readout (bar + label + slider).
+            zoomSliderVisible = true;
+            zoomSliderX0 = barX - 2;
+            zoomSliderY0 = barY - 11;
+            zoomSliderX1 = sliderX1 + 10;
+            zoomSliderY1 = barY + 4;
+            zoomTrackX0 = sliderX0;
+            zoomTrackX1 = sliderX1;
+
+            guiGraphics.fill(zoomSliderX0, zoomSliderY0, zoomSliderX1, zoomSliderY1, hover ? 0xB8000000 : 0x88000000);
+            final int lineColor = hover ? 0xFFFFFFFF : 0xE0FFFFFF;
+            guiGraphics.fill(barX, barY, barX + barW, barY + 1, lineColor);
+            guiGraphics.fill(barX, barY - 3, barX + 1, barY + 2, lineColor);
+            guiGraphics.fill(barX + barW - 1, barY - 3, barX + barW, barY + 2, lineColor);
+            guiGraphics.drawString(minecraft.font, label, barX, barY - 10, 0xFFFFFFFF);
+
+            // Track: brighter than a stray map line, dimmer than the handle.
+            guiGraphics.fill(sliderX0, barY, sliderX1 + 1, barY + 1, hover ? 0xA6FFFFFF : 0x8CFFFFFF);
+            // "+" (zoom in, left end) and "-" (zoom out, right end) glyphs,
+            // centered on the track row and kept faint so they read as hints.
+            final int glyphColor = 0xA6FFFFFF;
+            final int plusX = sliderX0 - (compact ? 5 : 7);
+            guiGraphics.fill(plusX - 2, barY, plusX + 3, barY + 1, glyphColor);   // + horizontal
+            guiGraphics.fill(plusX, barY - 2, plusX + 1, barY + 3, glyphColor);   // + vertical
+            final int minusX = sliderX1 + (compact ? 4 : 6);
+            guiGraphics.fill(minusX - 2, barY, minusX + 3, barY + 1, glyphColor); // - horizontal
+            for (int i = 0; i < tickCount; i++) {
+                final int tx = sliderX0 + i * tickStep;
+                if (i == current) {
+                    guiGraphics.fill(tx - 1, barY - 4, tx + 2, barY + 3, 0xFFFFFFFF);
+                } else if (i == preview) {
+                    // Hover target: a hollow outline shows what a click selects.
+                    guiGraphics.fill(tx - 1, barY - 4, tx + 2, barY - 3, 0xCCFFFFFF);
+                    guiGraphics.fill(tx - 1, barY + 2, tx + 2, barY + 3, 0xCCFFFFFF);
+                    guiGraphics.fill(tx - 1, barY - 3, tx, barY + 2, 0xCCFFFFFF);
+                    guiGraphics.fill(tx + 1, barY - 3, tx + 2, barY + 2, 0xCCFFFFFF);
+                } else {
+                    guiGraphics.fill(tx, barY - 2, tx + 1, barY + 2, 0x99FFFFFF);
+                }
+            }
+        }
+
+        // Render copied message
+        if (coordinatesCopiedMsg != null) {
+            guiGraphics.fill(xMin, yMax - 38, xMax, yMax - 19, 0xAA000000);
+            guiGraphics.drawCenteredString(minecraft.font, coordinatesCopiedMsg, xMin + ((xMax - xMin) / 2), yMax - 32, 0xFFFFFFFF);
+            if ((System.nanoTime() - coordinatesCopiedNanos) >= 8_000_000_000L) {
+                coordinatesCopiedMsg = null;
+                coordinatesCopiedNanos = 0;
+            }
+        }
+
+        // Transient HUD: zoom level / Y layer after scroll
+        if (transientHudMsg != null) {
+            int hudY = yMin + 6;
+            int textW = minecraft.font.width(transientHudMsg);
+            int hudX = xMin + ((xMax - xMin - textW) / 2);
+            guiGraphics.fill(hudX - 4, hudY - 2, hudX + textW + 4, hudY + minecraft.font.lineHeight + 2, 0xAA000000);
+            guiGraphics.drawString(minecraft.font, transientHudMsg, hudX, hudY, 0xFFFFFFFF);
+            if ((System.nanoTime() - transientHudNanos) >= TRANSIENT_HUD_NANOS) {
+                transientHudMsg = null;
+                transientHudNanos = 0;
+            }
+        }
+
+        final long frameEndNanos = System.nanoTime();
+        final long frameTimeNanos = frameEndNanos - frameStartNanos;
+
+        if (config.showFrameTime) {
+            final long renderTimeMs = frameTimeNanos / 1_000_000;
+            String frameInfo = renderTimeMs + " ms";
+            if (throttle.adaptiveSkipEveryN() > 1) {
+                frameInfo += " (throttled x" + throttle.adaptiveSkipEveryN() + ")";
+            }
+            guiGraphics.drawString(minecraft.font, frameInfo, 5, 5, 0xFFFFFFFF);
+        }
+
+        // Display the current center coordinates at the bottom-left of the
+        // preview area (inside the preview, not the left panel).
+        final BlockPos centerPos = center();
+        if (config.showCoordinates) {
+            // Cache the center string �?avoid String.format every frame when center hasn't changed
+            if (cachedCenterX != centerPos.getX() || cachedCenterY != centerPos.getY() || cachedCenterZ != centerPos.getZ()) {
+                cachedCenterX = centerPos.getX();
+                cachedCenterY = centerPos.getY();
+                cachedCenterZ = centerPos.getZ();
+                cachedCenterStr = String.format("§7[§b%d§7, §b%d§7, §b%d§7]§r", cachedCenterX, cachedCenterY, cachedCenterZ);
+            }
+            guiGraphics.drawString(minecraft.font, cachedCenterStr, xMin + 5, yMax - minecraft.font.lineHeight - 4, 0xFFFFFFFF);
+        }
+
+        // === Minimap ===
+        // Shows the full sampled area with a white box indicating the current viewport.
+        if (config.showMinimap) {
+            dataVisualizer.renderMinimap(guiGraphics, xMin, yMin, xMax, yMax, centerPos);
+        }
+
+        // === Generation statistics ===
+        // Shows sampling progress, biome/structure counts, thread info.
+        if (config.showStatistics) {
+            dataVisualizer.renderStatistics(guiGraphics, xMin, yMin, xMax, yMax, engine.visibleBiomes(), engine.visibleStructures());
+        }
+    }
+
+    /**
+     * Draws the v1.5 map overlays: waypoints (via the renderer) and the
+     * measure tool line/labels. Called inside the preview scissor.
+     */
+    private void renderOverlays(GuiGraphics guiGraphics) {
+        if (waypointRenderer != null) {
+            waypointRenderer.render(guiGraphics, getX(), getY(), getX() + width, getY() + height);
+        }
+        renderMeasureOverlay(guiGraphics);
+        renderRegionOverlay(guiGraphics);
+    }
+
+    private void renderMeasureOverlay(GuiGraphics guiGraphics) {
+        BlockPos a = interaction.measurePointA();
+        if (a == null) {
+            return;
+        }
+        // blockToScreen never returns null (off-map blocks just project
+        // outside the widget bounds; the scissor clips them).
+        BlockPos sa = blockToScreen(a.getX(), a.getZ());
+        drawMeasureMarker(guiGraphics, sa, 0xFF29B6F6);
+
+        BlockPos b = interaction.measurePointB();
+        if (b == null) {
+            return;
+        }
+        BlockPos sb = blockToScreen(b.getX(), b.getZ());
+
+        // Line between the two markers (Bresenham via 1px fills)
+        int dx = sb.getX() - sa.getX();
+        int dz = sb.getZ() - sa.getZ();
+        int steps = Math.max(1, Math.max(Math.abs(dx), Math.abs(dz)));
+        for (int i = 0; i <= steps; i++) {
+            int px = sa.getX() + dx * i / steps;
+            int pz = sa.getZ() + dz * i / steps;
+            guiGraphics.fill(px, pz, px + 1, pz + 1, 0xFFFFEB3B);
+        }
+        drawMeasureMarker(guiGraphics, sb, 0xFFEF5350);
+
+        // Distance label at the midpoint
+        int ddx = b.getX() - a.getX();
+        int ddz = b.getZ() - a.getZ();
+        int dist = (int) Math.round(Math.sqrt((double) ddx * ddx + (double) ddz * ddz));
+        String text = String.format("%dm §7(Δ %d, %d)§r", dist, ddx, ddz);
+        int lx = (sa.getX() + sb.getX()) / 2;
+        int ly = (sa.getZ() + sb.getZ()) / 2 - 12;
+        guiGraphics.fill(lx - 2, ly - 1, lx + minecraft.font.width(text) + 2, ly + minecraft.font.lineHeight, 0x99000000);
+        guiGraphics.drawString(minecraft.font, text, lx, ly, 0xFFFFFFFF);
+    }
+
+    private void drawMeasureMarker(GuiGraphics guiGraphics, BlockPos screenPos, int color) {
+        guiGraphics.fill(screenPos.getX() - 2, screenPos.getZ() - 2,
+                screenPos.getX() + 3, screenPos.getZ() + 3, 0xFF000000);
+        guiGraphics.fill(screenPos.getX() - 1, screenPos.getZ() - 1,
+                screenPos.getX() + 2, screenPos.getZ() + 2, color);
+    }
+
+    private static final Component REGION_SELECT_HINT = Component.translatable(
+            "world_preview.analysis.boxselect.hint");
+
+    /**
+     * Draws the analysis-screen region overlays: the persisted analysis region
+     * (green outline) and, while box-select mode is active, the live drag
+     * rectangle (white outline + translucent fill) plus the mode hint bar.
+     * Block→screen conversion uses {@link #blockToScreen(int, int)}, the same
+     * math the measure overlay uses; the scissor clips off-map parts.
+     */
+    private void renderRegionOverlay(GuiGraphics guiGraphics) {
+        if (analysisRegionOverlay != null) {
+            drawBlockRect(guiGraphics, analysisRegionOverlay.minX(), analysisRegionOverlay.minZ(),
+                    analysisRegionOverlay.maxX(), analysisRegionOverlay.maxZ(), 0xFF55FF55, 0);
+        }
+        if (interaction.isRegionSelectMode()) {
+            BlockPos a = interaction.regionDragStart();
+            BlockPos b = interaction.regionDragEnd();
+            if (a != null && b != null) {
+                drawBlockRect(guiGraphics,
+                        Math.min(a.getX(), b.getX()), Math.min(a.getZ(), b.getZ()),
+                        Math.max(a.getX(), b.getX()), Math.max(a.getZ(), b.getZ()),
+                        0xFFFFFFFF, 0x33FFFFFF);
+            }
+            drawRegionSelectHint(guiGraphics);
+        }
+    }
+
+    /** Outlines the block-space rectangle {@code (minX,minZ)..(maxX,maxZ)} with a 1px border plus optional inner fill. */
+    private void drawBlockRect(GuiGraphics guiGraphics, int minX, int minZ, int maxX, int maxZ, int border, int fill) {
+        BlockPos tl = blockToScreen(minX, minZ);
+        BlockPos br = blockToScreen(maxX, maxZ);
+        int sx1 = tl.getX();
+        int sz1 = tl.getZ();
+        int sx2 = br.getX();
+        int sz2 = br.getZ();
+        if (fill != 0) {
+            guiGraphics.fill(sx1, sz1, sx2 + 1, sz2 + 1, fill);
+        }
+        guiGraphics.fill(sx1, sz1, sx2 + 1, sz1 + 1, border); // top
+        guiGraphics.fill(sx1, sz2, sx2 + 1, sz2 + 1, border); // bottom
+        guiGraphics.fill(sx1, sz1, sx1 + 1, sz2 + 1, border); // left
+        guiGraphics.fill(sx2, sz1, sx2 + 1, sz2 + 1, border); // right
+    }
+
+    /** Persistent hint bar at the top of the map while box-select mode is active (same style as the transient HUD). */
+    private void drawRegionSelectHint(GuiGraphics guiGraphics) {
+        final int xMin = getX();
+        final int xMax = getX() + width;
+        final int yMin = getY();
+        int textW = minecraft.font.width(REGION_SELECT_HINT);
+        int hx = xMin + Math.max(0, (xMax - xMin - textW) / 2);
+        int hy = yMin + 6;
+        guiGraphics.fill(hx - 4, hy - 2, hx + textW + 4, hy + minecraft.font.lineHeight + 2, 0xAA000000);
+        guiGraphics.drawString(minecraft.font, REGION_SELECT_HINT, hx, hy, 0xFFFFFFFF);
+    }
+
+    /**
+     * Centers the map on the nearest rendered structure of the given type
+     * (within the currently drawn viewport data). Returns false when none is
+     * on screen.
+     */
+    public boolean locateStructure(short structureId) {
+        BlockPos found = hoverInspector.nearestStructureCenter(structureId, center());
+        if (found == null) {
+            return false;
+        }
+        renderSettings.setCenter(new BlockPos(found.getX(), center().getY(), found.getZ()));
+        invalidateRenderCache();
+        resetQueuedRange();
+        queueGeneration();
+        showTransientHud(Component.translatable(
+                "world_preview.preview.located", found.getX(), found.getZ()));
+        return true;
+    }
+
+    private record GenerationRange(BlockPos min, BlockPos max) {}
+
+    /**
+     * (R7) Identity of everything that determines the queued generation range:
+     * the viewport center (the same value {@link #center()} feeds into the
+     * mapping), texture size, scale (quart expand/stride) and preload radius.
+     */
+    private record QueueGenerationKey(BlockPos center, int texWidth, int texHeight,
+                                      int quartExpand, int quartStride, int preload) {}
+
+    void queueGeneration() {
+        // Live drag center so newly revealed areas start sampling while the user
+        // still holds the mouse.  Throttle during drag (50ms) so we do not cancel
+        // worker batches every pixel; WorkManager still collapses rapid range
+        // updates into a single pending viewport when a queue pass is in flight.
+        if (isDragging() && throttle.dragQueueThrottled(System.nanoTime())) {
+            return;
+        }
+
+        int preload = 0;
+        if (config.enablePreload && !throttle.needsInitialQueue() && throttle.initialDataReceived()) {
+            // Resource-aware: skip preloading when workers are busy.
+            // NOTE: when needsInitialQueue is true, we MUST use preload=0 so
+            // that the computed range matches the range already queued by
+            // queueEarlyPreviewRange() (which also uses no preload).  If we
+            // used preload>0 here, the range would differ from the early queue,
+            // causing workManager.queueRange() to NOT dedup, which cancels
+            // the early queue's in-flight work and restarts sampling from
+            // scratch — a major cause of the "black screen until drag" bug.
+            // BUG FIX: the busy check must also treat a queue pass that is
+            // still CREATING its batches as busy.  queueRangeReal clears
+            // currentBatches before rebuilding them, which for large viewports
+            // takes tens of milliseconds — several frames observe
+            // activeBatchCount()==0 during that window, flip preload from 0 to
+            // the full radius, and the viewport range starts oscillating
+            // between "with preload" and "without".  Each new pass cancels the
+            // previous one's batches mid-flight, workers never finish anything
+            // and the map never loads (log shows alternating
+            // "Queued N {early abort}" / "Queued N+ring" lines several times
+            // per second).  isQueueRunning() spans that whole window.
+            if (config.preloadOnlyWhenIdle && workManager.isSetup()
+                    && (workManager.isQueueRunning() || workManager.activeBatchCount() > 0)) {
+                preload = 0;
+            } else {
+                preload = config.preloadRadius;
+            }
+        }
+        // === (R7) Steady-state early-out ===
+        // queueGeneration() runs every frame and everything below allocates
+        // (ViewportMapping + ScaleSpec + QueueAabb + range + two BlockPos) and,
+        // while sampling is idle, probes a 3x3 grid of viewport points (nine
+        // storage lookups).  When the viewport key is unchanged, the computed
+        // range is identical to the last queued one, so the only reasons to run
+        // the full path are the initial-queue guarantee (needsInitialQueue) or
+        // a due unsampled-viewport probe (idle + probe cooldown elapsed).
+        final long now = System.nanoTime();
+        final BlockPos c = center();
+        final QueueGenerationKey key = new QueueGenerationKey(
+                c,
+                texWidth,
+                texHeight,
+                renderSettings.quartExpand(),
+                renderSettings.quartStride(),
+                preload
+        );
+        // (C6) Cheapest early-out first, before any WorkManager interaction:
+        // when the queue key is unchanged and the unsampled-viewport probe is
+        // still cooling down, everything below (isIdle futures scan, 3x3
+        // probe, mapping/AABB/range allocation) would produce identical
+        // results, so return immediately.  needsInitialQueue still bypasses
+        // this so the initial-queue guarantee is preserved.
+        final boolean probeCooldownElapsed =
+                (now - lastUnsampledProbeNanos) >= UNSAMPLED_PROBE_COOLDOWN_NANOS;
+        if (!probeCooldownElapsed && !throttle.needsInitialQueue() && key.equals(lastQueueKey)) {
+            return;
+        }
+        final boolean idle = workManager.isSetup() && workManager.isIdle();
+        final boolean probeDue = idle && (now - lastUnsampledProbeNanos) >= UNSAMPLED_PROBE_COOLDOWN_NANOS;
+        if (!probeDue && !throttle.needsInitialQueue() && key.equals(lastQueueKey)) {
+            return;
+        }
+        final ViewportMapping map = new ViewportMapping(
+                c.getX(),
+                c.getY(),
+                c.getZ(),
+                texWidth,
+                texHeight,
+                renderSettings.toScaleSpec(),
+                minecraft.getWindow().getGuiScale()
+        );
+        QueueAabb aabb = QueueAabb.fromViewport(map, preload);
+        final GenerationRange range = new GenerationRange(
+                new BlockPos(aabb.minX(), aabb.y(), aabb.minZ()),
+                new BlockPos(aabb.maxX(), aabb.y(), aabb.maxZ())
+        );
+        // === Safety net: force-load unsampled area visible on screen ===
+        // Backstop for the whole class of "map never loads at this drag
+        // position" bugs.  When sampling is completely idle and part of the
+        // visible viewport has no completed biome sampling, re-issue the
+        // viewport range bypassing all dedup guards (display-side and
+        // WorkManager-side).  Intentionally no isDragging() gate: pausing
+        // mid-drag at an unloaded position must also recover.
+        if (throttle.initialDataReceived() && idle) {
+            if (viewportHasUnsampledArea(map)) {
+                // (R7) The probe ran on this frame; restart the probe cooldown
+                // regardless of the outcome so the idle steady state probes at a
+                // bounded rate instead of every frame.
+                lastUnsampledProbeNanos = now;
+                if (now - lastForceQueueNanos >= FORCE_QUEUE_COOLDOWN_NANOS) {
+                    lastForceQueueNanos = now;
+                    lastQueuedRange = range;
+                    lastQueueKey = key;
+                    throttle.clearNeedsInitialQueue();
+                    WorldPreview.LOGGER.info(
+                            "Viewport contains unsampled chunks while sampling is idle — forcing re-queue of {} .. {}",
+                            range.min(), range.max()
+                    );
+                    workManager.forceQueueRange(range.min(), range.max());
+                    return;
+                }
+            } else {
+                // (C6) The probe ran on a fully-sampled viewport; reset the
+                // cooldown so the idle steady state probes at a bounded rate.
+                // Without this the cooldown never restarted, probeDue stayed
+                // true forever and the queue-key early-outs above were dead.
+                lastUnsampledProbeNanos = now;
+            }
+        }
+        // The needsInitialQueue flag guarantees at least one queueRange() call
+        // after setup, bypassing the dedup check.  Without this, if the computed
+        // range happens to match a stale lastQueuedRange (e.g. because
+        // queueEarlyPreviewRange already queued the same area), the dedup would
+        // skip the call and the WorkManager would never start sampling.
+        if (!throttle.needsInitialQueue() && range.equals(lastQueuedRange)) {
+            return;
+        }
+        throttle.clearNeedsInitialQueue();
+        lastQueuedRange = range;
+        lastQueueKey = key;
+        workManager.queueRange(range.min(), range.max());
+    }
+
+    /**
+     * True when any of a 3×3 grid of probe points across the visible viewport
+     * falls in a chunk that has no completed biome sampling.  Probe cost is
+     * nine map lookups and is only paid when sampling is idle.
+     *
+     * <p>The probe always checks the biome flag: the main biome layer is queued
+     * for every viewport regardless of the active render mode, and it is the
+     * layer whose completion the work units actually mark (noise sections
+     * never get completion bits).
+     */
+    private boolean viewportHasUnsampledArea(ViewportMapping map) {
+        final PreviewStorage storage = workManager.previewStorage();
+        if (storage == null) {
+            return false;
+        }
+        final int w = map.worldMaxX() - map.worldMinX();
+        final int h = map.worldMaxZ() - map.worldMinZ();
+        final int yQuart = QuartPos.fromBlock(center().getY());
+        for (int ix = 0; ix <= 2; ix++) {
+            for (int iz = 0; iz <= 2; iz++) {
+                final int qx = QuartPos.fromBlock(map.worldMinX() + (w * ix) / 2);
+                final int qz = QuartPos.fromBlock(map.worldMinZ() + (h * iz) / 2);
+                if (!storage.isChunkSampled(qx, yQuart, qz, PreviewStorage.FLAG_BIOME)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+
+    @Override
+    public void playDownSound(SoundManager handler) {
+        // By default, do nothing
+    }
+
+    /**
+     * Sets the supplier that provides the list of sibling widgets.
+     * When the mouse is over another visible, active widget (e.g. a button),
+     * this map yields mouse priority so clicks go to the button, not the map.
+     *
+     * @param supplier a supplier returning the full widget list (including this widget)
+     */
+    public void setOccludingWidgetsSupplier(Supplier<List<AbstractWidget>> supplier) {
+        this.occludingWidgetsSupplier = supplier;
+    }
+
+    @Override
+    public boolean isMouseOver(double mouseX, double mouseY) {
+        if (!super.isMouseOver(mouseX, mouseY)) {
+            return false;
+        }
+        // Yield to any sibling widget (buttons, lists, edit boxes) that is at
+        // the same screen position.  This prevents the map from intercepting
+        // clicks meant for buttons that overlap the map area.
+        for (AbstractWidget w : occludingWidgetsSupplier.get()) {
+            if (w != this && w.active && w.visible && w.isMouseOver(mouseX, mouseY)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // === Input handling: delegated to MapInteractionController ===
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        if (interaction.mouseClicked(event, doubleClick)) {
+            return true;
+        }
+        return super.mouseClicked(event, doubleClick);
+    }
+
+    @Override
+    public void onClick(MouseButtonEvent event, boolean doubleClick) {
+        interaction.onClick(event, doubleClick);
+    }
+
+    @Override
+    protected void onDrag(MouseButtonEvent event, double dragX, double dragY) {
+        interaction.onDrag(event, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(MouseButtonEvent event) {
+        if (interaction.mouseReleased(event)) {
+            return true;
+        }
+        return super.mouseReleased(event);
+    }
+
+    @Override
+    public void onRelease(MouseButtonEvent event) {
+        interaction.onRelease(event);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double deltaX, double deltaY) {
+        return interaction.mouseScrolled(mouseX, mouseY, deltaX, deltaY);
+    }
+
+    @Override
+    public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+        if (interaction.keyPressed(event)) {
+            return true;
+        }
+        return super.keyPressed(event);
+    }
+
+    /**
+     * Negative values for none
+     */
+    public void setSelectedBiomeId(short biomeId) {
+        selectedBiomeId = biomeId;
+        // Invalidate render cache so the next frame re-renders with the new highlight
+        throttle.invalidateRenderedContent();
+    }
+
+    public void setHighlightCaves(boolean highlightCaves) {
+        this.highlightCaves = highlightCaves;
+        // Invalidate render cache so the next frame re-renders with the new highlight
+        throttle.invalidateRenderedContent();
+    }
+
+    /**
+     * Exports the current preview image to a PNG file in the game directory.
+     * @return the path to the saved file, or null on failure
+     */
+    public String exportImage() {
+        return engine.exportImage();
+    }
+
+    /**
+     * Resets the generation start timer.  Called when the world/seed changes.
+     */
+    public void resetGenerationTimer() {
+        generationStart = null;
+    }
+
+    /**
+     * Invalidates the render cache so the next frame performs a full re-render.
+     * Call this when the PreviewDisplay is reused on a different screen (e.g.
+     * WorldAnalysisScreen) to avoid stale cached state preventing rendering.
+     */
+    public void invalidateRenderCache() {
+        cachedRenderData = null;
+        throttle.invalidateAll();
+        // Drop the queued-range dedup guard so the next frame re-evaluates the
+        // range instead of short-circuiting against a stale pre-change range.
+        lastQueuedRange = null;
+        lastQueueKey = null;
+        // (R8) Reset the black-state guard so a following loading/failure
+        // screen performs its one-time fill+upload again.
+        blackStateUploaded = false;
+        setupFailLines = null;
+        dataVisualizer.invalidateCache();
+        // Reset mouse interaction state in case a mouse press was interrupted
+        // by a screen change (e.g. opening TerrainExportScreen while dragging).
+        // Without this, clicked=true can persist and cause the widget to think
+        // the mouse is still held down after returning from the sub-screen.
+        interaction.resetInteractionState();
+        // Invalidate hover cache so the tooltip re-queries on the next frame.
+        // (C4) Query cache only: the resolved-tooltip cache is keyed on the
+        // hover result and rebuilds itself if the key changed; the next heavy
+        // render drops it via invalidateAll() anyway.
+        hoverInspector.invalidateQueryCache();
+    }
+
+    @Override
+    protected void updateWidgetNarration(NarrationElementOutput narrationElementOutput) {
+        // Nothing to do
+    }
+}
