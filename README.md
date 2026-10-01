@@ -59,8 +59,8 @@ unchanged from upstream behaviour.
 
 | | Original (≤ MC 1.21) | This fork |
 |---|---|---|
-| **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be switched back in `Settings → General → Scroll wheel zooms map` |
-| **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two most zoomed-out steps (2 and 1 px per chunk) resample the map, so they take a moment |
+| **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be set back to moving along Y in `Settings → General → Scroll wheel zooms map` |
+| **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two most zoomed-out steps (2 and 1 pixels per chunk) resample the map, so they take a moment |
 | **Minecraft version** | 1.20.x, 1.21 | 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2, 26.3 |
 | **Mod loader** | Fabric, Forge, Quilt | Fabric, NeoForge (1.21.1 and later); Fabric, Forge (1.20.1) |
 | **Settings screen** | a single screen | sidebar with separate pages, plus a *Reset to defaults* button |
@@ -68,17 +68,20 @@ unchanged from upstream behaviour.
 ### Added in this fork
 
 Most of the following are opt-in: each has its own button or setting, and none of them change the
-preview until you turn them on.
+preview until you turn them on; the exceptions — drag preloading, which is on by default, and the
+automatic backup and migration of the config files — only affect sampling work and files, never
+what the preview shows.
 
-**Seed search** scans random seeds against a set of criteria: up to four biomes (any-of), a
-structure, a minimum biome area share, a maximum distance to the nearest matching biome, and a
-separate distance limit for the structure. Results are ranked, and a search runs in the background,
+**Seed search** scans random seeds against a set of criteria: up to four biomes (any of them
+counts), a structure, a minimum biome area share, a maximum distance to the nearest matching biome
+and a separate distance limit for the structure. Results are ranked, and a search runs in the background,
 so it keeps going while you are on another screen. Only random-spread structures can be searched
 for; concentric-ring ones such as strongholds are not supported yet.
 
 The seed screen brings the seed box with Random and Save, the search criteria, and the results,
-history, favourites and saved-seed lists together in one place. Searches that hit are stored; a row
-applies its seed on click, favourites on shift+right-click and deletes on right-click. A **seed
+history, favourites and saved-seed lists together in one place. Matching searches are stored; a row
+applies its seed on click, adds it to favourites on `Shift`+right-click and deletes it on
+right-click. A **seed
 comparison** screen puts the current seed next to up to seven others and reports biome diversity,
 water share, the dominant biome and a spawn score.
 
@@ -104,9 +107,9 @@ altitude, ambient and exaggeration) and **contour lines** at a configurable inte
 **noise parameter views** cover temperature, humidity, continentalness, erosion, depth, weirdness
 and peaks & valleys, each with its own colour gradient and drawn as a smooth gradient.
 
-Smaller things: a **minimap** and live statistics, coordinates, per-biome block counts,
+Smaller things: a **minimap**, live statistics, coordinates, per-biome block counts,
 **preloading** of the area around the viewport (optionally only when worker threads are idle),
-automatic **backup and migration** of the config files, and a **mod compatibility framework** that
+automatic **backup and migration** of the config files and a **mod compatibility framework** that
 adapts to modded chunk generators — currently Terralith, Biomes O' Plenty, TerraFirmaCraft (off by
 default), Oh The Biomes You'll Go, Astral Sorcery, Nature's Spirit, Oh The Trees, Awaken, Wither
 Storm Mod and TofuCraft. Mods that are not on this list are left alone: biomes, structures and
@@ -123,7 +126,7 @@ rather than finished.
   Y layers.
 - Click-and-drag panning, arrow-key panning, `Home` to recentre on the origin.
 - Persistent seed storage, biome highlighting, the cache for in-game and world-creation
-  previews (with optional compression), and the thread-count setting.
+  previews (with optional compression) and the thread-count setting.
 - The in-game preview from the pause menu (singleplayer only).
 - The datapack mechanism for registering new biomes, structures and colour maps.
 
@@ -145,9 +148,9 @@ configured in `Settings` (the wrench button, top-right over the map).
 
 ### Moving on the map
 
-- **Drag** the map to travel along X and Z. This queues, in order: biomes not yet sampled on
-  the current Y layer → structures (if enabled) → heightmap (if enabled) → intersections
-  (if enabled) → adjacent Y layers (if enabled).
+- **Drag** the map to travel along X and Z. Dragging queues work in this order: biomes not yet
+  sampled on the current Y layer → structures (if enabled) → heightmap (if enabled) →
+  intersections (if enabled) → adjacent Y layers (if enabled).
 - **Scroll** to zoom by default. `Ctrl`+scroll always zooms, `Alt`+scroll always moves along
   the Y axis; the behaviour of the bare wheel is a setting.
 - Moving along Y lets you see cave biomes. Note that non-cave biomes span the whole world
@@ -164,7 +167,7 @@ Switch from the toolbar in the preview:
 | **Biomes** | biome colours (default) |
 | **Heightmap** | colourised elevation, with selectable colour maps |
 | **Y-intersections** | blocks on the current Y layer, with the layer below drawn in a lighter shade |
-| **Noise parameters** | temperature, humidity, continentalness, erosion, depth, weirdness, peaks & valleys |
+| **Noise parameters** | temperature, humidity, continentalness, erosion, depth, weirdness and peaks & valleys |
 
 Structures are not a view of their own: once structure sampling is on, individual structure types
 are toggled from the structures list.
@@ -201,7 +204,7 @@ without leaving the world.
 
 **Q: Scrolling does not zoom the preview!**
 
-**A:** Scrolling zooms by default in this fork. Check
+**A:** Scrolling zooms by default in this fork, so if yours does not, check
 `Settings → General → Scroll wheel zooms map`; when that box is off, the wheel moves along the
 Y axis instead and you need `Ctrl`+scroll to zoom. `Alt`+scroll always moves along Y.
 A blank Y-intersections view is a different problem; see the next entry.
@@ -217,7 +220,7 @@ terrain sits above its middle.
 **A:** Lower the thread count in `Settings → General` (the setting is labelled *Number of biome
 sampling threads*), and turn off *Enable drag preloading* there as well. *World Preview* computes
 the biome preview, structures and heightmap as fast as it can, which is CPU-hungry by design.
-Cutting *The amount of samples per chunk* on the `Resolution` page reduces the work further, at
+Lowering *The amount of samples per chunk* on the `Resolution` page reduces the work further, at
 the cost of a coarser preview.
 
 **Q: Will older Minecraft versions be supported?**
@@ -227,7 +230,7 @@ are not covered by this fork. For 1.20.x and 1.21 the original mod remains avail
 Forge and Quilt.
 **Q: Does this run on a server, or in multiplayer?**
 
-**A:** It is a client-side mod and singleplayer-only. Install it on the client; a server does not
+**A:** It is client-side and singleplayer-only. Install it on the client; a server does not
 need it, and the preview is not available on a server world.
 
 **Q: Where is the config file, and what else does the mod write to disk?**
@@ -255,11 +258,12 @@ For a list of mods with dedicated compatibility handling, see *Added in this for
 
 ### TerraFirmaCraft (TFC)
 
-World Preview **is** compatible with TFC, with one known limitation: the Y-intersections view
-stays white on every Y level, because `TFCChunkGenerator` has a dummy implementation of
+World Preview is compatible with TFC, with one known limitation: the Y-intersections view stays
+white on every Y layer, because the column data this view samples is not exposed by
+`TFCChunkGenerator`'s
 [`getBaseColumn`](https://github.com/TerraFirmaCraft/TerraFirmaCraft/blob/v3.1.2-beta/src/main/java/net/dries007/tfc/world/TFCChunkGenerator.java#L643-L646).
 
-This is a limitation of the data TFC exposes, not a TFC bug.
+That comes from the data TFC exposes, not from a bug in TFC.
 
 ---
 
