@@ -40,8 +40,8 @@ and 1.21 releases outside this list, the original mod remains available.
 1. Download the jar for your **exact** Minecraft version **and** mod loader, from
    [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) or
    [Releases](../../releases).
-   Asset names look like `world_preview-<mod version>-<minecraft version>-<Fabric|NeoForge>.jar`; the second loader
-   is NeoForge, except for Minecraft 1.20.1 where it is Forge;
+   Asset names look like `world_preview-<mod version>-<minecraft version>-<loader>.jar`; the loader
+   segment is lowercase (`fabric`, `neoforge`) except on 1.20.1, where it is `Fabric` or `Forge`;
    the `.dev` and `.sources` variants are for developers and are not meant to be played.
 2. Put the jar into the `mods` folder of your Minecraft instance.
 3. On Fabric you also need [Fabric API](https://modrinth.com/mod/fabric-api); the build uses Fabric
@@ -141,7 +141,7 @@ rather than finished.
 
 Opening it samples a random seed and draws a biome map. By default the Overworld is previewed,
 structures and the heightmap are off, and no noise samples are stored — all of that is
-configured in `Settings` (the wrench button in the top-left).
+configured in `Settings` (the wrench button, top-right over the map).
 
 ### Moving on the map
 
