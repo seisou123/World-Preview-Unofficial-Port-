@@ -7,6 +7,7 @@ import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.PreviewContainerDataProvider;
 import caeruleusTait.world.preview.mixin.MinecraftServerAccessor;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
@@ -42,9 +43,41 @@ public class InGamePreviewScreen extends Screen implements PreviewContainerDataP
     private IntegratedServer integratedServer;
     private PreviewContainer previewContainer;
     private final WorldPreview worldPreview = WorldPreview.get();
+    /** True between a middle-press autoscroll start on a sidebar list and its release. */
+    private boolean listPanActive;
 
     public InGamePreviewScreen() {
         super(WorldPreviewComponents.TITLE_FULL);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // A middle press on a visible sidebar list starts a browser-style
+        // autoscroll (the list ticks it from its render pass, so it keeps
+        // scrolling while the mouse holds still). The screen only routes the
+        // release: vanilla's container does not forward non-primary releases
+        // to the focused child.
+        if (button == InputConstants.MOUSE_BUTTON_MIDDLE
+                && previewContainer != null
+                && previewContainer.beginListScrollPan(mouseX, mouseY)) {
+            listPanActive = true;
+            return true;
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (listPanActive) {
+            listPanActive = false;
+            if (previewContainer != null) {
+                previewContainer.endListScrollPan();
+            }
+            if (button == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override
@@ -59,6 +92,9 @@ public class InGamePreviewScreen extends Screen implements PreviewContainerDataP
 
         if (previewContainer == null) {
             previewContainer = new PreviewContainer(this, this);
+            if (worldPreview.cfg().openAtPlayer && minecraft.player != null) {
+                previewContainer.setInitialCenterOverride(minecraft.player.blockPosition());
+            }
             previewContainer.start();
         } else {
             // Returning from a sub-screen (analysis, settings).
@@ -120,7 +156,7 @@ public class InGamePreviewScreen extends Screen implements PreviewContainerDataP
         Screen previous = minecraft.screen;
         minecraft.setScreen(new PreviewCacheLoadingScreen(SAVING_PREVIEW));
         try {
-            writeCacheFile(previewContainer.workManager().previewStorage(), cacheDir().resolve(filename(seed)));
+            writeCacheFile(storage, cacheDir().resolve(filename(seed)));
         } finally {
             minecraft.setScreen(previous != null ? previous : this);
             previewContainer.setCacheLoading(false);

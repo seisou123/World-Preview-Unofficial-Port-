@@ -99,4 +99,4 @@ class SeedSearchCriteriaTest {
                 List.of(new SearchCriterion.Biome(ResourceLocation.parse("minecraft:plains"), 0, 0)),
                 SeedSearchRequest.MAX_HITS_LIMIT + 1));
     }
-}
+}

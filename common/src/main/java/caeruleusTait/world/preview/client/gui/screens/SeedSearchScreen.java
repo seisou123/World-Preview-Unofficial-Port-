@@ -3,7 +3,6 @@
 package caeruleusTait.world.preview.client.gui.screens;
 
 import caeruleusTait.world.preview.backend.analysis.SearchCriterion;
-import caeruleusTait.world.preview.client.gui.input.KeyEvent;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchHistory;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
@@ -15,6 +14,7 @@ import caeruleusTait.world.preview.client.gui.widgets.lists.SearchResultsList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
 import caeruleusTait.world.preview.domain.waypoint.Waypoint;
 import caeruleusTait.world.preview.domain.waypoint.WaypointStore;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.ChatFormatting;
@@ -72,11 +72,14 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private Button optionsButton;
     private Button startButton;
     private Button stopButton;
+    private Button clearHistoryButton;
     private Button compareButton;
     private Button backButton;
     /** View tabs (results/history/favorites/saved) rendered above the results list. */
     private final Map<View, Button> viewTabs = new EnumMap<>(View.class);
     private SearchResultsList resultsList;
+    /** True between a middle-press autoscroll start on a list and its release. */
+    private boolean listPanActive;
     private EditBox seedEdit;
     private Button randomizeSeedButton;
     private Button saveSeedButton;
@@ -220,6 +223,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         stopButton = Button.builder(WorldPreviewComponents.SEARCH_STOP, ignored -> stopSearch())
                 .size(70, 20).build();
         stopButton.active = false;
+        clearHistoryButton = Button.builder(WorldPreviewComponents.SEARCH_CLEAR_HISTORY,
+                ignored -> clearHistory()).size(90, 20).build();
+        clearHistoryButton.visible = false;
         compareButton = Button.builder(WorldPreviewComponents.COMPARISON_OPEN, ignored -> openComparison())
                 .size(70, 20).build();
 
@@ -242,6 +248,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         addRenderableWidget(optionsButton);
         addRenderableWidget(startButton);
         addRenderableWidget(stopButton);
+        addRenderableWidget(clearHistoryButton);
         addRenderableWidget(compareButton);
         for (Button tab : viewTabs.values()) {
             addRenderableWidget(tab);
@@ -372,6 +379,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         startButton.setWidth(110);
         stopButton.setPosition(left + 114, actionRowY);
         compareButton.setPosition(left + 188, actionRowY);
+        clearHistoryButton.setPosition(left + 282, actionRowY);
 
         // Back button in the footer, right-aligned (same spot as
         // WorldAnalysisScreen's close button).
@@ -645,6 +653,9 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     /** Switches the results-list view and syncs the tab row selection. */
     private void selectView(View view) {
         currentView = view;
+        if (clearHistoryButton != null) {
+            clearHistoryButton.visible = view == View.HISTORY;
+        }
         updateTabState();
         refreshList();
     }
@@ -795,6 +806,25 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     }
 
     @Override
+    public void onSaveToLibrary(String seed) {
+        if (seed == null || seed.isBlank() || container.worldPreview().cfg().savedSeeds.contains(seed)) {
+            return;
+        }
+        container.worldPreview().cfg().savedSeeds.add(seed);
+        // Persist immediately: a crash must not lose the just-saved seed.
+        container.worldPreview().saveConfig();
+        if (currentView == View.SAVED) {
+            refreshList();
+        }
+        statusText = WorldPreviewComponents.SEARCH_SAVED_TO_LIBRARY.getString() + seed;
+    }
+
+    private void clearHistory() {
+        int removed = container.worldPreview().seedSearchHistory().clearNonFavorite();
+        statusText = WorldPreviewComponents.SEARCH_HISTORY_CLEARED.getString() + removed;
+        refreshList();
+    }
+
     public void onDelete(String seed) {
         if (currentView == View.SAVED) {
             container.deleteSeed(seed);
@@ -892,16 +922,45 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 empty);
     }
 
-    @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        final KeyEvent event = new KeyEvent(keyCode, scanCode, modifiers);
-        if (super.keyPressed(keyCode, scanCode, modifiers)) {
-            return true;
+    /**
+     * Starts a middle-press autoscroll on whichever list is under the cursor.
+     * Returns false when no visible list can scroll, so the press falls
+     * through to normal dispatch.
+     */
+    private boolean beginListScrollPan(double mouseX, double mouseY) {
+        if (resultsList.visible && resultsList.isMouseOver(mouseX, mouseY)) {
+            return resultsList.beginScrollPan(mouseY);
         }
-        if (minecraft != null && event.matches(minecraft.options.keyInventory)) {
-            onClose();
-            return true;
+        if (biomePicker.visible && biomePicker.isMouseOver(mouseX, mouseY)) {
+            return biomePicker.beginScrollPan(mouseY);
         }
         return false;
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // A middle press on a visible list starts a browser-style autoscroll
+        // (the list ticks it from its render pass, so it keeps scrolling while
+        // the mouse holds still). The screen only routes the release: vanilla's
+        // container does not forward non-primary releases to the focused child.
+        if (button == InputConstants.MOUSE_BUTTON_MIDDLE
+                && beginListScrollPan(mouseX, mouseY)) {
+            listPanActive = true;
+            return true;
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (listPanActive) {
+            listPanActive = false;
+            resultsList.endScrollPan();
+            biomePicker.endScrollPan();
+            if (button == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 }

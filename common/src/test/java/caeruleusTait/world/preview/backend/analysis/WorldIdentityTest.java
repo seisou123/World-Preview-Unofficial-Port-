@@ -60,4 +60,4 @@ class WorldIdentityTest {
                 WorldIdentity.of(9L, null, null, null, null, null),
                 new WorldIdentity(9L, "unknown", "unknown", "none", "none", "n/a"));
     }
-}
+}

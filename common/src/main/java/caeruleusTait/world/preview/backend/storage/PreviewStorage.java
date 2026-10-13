@@ -232,6 +232,36 @@ public class PreviewStorage {
     }
 
     /**
+     * Full-resolution companion of {@link #isChunkSampled}: {@code true} only
+     * when the chunk completed sampling with a non-coarse sampler.  Consumers
+     * that treat a stored value as ground truth (analysis fact reuse, terrain
+     * export probes) must use this one: a drag-tier coarse fill is real data
+     * at 4x4-quart resolution, not full resolution, and must be re-sampled
+     * rather than accepted.
+     */
+    public boolean isChunkSampledFine(int quartX, int quartY, int quartZ, long flags) {
+        final int indexY = indexYOrNegative(QuartPos.toBlock(quartY));
+        if (indexY < 0) {
+            return false;
+        }
+        final PreviewBlock block;
+        synchronized (blocks[indexY]) {
+            block = blocks[indexY].get(quartPosToSectionLong(quartX, quartZ, flags));
+        }
+        if (block == null) {
+            return false;
+        }
+        final PreviewSection section = block.getIfExists(quartX, quartZ);
+        if (section == null) {
+            return false;
+        }
+        return section.isCompletedFine(new ChunkPos(
+                quartX >> PreviewSection.QUART_TO_SECTION_SHIFT,
+                quartZ >> PreviewSection.QUART_TO_SECTION_SHIFT
+        ));
+    }
+
+    /**
      * Batch query: fetch biome, height, and all 6 noise channels for a single
      * quart position in a single synchronized block, avoiding 8 separate
      * lock acquire/release cycles.
@@ -544,6 +574,27 @@ public class PreviewStorage {
             }
         }
         return count;
+    }
+
+    /**
+     * Drops every drag-tier coarse completion mark across all layers and
+     * blocks.  Called synchronously by the drag release (WorkManager.exitDragTier)
+     * under the completion lock, so the coarse-touched chunks are re-issued
+     * for full-resolution sampling by the very next queue pass.  Sections
+     * without coarse marks are cheap no-ops (BitSet.clear on an empty set).
+     */
+    public void clearCoarseCompletions() {
+        for (Long2ObjectMap<PreviewBlock> layer : blocks) {
+            synchronized (layer) {
+                for (PreviewBlock block : layer.values()) {
+                    for (PreviewSection section : block.sectionsRaw()) {
+                        if (section != null) {
+                            section.clearCoarseCompletions();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**

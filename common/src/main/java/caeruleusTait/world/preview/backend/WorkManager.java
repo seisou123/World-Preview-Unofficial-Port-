@@ -82,8 +82,23 @@ public class WorkManager {
     private DimensionType dimensionType;
     private ChunkGenerator chunkGenerator;
     private BiomeSource biomeSource;
-    private ChunkSampler chunkSampler;
-    private SampleUtils sampleUtils;
+    // Volatile: the current sampling tier (see SamplingTier) as ONE immutable
+    // snapshot, swapped on the render thread (drag edges, analysis entry,
+    // worldgen rebuild) while queue-thread factories read it.  A single
+    // volatile read binds a work unit's sampler and its coarse classification
+    // to the same snapshot, so a drag edge can never tear the pair apart.
+    private volatile SamplingTier samplingTier = null;
+
+    /**
+     * Immutable sampling-tier snapshot: the sampler a new work unit must use,
+     * whether that sampler is the drag-tier coarse sampler, and the tier epoch
+     * the unit freezes so its batch is discarded if the tier moves before the
+     * results are applied.
+     */
+    private record SamplingTier(ChunkSampler sampler, boolean coarse, long epoch) {}
+    // Volatile: nulled by cancel() on the render thread while the queue thread
+    // (queueForLevel's storage probe) and worker threads may still read it.
+    private volatile SampleUtils sampleUtils;
     private WorldgenContext worldgenContext;
 
     private PreviewData previewData;
@@ -95,7 +110,9 @@ public class WorkManager {
      * previewData instances.
      */
     private volatile Map<Holder<Biome>, Short> biomeHolderIdCache = null;
-    private PreviewStorage previewStorage;
+    // Volatile: read by the queue thread in the isChunkSampled probe and
+    // nulled by cancel() on the render thread.
+    private volatile PreviewStorage previewStorage;
     private PreviewStorageCacheManager previewStorageCacheManager;
     private final RenderSettings renderSettings;
     private final WorldPreviewConfig config;
@@ -105,8 +122,11 @@ public class WorkManager {
     private final List<Future<?>> queueFutures = new ArrayList<>();
     private final SplittableRandom random = new SplittableRandom();
 
-    private ExecutorService executorService;
-    private ExecutorService queueChunksService;
+    // Volatile: written by the render thread (setup/cancel/suspend/resume) and
+    // read by the queue thread (queueRange's accept check); without it a stale
+    // read can submit into an executor that was already shut down.
+    private volatile ExecutorService executorService;
+    private volatile ExecutorService queueChunksService;
 
     // Guards the queueIsRunning / pending-range handshake between the render
     // thread (queueRange) and the queue thread (queueRangeWrapper finish path).
@@ -127,6 +147,31 @@ public class WorkManager {
     private volatile boolean queueIsRunning = false;
     private volatile boolean shouldEarlyAbortQueuing = false;
 
+    // Deferred detail-layer queuing while the map is being dragged (see
+    // setDeferredLayersWhileDragging).  Volatile: flipped by the render
+    // thread on drag state changes, read by the queue thread at the head
+    // of every queue pass.
+    private volatile boolean deferLayersWhileDragging = false;
+
+    // --- Drag-tier coarse sampling ---
+    // While the map is dragged, the biome layer samples one quart-column per
+    // chunk into the SAME storage; drag-tier units record their completion on
+    // separate marks that drag release clears synchronously, so the coarse
+    // fill never blocks the full-resolution re-sampling.  The sampler, the
+    // coarse flag and the tier epoch travel together as one immutable
+    // snapshot: a work unit reads the snapshot once and binds both its
+    // sampler and its coarse marking to that single read, so a concurrent
+    // drag edge can never produce a coarse sampler with a fine
+    // classification.
+    /** Monotonic drag-tier sequence: snapshot epochs are drawn from it, coarse batches are discarded when it moves. */
+    private final AtomicLong dragTierEpoch = new AtomicLong(0);
+
+    /** True while the current sampling tier is the drag-tier coarse tier. */
+    private boolean isDragTierActive() {
+        final SamplingTier tier = samplingTier;
+        return tier != null && tier.coarse();
+    }
+
     /**
      * True while sampling is suspended (worker pools torn down but the worldgen
      * state -- previewStorage/worldgenContext/sampleUtils/previewData/epoch --
@@ -140,6 +185,8 @@ public class WorkManager {
 
     /** Bumped on cancel/shutdown so in-flight queue work can detect obsolescence. */
     private final AtomicLong sessionEpoch = new AtomicLong(0);
+    /** Monotonic submit sequence: FIFO within a layer rank for the priority worker queue. */
+    private final AtomicLong workerSubmitSeq = new AtomicLong();
 
     /**
      * Current worldgen session epoch. Incremented whenever the world generation
@@ -180,7 +227,8 @@ public class WorkManager {
         chunkGenerator = levelStem.generator();
         biomeSource = chunkGenerator.getBiomeSource();
         previewStorageCacheManager = _previewStorageCacheManager;
-        chunkSampler = renderSettings.samplerType.create(renderSettings.quartStride());
+        samplingTier = new SamplingTier(
+                renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
         previewData = _previewData;
         biomeHolderIdCache = new ConcurrentHashMap<>();
 
@@ -201,8 +249,7 @@ public class WorkManager {
             worldgenContext.disownSampleUtils();
             LOGGER.info("SampleUtils created successfully");
         } catch (IOException e) {
-            LOGGER.error("SampleUtils creation failed: {}", e.getMessage());
-            e.printStackTrace();
+            LOGGER.error("SampleUtils creation failed", e);
             throw new RuntimeException(e);
         }
     }
@@ -216,7 +263,7 @@ public class WorkManager {
 
         // Only create the executors at the end to ensure that there are no
         // null pointer exceptions
-        executorService = Executors.newFixedThreadPool(config.numThreads());
+        executorService = createWorkerExecutor();
         queueChunksService = Executors.newSingleThreadExecutor();
 
         // Pre-start all core threads so the first batch of work units
@@ -225,6 +272,160 @@ public class WorkManager {
         if (executorService instanceof ThreadPoolExecutor tpe) {
             tpe.prestartAllCoreThreads();
         }
+    }
+
+    /**
+     * Worker pool with layer-aware dequeue order.  All batches share one
+     * executor and each queue pass submits its batches in layer order (biomes,
+     * then structures, then heightmap) — but the batches of the NEXT pass land
+     * behind every background batch of the earlier passes, because a plain
+     * FIFO never reorders.  The background layers are far more expensive per
+     * chunk than biome sampling (structure placement runs the whole placement
+     * pipeline; the heightmap fast path even batches one region per batch), so
+     * on large viewports the freshly exposed biome work — the only layer the
+     * visible map is waiting for — could sit behind tens of seconds of queued
+     * background batches: the map appeared frozen until the next drag happened
+     * to cancel enough of the backlog for it to surface.  Tasks therefore
+     * carry a rank (biome 0, heightmap 1, everything else 2) and the executor
+     * dequeues the lowest rank first, FIFO within a rank, so a freshly queued
+     * biome batch always jumps ahead of not-yet-started background batches.
+     * Already-running batches are untouched (cancellation stays cooperative),
+     * and background layers cannot starve: once the viewport's biome layer is
+     * sampled, no new rank-0 work is queued and the background ranks drain.
+     */
+    private ExecutorService createWorkerExecutor() {
+        final ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                config.numThreads(),
+                config.numThreads(),
+                0L,
+                TimeUnit.MILLISECONDS,
+                new PriorityBlockingQueue<>(),
+                Executors.defaultThreadFactory()
+        ) {
+            @Override
+            protected <T> RunnableFuture<T> newTaskFor(Runnable runnable, T value) {
+                if (runnable instanceof PrioritizedWorkTask task) {
+                    return new PrioritizedFutureTask<>(task.runnable(), task.rank(), task.seq());
+                }
+                return super.newTaskFor(runnable, value);
+            }
+        };
+        executor.prestartAllCoreThreads();
+        return executor;
+    }
+
+    /**
+     * Layer rank for the worker queue: the biome layer is what every render
+     * mode displays and what the viewport fill waits on; the heightmap feeds
+     * the hillshade overlay and comes next; everything else (structures,
+     * intersections) is pure background.
+     */
+    private static int workLayerRank(long flags) {
+        if (flags == PreviewStorage.FLAG_BIOME) {
+            return 0;
+        }
+        if (flags == PreviewStorage.FLAG_HEIGHT) {
+            return 1;
+        }
+        return 2;
+    }
+
+    /**
+     * Submit wrapper carrying the layer rank and a monotonic sequence number;
+     * the executor's queue orders by (rank, seq).
+     */
+    private record PrioritizedWorkTask(int rank, long seq, Runnable runnable) implements Runnable {
+        @Override
+        public void run() {
+            runnable.run();
+        }
+    }
+
+    /**
+     * Future ordered by (rank, seq): a lower rank dequeues first and equal
+     * ranks keep their submission order, so the viewport-center spiral order
+     * survives within a layer.
+     */
+    private static final class PrioritizedFutureTask<T> extends FutureTask<T> implements Comparable<PrioritizedFutureTask<?>> {
+        private final int rank;
+        private final long seq;
+
+        PrioritizedFutureTask(Runnable runnable, int rank, long seq) {
+            super(runnable, null);
+            this.rank = rank;
+            this.seq = seq;
+        }
+
+        @Override
+        public int compareTo(PrioritizedFutureTask<?> o) {
+            final int c = Integer.compare(rank, o.rank);
+            return c != 0 ? c : Long.compare(seq, o.seq);
+        }
+    }
+
+    /**
+     * Rebuilds only the stride-dependent sampling infrastructure (chunk
+     * sampler and preview storage) after a zoom step crossed a sampling-stride
+     * boundary, keeping everything the stride does not parameterize alive: the
+     * worldgen context with its registries and noise infrastructure (by far
+     * the most expensive part of a setup), the preview color data, the worker
+     * pools and any world-scoped task borrowing them.
+     *
+     * <p>In-flight batches sample through the old sampler and write into the
+     * old-density storage, so they cannot survive the swap: the epoch bump
+     * makes every queued batch's write-side guard drop its results, cancelled
+     * tasks exit cooperatively at their next check, and the abort flag stops a
+     * mid-flight queue pass at its next layer boundary.  The flag is left set
+     * on purpose — queueRangeWrapper clears it when the next pass starts.  The
+     * queue handshake and dedup guards are reset so the render loop re-queues
+     * the viewport against the fresh storage (empty, or disk-cached for this
+     * zoom level — the cache file name is per pixelsPerChunk, so the density
+     * of any restored data always matches the new stride).
+     *
+     * <p>Must run on the render thread (the storage load may touch screens,
+     * same contract as postChangeWorldGenState).  Returns {@code false} when
+     * there is nothing to rebuild in place; the caller then falls back to the
+     * full teardown path.
+     */
+    public synchronized boolean rebuildSamplerAndStorage() {
+        if (suspended || !isSetup() || sampleUtils == null || previewStorageCacheManager == null
+                || worldOptions == null || dimensionType == null
+                || executorService == null || queueChunksService == null) {
+            return false;
+        }
+
+        sessionEpoch.incrementAndGet();
+        synchronized (currentBatches) {
+            currentBatches.forEach(WorkBatch::cancel);
+            currentBatches.clear();
+        }
+        List<Future<?>> allFutures = new ArrayList<>();
+        synchronized (futures) {
+            allFutures.addAll(queueFutures);
+            allFutures.addAll(futures);
+            queueFutures.clear();
+            futures.clear();
+        }
+        for (Future<?> f : allFutures) {
+            f.cancel(false);
+        }
+        synchronized (queueStateLock) {
+            pendingTopLeft = null;
+            pendingBottomRight = null;
+            queueIsRunning = false;
+        }
+        lastQueuedTopLeft = null;
+        lastQueuedBotRight = null;
+
+        // The storage swap invalidates any drag-tier state: the fresh
+        // storage carries no coarse marks and the sampler below is
+        // full-resolution.
+        dragTierEpoch.incrementAndGet();
+        samplingTier = new SamplingTier(
+                renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
+
+        previewStorage = previewStorageCacheManager.loadPreviewStorage(worldOptions.seed(), yMin(), yMax());
+        return true;
     }
 
     private void shutdownExecutors() {
@@ -250,11 +451,11 @@ public class WorkManager {
             futures.clear();
         }
         for (Future<?> f : allFutures) {
-            f.cancel(true);
+            f.cancel(false);
         }
 
-        executorService.shutdownNow();
-        queueChunksService.shutdownNow();
+        executorService.shutdown();
+        queueChunksService.shutdown();
 
         boolean interrupted = false;
         try {
@@ -278,6 +479,11 @@ public class WorkManager {
         // Resuming from a suspended state must go through the full teardown
         // (this method), so clear the flag before anything else.
         suspended = false;
+        // End any active drag session before the teardown: the sweep drops the
+        // coarse marks (with the fine marks of the chunks the drag touched) so
+        // the storage persisted below cannot carry coarse completions into the
+        // next session, and the coarse-touched chunks re-sample on first sight.
+        exitDragTier();
         shutdownExecutors();
 
         RuntimeException closeError = null;
@@ -301,7 +507,14 @@ public class WorkManager {
                 }
             }
 
-            if (previewStorageCacheManager != null && worldOptions != null) {
+            // Never persist while the drag tier is active: the storage holds
+            // coarse values whose completion marks are not serialized, so a
+            // reload would show blocky fill until each chunk is re-sampled.
+            // After an exit the marks are already swept (synchronously, in
+            // exitDragTier), so whatever the storage holds is self-healing on
+            // the next viewport pass and safe to persist.
+            if (previewStorageCacheManager != null && worldOptions != null
+                    && !isDragTierActive()) {
                 previewStorageCacheManager.storePreviewStorage(worldOptions.seed(), previewStorage);
             }
         } finally {
@@ -331,6 +544,18 @@ public class WorkManager {
             lastQueuedTopLeft = null;
             lastQueuedBotRight = null;
             lastY = Integer.MIN_VALUE;
+            // Reset drag-session state with the worldgen teardown: a fresh
+            // setup must start full-resolution regardless of how the screen
+            // was closed.  The display's drag-state flip only fires on
+            // transitions, so a drag still held at close time would otherwise
+            // leave the next session in deferred mode with no edge to clear it.
+            deferLayersWhileDragging = false;
+            // The teardown invalidates any drag session with it: bump the tier
+            // epoch (so no in-flight coarse batch can pass a stale check) and
+            // install a fresh full-resolution snapshot.
+            dragTierEpoch.incrementAndGet();
+            samplingTier = new SamplingTier(
+                    renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
             queueIsRunning = false;
             pendingTopLeft = null;
             pendingBottomRight = null;
@@ -390,11 +615,11 @@ public class WorkManager {
             futures.clear();
         }
         for (Future<?> f : allFutures) {
-            f.cancel(true);
+            f.cancel(false);
         }
 
-        executorService.shutdownNow();
-        queueChunksService.shutdownNow();
+        executorService.shutdown();
+        queueChunksService.shutdown();
 
         boolean interrupted = false;
         try {
@@ -418,6 +643,14 @@ public class WorkManager {
         queueIsRunning = false;
         executorService = null;
         queueChunksService = null;
+        // Leave the drag tier with the teardown: restore the
+        // full-resolution sampler and sweep the coarse marks SYNCHRONOUSLY
+        // (exitDragTier) so a resumed session refines whatever the drag
+        // sampled coarsely.  The display-side drag state dies with the screen
+        // instance; carrying the flag over would leave the resumed session in
+        // deferred mode with no edge to clear it.
+        exitDragTier();
+        deferLayersWhileDragging = false;
         suspended = true;
     }
 
@@ -437,7 +670,7 @@ public class WorkManager {
 
         // Pool construction mirrors postChangeWorldGenState (fixed pool +
         // single-thread queue service, core threads pre-started).
-        executorService = Executors.newFixedThreadPool(config.numThreads());
+        executorService = createWorkerExecutor();
         queueChunksService = Executors.newSingleThreadExecutor();
         if (executorService instanceof ThreadPoolExecutor tpe) {
             tpe.prestartAllCoreThreads();
@@ -499,10 +732,24 @@ public class WorkManager {
         lastQueuedBotRight = bottomRight;
         lastY = topLeftBlock.getY();
         synchronized (futures) {
-            if (queueChunksService == null) {
+            if (queueChunksService == null || queueChunksService.isShutdown()) {
+                // Executor gone (cancel/shutdown ran): drop the dedup guard set
+                // above so a later re-issue of this range is not silently
+                // swallowed, and bail out before the submit can throw
+                // RejectedExecutionException.
+                lastQueuedTopLeft = null;
+                lastQueuedBotRight = null;
                 return;
             }
-            queueFutures.add(queueChunksService.submit(() -> queueRangeWrapper(topLeftBlock, bottomRightBlock)));
+            try {
+                queueFutures.add(queueChunksService.submit(() -> queueRangeWrapper(topLeftBlock, bottomRightBlock)));
+            } catch (RejectedExecutionException e) {
+                // The accept check above lost the race against the shutdown;
+                // same recovery as the guard-clear path so the range can be
+                // re-issued later instead of being silently swallowed.
+                lastQueuedTopLeft = null;
+                lastQueuedBotRight = null;
+            }
         }
     }
 
@@ -530,10 +777,95 @@ public class WorkManager {
     }
 
     /**
+     * Deferred detail-layer queuing while the user is dragging the map: drag
+     * passes queue only the viewport biome layer (the cheapest layer, and the
+     * one the map renders first), so newly revealed area appears almost
+     * synchronously with the cursor; the heightmap/structure layers wait for
+     * drag release.  Release flips the flag back and clears the last-queued
+     * dedup guard, because the drag's biome-only passes already recorded the
+     * viewport range and the unchanged range must still be re-queued for its
+     * deferred layers.
+     */
+    public void setDeferredLayersWhileDragging(boolean dragging) {
+        // The drag fast-mode (deferred detail layers + coarse biome sampling)
+        // is a single feature behind one switch: with dragDownsamples off,
+        // drag frames behave like any other frame.
+        final boolean deferred = dragging && config.dragDownsamples;
+        if (deferLayersWhileDragging == deferred) {
+            return;
+        }
+        deferLayersWhileDragging = deferred;
+        if (deferred) {
+            enterDragTier();
+        } else {
+            exitDragTier();
+            resetQueuedRange();
+        }
+    }
+
+    /**
+     * Enters the drag-tier coarse sampling mode: one immutable snapshot swaps
+     * in a single-quart sampler (one biome sample per chunk instead of
+     * sixteen) marked coarse with a fresh tier epoch, so every unit the queue
+     * thread binds from this snapshot is classified coarse off the SAME read
+     * that handed it the coarse sampler.  In-flight batches are cancelled so
+     * they cannot mix fine results into the coarse pass (chunks they already
+     * completed keep their fine marks and are skipped by the queue probe).
+     */
+    private void enterDragTier() {
+        final SamplingTier current = samplingTier;
+        if (!config.dragDownsamples || !isSetup() || (current != null && current.coarse())) {
+            return;
+        }
+        dragTierEpoch.incrementAndGet();
+        synchronized (currentBatches) {
+            currentBatches.forEach(WorkBatch::cancel);
+        }
+        samplingTier = new SamplingTier(
+                RenderSettings.SamplerType.SINGLE.create(4), true, dragTierEpoch.get());
+        // Stop an in-flight pass at its next layer boundary; the display's
+        // next throttled drag frame re-issues the viewport with the new flags.
+        shouldEarlyAbortQueuing = true;
+    }
+
+    /**
+     * Leaves the drag-tier coarse sampling mode: one immutable snapshot swaps
+     * the full-resolution sampler back in, every batch of the drag session is
+     * invalidated (cancel + tier-epoch bump), and the coarse completion marks
+     * are dropped SYNCHRONOUSLY under {@link #completedSynchro} — the same
+     * lock every completion grant takes — so the sweep cannot miss a mark and
+     * the queue probe re-issues the coarse-touched area for full-resolution
+     * sampling on the very next pass.  A batch whose results were computed
+     * for the old tier re-checks the epoch under that lock and discards
+     * itself instead.  Idempotent no-op when the tier was never entered
+     * (dragDownsamples disabled, or sampling not set up).
+     */
+    private void exitDragTier() {
+        final SamplingTier current = samplingTier;
+        if (current == null || !current.coarse()) {
+            return;
+        }
+        samplingTier = new SamplingTier(
+                renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
+        dragTierEpoch.incrementAndGet();
+        synchronized (currentBatches) {
+            currentBatches.forEach(WorkBatch::cancel);
+        }
+        shouldEarlyAbortQueuing = true;
+        final PreviewStorage storage = previewStorage;
+        if (storage != null) {
+            synchronized (completedSynchro) {
+                storage.clearCoarseCompletions();
+            }
+        }
+    }
+
+    /**
      * True when no queue pass is running and every submitted batch has finished
      * (successfully, exceptionally or cancelled).  More accurate than
-     * {@link #activeBatchCount()}, which never reaches zero because finished
-     * batches stay in {@code currentBatches} until the next pass clears them.
+     * {@link #activeBatchCount()} for "is anything running": finished batches
+     * stay in {@code currentBatches} until the next pass prunes them, so the
+     * batch-list count conflates retained-but-done work with live work.
      */
     public boolean isIdle() {
         if (isQueueRunning()) {
@@ -585,7 +917,7 @@ public class WorkManager {
             }
             queueRangeReal(topLeftBlock, bottomRightBlock, epochAtStart);
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOGGER.error("Queue pass failed for {}, {}", topLeftBlock, bottomRightBlock, e);
             // BUG FIX: clear the dedup guard so the failed range can be
             // re-queued later.  Without this, lastQueuedTopLeft/BotRight keep
             // pointing at a range whose work never completed, and every
@@ -615,6 +947,104 @@ public class WorkManager {
         queueRangeReal(topLeftBlock, bottomRightBlock, sessionEpoch.get());
     }
 
+    /**
+     * Prunes batches that have run to any exit (success, failure, cancellation
+     * or stale discard) from the tracked set, and cancels + removes the
+     * in-flight batches whose work units all target chunks outside the given
+     * range.  Batches with at least one unit inside the range keep running —
+     * their unfinished chunks are re-issued by the next queue pass through the
+     * usual isChunkSampled probe, while their finished chunks simply complete.
+     *
+     * <p>Retained batches are additionally trimmed at unit granularity: units
+     * whose chunks (or covered area) left the range, or whose y level is not
+     * queued by this pass, are cancelled so the worker skips them at the next
+     * unit boundary.  Without the trim, a batch kept alive by a single
+     * still-visible chunk would run all of its off-screen units to completion,
+     * and since the executor is FIFO those stale batches occupy the worker
+     * pool ahead of the freshly queued viewport batches — a fast drag across
+     * uncharted area then takes seconds longer to fill than the initial load,
+     * which starts from an empty tracked set.
+     *
+     * <p>Pruning finished batches is what keeps the differential-cancel scheme
+     * closed: a finished batch would otherwise stay in the list forever
+     * (counting as active for the preload busy-check) and its chunks would
+     * poison the in-flight set (a failed batch must be re-queueable; a
+     * successful batch's chunks are covered by the completed-bit probe).
+     */
+    private void cancelBatchesOutsideRange(ChunkPos topLeft, ChunkPos bottomRight, List<Integer> queuedYs) {
+        final List<WorkBatch> toCancel = new ArrayList<>();
+        synchronized (currentBatches) {
+            final List<WorkBatch> retained = new ArrayList<>(currentBatches.size());
+            for (WorkBatch batch : currentBatches) {
+                if (batch.isFinished()) {
+                    continue;
+                }
+                if (batch.isCanceled()) {
+                    // Canceled but still draining: let the next pass forget it.
+                    continue;
+                }
+                if (batchOverlapsRange(batch, topLeft, bottomRight)) {
+                    retained.add(batch);
+                    for (WorkUnit unit : batch.workUnits) {
+                        if (unit.isCanceled()) {
+                            continue;
+                        }
+                        if (!unitOverlapsRange(unit, topLeft, bottomRight)
+                                || (unit.flags() == PreviewStorage.FLAG_BIOME
+                                    && !queuedYs.contains(unit.y()))) {
+                            unit.cancel();
+                        }
+                    }
+                } else {
+                    toCancel.add(batch);
+                }
+            }
+            if (toCancel.isEmpty() && retained.size() == currentBatches.size()) {
+                return;
+            }
+            currentBatches.clear();
+            currentBatches.addAll(retained);
+        }
+        // Cancel and drop futures outside the batch locks: WorkBatch.cancel and
+        // Future.cancel are safe to call unlocked (flags are volatile), and the
+        // workers observe them at their next cooperative check.
+        for (WorkBatch batch : toCancel) {
+            batch.cancel();
+        }
+        synchronized (futures) {
+            // Cancelled batches' futures simply run out cooperatively (their
+            // process() sees isCanceled and returns early); overlapping batches'
+            // futures must survive. Pruning done futures keeps the tracked set
+            // bounded across passes.
+            futures.removeIf(Future::isDone);
+        }
+    }
+
+    /**
+     * True when the unit's sampled chunk area intersects the range.  Region
+     * units (fast heightmap/intersection) anchor their chunk at a 16-aligned
+     * corner but sample a whole {@code coverageChunks x coverageChunks} area
+     * from it, so the overlap test must expand their anchor by that span — an
+     * anchor just outside the viewport with most of its region inside must
+     * count as overlapping, or every drag pass would cancel and re-queue the
+     * region from scratch.
+     */
+    private static boolean unitOverlapsRange(WorkUnit unit, ChunkPos topLeft, ChunkPos bottomRight) {
+        final ChunkPos c = unit.chunk();
+        final int cover = unit.coverageChunks() - 1;
+        return c.x + cover >= topLeft.x && c.x <= bottomRight.x
+                && c.z + cover >= topLeft.z && c.z <= bottomRight.z;
+    }
+
+    private static boolean batchOverlapsRange(WorkBatch batch, ChunkPos topLeft, ChunkPos bottomRight) {
+        for (WorkUnit unit : batch.workUnits) {
+            if (unitOverlapsRange(unit, topLeft, bottomRight)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void queueRangeReal(BlockPos topLeftBlock, BlockPos bottomRightBlock, long epochSnapshot) {
         if (epochSnapshot != sessionEpoch.get()) {
             return;
@@ -624,25 +1054,45 @@ public class WorkManager {
         final ChunkPos topLeft = new ChunkPos(topLeftBlock);
         final ChunkPos bottomRight = new ChunkPos(bottomRightBlock);
 
-        // Cancel current batches
-        synchronized (currentBatches) {
-            currentBatches.forEach(WorkBatch::cancel);
-            currentBatches.clear();
-        }
-        synchronized (futures) {
-            for (Future<?> f : futures) {
-                f.cancel(true);
-            }
-            futures.clear();
-        }
+        // Differential cancel: a pan only moves the viewport by a few chunks, so
+        // most in-flight batches still overlap the new range. Cancelling those
+        // threw away their in-progress sampling (units only receive the
+        // completed bit when they run uninterrupted), so every re-queue during
+        // a drag restarted nearly the whole viewport from scratch. Instead,
+        // cancel only the batches whose chunks all fall outside the new range;
+        // overlapping batches keep running, and the queueForLevel probe below
+        // re-issues exactly the chunks those batches have not completed yet.
+        // Retained batches are also trimmed at unit granularity (see
+        // cancelBatchesOutsideRange): without it, batches kept alive by one
+        // still-visible chunk finish their off-screen units first, and the
+        // FIFO executor runs them ahead of the freshly queued viewport work.
+        cancelBatchesOutsideRange(topLeft, bottomRight, collectQueuedYs(topLeftBlock.getY()));
 
         if (epochSnapshot != sessionEpoch.get()) {
             return;
         }
 
         // Calculate new batches
-        final List<ChunkPos> chunks = ChunkPos.rangeClosed(topLeft, bottomRight).toList();
+        final List<ChunkPos> chunks = new ArrayList<>(ChunkPos.rangeClosed(topLeft, bottomRight).toList());
+        // Drag deferral: while dragging, this pass queues only the viewport
+        // biome layer (the detail layers wait for drag release, see
+        // setDeferredLayersWhileDragging), and the fill order runs from the
+        // viewport center outward so the area under the cursor materializes
+        // first instead of trailing the drag direction row by row.
+        final boolean deferDetailLayers = deferLayersWhileDragging;
+        if (deferDetailLayers) {
+            final int centerChunkX = (topLeft.x + bottomRight.x) >> 1;
+            final int centerChunkZ = (topLeft.z + bottomRight.z) >> 1;
+            chunks.sort(java.util.Comparator.comparingInt((ChunkPos c) ->
+                    Math.max(Math.abs(centerChunkX - c.x), Math.abs(centerChunkZ - c.z))));
+        }
         int units = 0;
+        // Batches created by THIS pass (for the queue log): currentBatches also
+        // holds retained in-flight batches from earlier passes.
+        final int batchCountBefore;
+        synchronized (currentBatches) {
+            batchCountBefore = currentBatches.size();
+        }
 
         // Capability flags of the adapter the compat registry selected for this
         // chunk generator.  Consulting them is what makes mod detection
@@ -668,12 +1118,12 @@ public class WorkManager {
         units += queueForLevel(chunks, topLeftBlock.getY(), 4096, PreviewStorage.FLAG_BIOME, this::workUnitFactory);
 
         // Structures
-        if (config.sampleStructures && structuresSupported && shouldContinueQueuing(epochSnapshot)) {
+        if (config.sampleStructures && structuresSupported && shouldContinueQueuing(epochSnapshot) && !deferDetailLayers) {
             units += queueForLevel(chunks, 0, 256, PreviewStorage.FLAG_STRUCT_START, (pos, y) -> new StructStartWorkUnit(this, sampleUtils, pos, previewData));
         }
 
         // Height map
-        if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null) {
+        if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null && !deferDetailLayers) {
             LongSet queuedChunks = new LongOpenHashSet(chunks.size());
             List<ChunkPos> heightMapChunks = new ArrayList<>(chunks.size());
             final int sectionSizeExponent = PreviewSection.SHIFT - PreviewSection.QUART_TO_SECTION_SHIFT;
@@ -684,13 +1134,19 @@ public class WorkManager {
                     heightMapChunks.add(shifted);
                 }
             }
-            units += queueForLevel(heightMapChunks, 0, 1, PreviewStorage.FLAG_HEIGHT, (pos, y) -> new HeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData));
-        } else if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot)) {
-            units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_HEIGHT, (pos, y) -> new SlowHeightmapWorkUnit(this, chunkSampler, sampleUtils, pos, previewData));
+            units += queueForLevel(heightMapChunks, 0, 1, PreviewStorage.FLAG_HEIGHT, (pos, y) -> {
+                final SamplingTier tier = samplingTier;
+                return bindTier(new HeightmapWorkUnit(this, tier.sampler(), sampleUtils, pos, numChunks, previewData), tier);
+            });
+        } else if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot) && !deferDetailLayers) {
+            units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_HEIGHT, (pos, y) -> {
+                final SamplingTier tier = samplingTier;
+                return bindTier(new SlowHeightmapWorkUnit(this, tier.sampler(), sampleUtils, pos, previewData), tier);
+            });
         }
 
         // Intersections
-        if (config.sampleIntersections && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null) {
+        if (config.sampleIntersections && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null && !deferDetailLayers) {
             LongSet queuedChunks = new LongOpenHashSet(chunks.size());
             List<ChunkPos> intersectChunks = new ArrayList<>(chunks.size());
             final int sectionSizeExponent = PreviewSection.SHIFT - PreviewSection.QUART_TO_SECTION_SHIFT;
@@ -701,13 +1157,19 @@ public class WorkManager {
                     intersectChunks.add(shifted);
                 }
             }
-            units += queueForLevel(intersectChunks, 0, 1, PreviewStorage.FLAG_INTERSECT, (pos, y) -> new IntersectionWorkUnit(this, chunkSampler, sampleUtils, pos, numChunks, previewData, Y_BLOCK_STRIDE));
-        } else if (config.sampleIntersections && shouldContinueQueuing(epochSnapshot)) {
-            units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_INTERSECT, (pos, y) -> new SlowIntersectionWorkUnit(this, chunkSampler, sampleUtils, pos, previewData, yMin(), yMax(), Y_BLOCK_STRIDE));
+            units += queueForLevel(intersectChunks, 0, 1, PreviewStorage.FLAG_INTERSECT, (pos, y) -> {
+                final SamplingTier tier = samplingTier;
+                return bindTier(new IntersectionWorkUnit(this, tier.sampler(), sampleUtils, pos, numChunks, previewData, Y_BLOCK_STRIDE), tier);
+            });
+        } else if (config.sampleIntersections && shouldContinueQueuing(epochSnapshot) && !deferDetailLayers) {
+            units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_INTERSECT, (pos, y) -> {
+                final SamplingTier tier = samplingTier;
+                return bindTier(new SlowIntersectionWorkUnit(this, tier.sampler(), sampleUtils, pos, previewData, yMin(), yMax(), Y_BLOCK_STRIDE), tier);
+            });
         }
 
         // Now sample adjacent levels
-        if (config.backgroundSampleVertChunk && !config.buildFullVertChunk) {
+        if (config.backgroundSampleVertChunk && !config.buildFullVertChunk && !deferDetailLayers) {
             for (int y : genAdjacentYLevels(topLeftBlock.getY())) {
                 if (shouldEarlyAbortQueuing || epochSnapshot != sessionEpoch.get()) {
                     break;
@@ -724,30 +1186,132 @@ public class WorkManager {
          */
 
         final Instant end = Instant.now();
+        // currentBatches holds retained in-flight batches from previous passes
+        // plus the ones this pass created; report both so the log line keeps
+        // meaning "how much sampling is in flight" rather than implying every
+        // listed batch was just queued.
+        final int retainedBatches;
+        final int newBatchCount;
+        synchronized (currentBatches) {
+            retainedBatches = currentBatches.size();
+            newBatchCount = Math.max(0, retainedBatches - batchCountBefore);
+        }
         LOGGER.info(
-                "Queued {} chunks for generation using {} batches [{} ms] {}",
+                "Queued {} chunks for generation using {} new batches ({} in flight) [{} ms] {}",
                 units,
-                currentBatches.size(),
+                newBatchCount,
+                retainedBatches,
                 Duration.between(start, end).abs().toMillis(),
                 shouldEarlyAbortQueuing ? "{early abort}" : ""
         );
     }
 
     private WorkUnit workUnitFactory(ChunkPos pos, int y) {
+        final SamplingTier tier = samplingTier;
+        final ChunkSampler sampler = tier.sampler();
         if (config.buildFullVertChunk) {
-            return new FullChunkWorkUnit(this, chunkSampler, pos, sampleUtils, previewData, yMin(), yMax(), Y_BLOCK_STRIDE);
+            return bindTier(new FullChunkWorkUnit(this, sampler, pos, sampleUtils, previewData, yMin(), yMax(), Y_BLOCK_STRIDE), tier);
         } else {
-            return new LayerChunkWorkUnit(this, chunkSampler, pos, sampleUtils, previewData, y);
+            return bindTier(new LayerChunkWorkUnit(this, sampler, pos, sampleUtils, previewData, y), tier);
         }
+    }
+
+    /**
+     * Binds a freshly constructed unit to the sampling tier it was built
+     * from: the unit's sampler and its coarse classification come from the
+     * SAME immutable snapshot read, and a coarse unit freezes the snapshot's
+     * epoch so its batch is discarded if the drag tier moves before the
+     * results are applied.  Nothing is re-read here, so a concurrent drag
+     * edge can never produce a unit that sampled through the coarse sampler
+     * but is classified as fine.
+     */
+    private WorkUnit bindTier(WorkUnit unit, SamplingTier tier) {
+        if (tier.coarse()) {
+            unit.setCoarseSampling(true, tier.epoch());
+        }
+        return unit;
+    }
+
+    /**
+     * The y levels this pass queues biome units for: the viewport layer plus,
+     * with background vertical sampling enabled, its adjacent layers.
+     * Full-vertical batching anchors its units at y == 0.
+     */
+    private List<Integer> collectQueuedYs(int y) {
+        if (config.buildFullVertChunk) {
+            return List.of(0);
+        }
+        if (!config.backgroundSampleVertChunk) {
+            return List.of(y);
+        }
+        // While dragging, the deferred pass queues only the viewport layer;
+        // the unit trim must not cancel background layers this pass did not
+        // queue (they would be cancel/requeue-churned on every drag pass).
+        if (deferLayersWhileDragging) {
+            return List.of(y);
+        }
+        final List<Integer> ys = new ArrayList<>(genAdjacentYLevels(y));
+        ys.add(y);
+        return ys;
     }
 
     private boolean shouldContinueQueuing(long epochSnapshot) {
         return !shouldEarlyAbortQueuing && epochSnapshot == sessionEpoch.get();
     }
 
+    /**
+     * Chunk keys (packed) of the units in in-flight (unfinished, non-cancelled)
+     * batches whose layer flag and y level match the level being queued.
+     * Units of a retained batch continue sampling across a differential
+     * re-queue; queueForLevel skips these chunks so the pass only submits work
+     * that nothing else is doing.
+     *
+     * <p>The y match uses the same quantization the storage probe uses
+     * ({@code QuartPos.fromBlock(probeY)}), so the in-flight set and the
+     * completed-bit probe always agree on which layer a chunk belongs to.
+     * Without it, a LayerChunk unit sampled for one y level would suppress
+     * queuing for every other y level of the same chunk (rolling the map's
+     * Y level or the background vertical-sampling loop would starve).
+     *
+     * <p>Finished batches are excluded: a failed batch's chunks must be
+     * re-queueable by the next pass, and a successful batch's chunks are
+     * already covered by the isChunkSampled probe.
+     */
+    private LongOpenHashSet collectInflightChunks(long flag, int probeY) {
+        final LongOpenHashSet keys;
+        synchronized (currentBatches) {
+            if (currentBatches.isEmpty()) {
+                return new LongOpenHashSet(0);
+            }
+            keys = new LongOpenHashSet(currentBatches.size() * 4);
+            for (WorkBatch batch : currentBatches) {
+                if (batch.isFinished() || batch.isCanceled()) {
+                    continue;
+                }
+                for (WorkUnit unit : batch.workUnits) {
+                    // Units cancelled by the pass trim (chunk left the range,
+                    // or its y level is no longer queued) must not block
+                    // re-queueing: the chunk is unsampled, and if the viewport
+                    // comes back over it the next pass has to submit it again.
+                    if (!unit.isCanceled() && unit.flags() == flag && unit.y() == probeY) {
+                        keys.add(unit.chunk().toLong());
+                    }
+                }
+            }
+        }
+        return keys;
+    }
+
     private int queueForLevel(List<ChunkPos> chunks, int y, int maxBatchSize, long flag, BiFunction<ChunkPos, Integer, WorkUnit> workUnitFactoryFunc) {
         WorkUnit[] toQueue = new WorkUnit[chunks.size()];
         int size = 0;
+        // Chunks already being sampled by a retained in-flight batch (same
+        // layer, same y): a differential re-queue keeps those batches running,
+        // so re-submitting their chunks would duplicate the sampling work and
+        // steal throughput from the newly exposed edge chunks.  Built once per
+        // level; empty (and thus never consulted) when no batches are in flight.
+        final int probeY = config.buildFullVertChunk ? 0 : y;
+        final LongOpenHashSet inflight = collectInflightChunks(flag, probeY);
         // No completedSynchro here: the probe below is a read-only storage
         // lookup (isChunkSampled never creates blocks or sections), and units
         // are only constructed on a probe miss, outside any lock.  The old
@@ -760,7 +1324,6 @@ public class WorkManager {
         // Note: FullChunkWorkUnit anchors its primary section at y == 0, so
         // probe at 0 when full-vertical batching is enabled.  Every other call
         // site passes y == 0 or builds layer units anchored at y.
-        final int probeY = config.buildFullVertChunk ? 0 : y;
         for (ChunkPos chunkPos : chunks) {
             // Cheap read-only probe: skip chunks whose layer was already fully
             // sampled, without constructing a WorkUnit (its constructor does
@@ -772,6 +1335,10 @@ public class WorkManager {
                     QuartPos.fromSection(chunkPos.z),
                     flag
             )) {
+                continue;
+            }
+            // Skip chunks an in-flight batch of this layer is already sampling.
+            if (!inflight.isEmpty() && inflight.contains(chunkPos.toLong())) {
                 continue;
             }
             WorkUnit workUnit = workUnitFactoryFunc.apply(chunkPos, y);
@@ -845,6 +1412,28 @@ public class WorkManager {
 
         // Submit and store
         final long epochAtQueue = sessionEpoch.get();
+        // Write-side staleness guard: batches capture the epoch at queue time
+        // and refuse to write results that outlive their worldgen context.
+        // Attached BEFORE submission so no task can ever run with the guard
+        // uninstalled (isStale() is false while the supplier is unattached),
+        // and so the submit happens-before edge publishes the supplier to
+        // the worker thread.
+        for (WorkBatch batch : batches) {
+            batch.attachEpochGuard(sessionEpoch::get, epochAtQueue);
+            // A batch carrying any drag-tier unit is invalidated together
+            // with that drag session: the guard captures the tier epoch
+            // frozen in the unit itself, so a batch whose units were bound
+            // before the release bump is stale no matter when it is
+            // submitted or finishes relative to the drag edge.  The final
+            // gate is WorkBatch.process, which re-checks this guard (and the
+            // worldgen epoch) under completedSynchro before applying results.
+            for (WorkUnit unit : batch.workUnits) {
+                if (unit.isCoarseSampling()) {
+                    batch.attachTierGuard(dragTierEpoch::get, unit.tierEpoch());
+                    break;
+                }
+            }
+        }
         synchronized (futures) {
             // Guard against executor being shut down between the isShutdown()
             // check in queueRange() and this submit call.  This can happen when
@@ -854,16 +1443,30 @@ public class WorkManager {
                 return 0;
             }
             for (WorkBatch batch : batches) {
-                futures.add(executorService.submit(batch::process));
+                // Layer rank from the batch's first unit: biome batches (the
+                // layer the visible map waits for) dequeue ahead of background
+                // batches already sitting in the queue; the sequence number
+                // keeps same-rank batches FIFO so the spiral order survives.
+                // An empty trailing batch (size divisible by the batch size)
+                // ranks as background and completes instantly.
+                final long flags = batch.workUnits.isEmpty() ? 0L : batch.workUnits.get(0).flags();
+                futures.add(executorService.submit(
+                        new PrioritizedWorkTask(workLayerRank(flags), workerSubmitSeq.getAndIncrement(), batch::process)));
             }
-        }
-        // Write-side staleness guard: batches capture the epoch at queue time
-        // and refuse to write results that outlive their worldgen context.
-        for (WorkBatch batch : batches) {
-            batch.attachEpochGuard(sessionEpoch::get, epochAtQueue);
         }
         synchronized (currentBatches) {
             currentBatches.addAll(Arrays.asList(batches));
+            // Close the zombie window: teardown (cancel/suspend) can run
+            // between this batch's submit and this addAll — it cleared the
+            // list before the batch landed in it and cancelled the future, so
+            // process() will never run and neither isFinished nor isCanceled
+            // would ever flip.  Cancel the batch here so the next pass evicts
+            // it instead of treating it as in-flight forever.
+            if (executorService == null || executorService.isShutdown()) {
+                for (WorkBatch batch : batches) {
+                    batch.cancel();
+                }
+            }
         }
 
         return size;
@@ -975,6 +1578,12 @@ public class WorkManager {
 
     /** Opens an analysis session backed by the current world sampler. */
     public AnalysisSession openAnalysisSession(AnalysisRequest request) {
+        // Analysis must not observe the drag tier's coarse marks or coarse
+        // values mid-session: end any active drag session first so the marks
+        // are dropped and the next pass refines at full resolution.  The
+        // display state dies with the screen, so clear the deferred flag too.
+        exitDragTier();
+        deferLayersWhileDragging = false;
         if (sampleUtils == null || previewStorage == null || worldgenContext == null) {
             throw new IllegalStateException("world generation state is not initialized");
         }

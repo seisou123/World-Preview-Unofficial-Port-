@@ -125,6 +125,9 @@ public class IntersectionWorkUnit extends WorkUnit {
                         lastCellY = cellY;
 
                         final WorkResult res = results.get((yTemp - yMin) / yStride);
+                        // Cancellation is checked once per Y level at the loop head; the
+                        // per-point body only appends to this level's result, so a spot
+                        // check inside it would buy nothing.
                         for (int i = 0; i < count; ++i) {
                             noiseChunk.updateForX(xs[i], dXs[i]);
                             noiseChunk.updateForZ(zs[i], dZs[i]);
@@ -162,5 +165,10 @@ public class IntersectionWorkUnit extends WorkUnit {
     @Override
     public long flags() {
         return PreviewStorage.FLAG_INTERSECT;
+    }
+
+    @Override
+    public int coverageChunks() {
+        return numChunks;
     }
 }

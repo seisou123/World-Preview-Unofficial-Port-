@@ -6,6 +6,7 @@ import caeruleusTait.world.preview.backend.analysis.RegionMetrics;
 import caeruleusTait.world.preview.backend.export.TerrainCategory;
 import caeruleusTait.world.preview.client.gui.PanelRenderer;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -55,6 +56,24 @@ public final class BiomeSharePanel extends AbstractWidget {
     /** How many leading rows the stacked bar shows; everything else stays in the remainder slot. */
     private static final int STACKED_BAR_ROWS = 10;
     private static final int LEGEND_ROW_HEIGHT = 12;
+    /** Rows scrolled per wheel notch. */
+    private static final int WHEEL_STEP_ROWS = 3;
+    /** Thumb color of the table scrollbar (the track reuses REMAINDER_COLOR). */
+    private static final int SCROLLBAR_THUMB = 0xFF9AA2AE;
+    /** Rendered width of the scrollbar track/thumb. */
+    private static final int SCROLLBAR_BAR_WIDTH = 4;
+    /** Hit-strip width on the list's right edge (vanilla AbstractScrollArea.SCROLLBAR_WIDTH). */
+    private static final int SCROLLBAR_HIT_WIDTH = 6;
+    /** Deadzone around the autoscroll anchor, in gui pixels, before scrolling starts. */
+    private static final double PAN_DEADZONE_PX = 3.0;
+    /** Autoscroll speed in rows per second per gui pixel of anchor displacement. */
+    private static final double PAN_ROWS_PER_SEC_PER_PX = 0.75;
+    /** Upper autoscroll speed bound, in rows per second. */
+    private static final double PAN_MAX_ROWS_PER_SEC = 30.0;
+    /** Time constant of the eased scroll animation, in milliseconds. */
+    private static final double SCROLL_EASE_MS = 60.0;
+    /** Compact-layout list top: just below the biome bar. */
+    private static final int COMPACT_LIST_TOP = 44;
 
     /**
      * Row click callback: the biome id of the clicked row, or {@code null}
@@ -80,6 +99,18 @@ public final class BiomeSharePanel extends AbstractWidget {
     @Nullable private Short selected;
     /** First visible table row, clamped to {@code [0, rows * ROW_HEIGHT - listHeight]}. */
     private int scrollOffset;
+    /** True between a middle-press autoscroll start and its release (screen-routed). */
+    private boolean panActive;
+    /** Autoscroll anchor: the cursor Y at the middle press. */
+    private double panAnchorY;
+    /** True between a left-press on the scrollbar strip and its release. */
+    private boolean scrolling;
+    /** Sub-row drag accumulator: the precise offset while the thumb is dragged. */
+    private double scrollDragRows;
+    /** Eased scroll position actually rendered; chases {@link #scrollOffset} for smooth motion. */
+    private double renderOffset;
+    /** Previous render timestamp, for frame-rate independent easing and autoscroll. */
+    private long lastFrameMs = -1;
 
     public BiomeSharePanel(int x, int y, int width, int height) {
         super(x, y, width, height, TITLE);
@@ -197,7 +228,9 @@ public final class BiomeSharePanel extends AbstractWidget {
 
         // (b) Terrain-category stacked bar + one legend row of chips. Same
         // remainder-slot treatment for rounding gaps / unclassified samples.
-        if (insights != null) {
+        // The compact layout drops both: its viewport cannot afford the
+        // header, and the biome bar above stays meaningful on its own.
+        if (insights != null && !compactLayout(font)) {
             int terrainBarY = getY() + 44;
             graphics.fill(barX, terrainBarY, barRight, terrainBarY + 8, REMAINDER_COLOR);
             long classified = insights.classifiedSamples();
@@ -231,10 +264,12 @@ public final class BiomeSharePanel extends AbstractWidget {
         // (c) Scrollable full biome table, clipped to the list area.
         int listTop = listTop(font);
         int listBottom = listBottom();
+        tickScroll(mouseY, font);
         clampScroll(font);
         graphics.enableScissor(getX(), listTop, getX() + width, listBottom);
-        for (int i = scrollOffset; i < rows.size(); i++) {
-            int rowY = listTop + (i - scrollOffset) * ROW_HEIGHT;
+        int firstRow = Math.max(0, (int) Math.floor(renderOffset));
+        for (int i = firstRow; i < rows.size(); i++) {
+            int rowY = listTop + (int) Math.round((i - renderOffset) * ROW_HEIGHT);
             if (rowY >= listBottom) {
                 break;
             }
@@ -254,6 +289,22 @@ public final class BiomeSharePanel extends AbstractWidget {
             }
         }
         graphics.disableScissor();
+
+        // Scrollbar: track + thumb on the list's right edge, only when the
+        // table overflows the viewport. The thumb mirrors the visible range;
+        // the strip is interactive (see mouseClicked/mouseDragged).
+        int trackLen = listBottom - listTop;
+        int content = rows.size() * ROW_HEIGHT;
+        if (content > trackLen && trackLen > 0) {
+            int trackX = getX() + width - 1 - SCROLLBAR_BAR_WIDTH;
+            graphics.fill(trackX, listTop, trackX + SCROLLBAR_BAR_WIDTH, listBottom, REMAINDER_COLOR);
+            int thumbHeight = Math.max(4, trackLen * trackLen / content);
+            // scrollOffset counts rows while trackLen is pixels: convert via
+            // maxScrollRows, or the thumb crawls at a sixteenth of the cursor.
+            int thumbY = listTop + (int) Math.round((trackLen - thumbHeight) * renderOffset
+                    / Math.max(1, maxScrollRows(font)));
+            graphics.fill(trackX, thumbY, trackX + SCROLLBAR_BAR_WIDTH, thumbY + thumbHeight, SCROLLBAR_THUMB);
+        }
     }
 
     /**
@@ -288,8 +339,17 @@ public final class BiomeSharePanel extends AbstractWidget {
         return items;
     }
 
-    /** Top of the scrollable list: below the legend (or below the stacked bars when no insights yet). */
+    /**
+     * Top of the scrollable list: below the legend (or below the stacked bars
+     * when no insights yet). The compact layout pins it just below the biome
+     * bar instead.
+     */
     private int listTop(Font font) {
+        return compactLayout(font) ? getY() + COMPACT_LIST_TOP : normalListTop(font);
+    }
+
+    /** Normal-layout list top. */
+    private int normalListTop(Font font) {
         List<LegendItem> items = layoutLegend(font);
         if (items.isEmpty()) {
             return getY() + 56;
@@ -298,32 +358,120 @@ public final class BiomeSharePanel extends AbstractWidget {
         return getY() + 55 + legendRows * LEGEND_ROW_HEIGHT + 4;
     }
 
+    /**
+     * True when the normal header would leave the table less than one row:
+     * the terrain bar and the legend are dropped and the list starts right
+     * below the biome bar. A small-window safety net; the vanilla 240px
+     * automatic-scale floor keeps the normal layout usable otherwise.
+     */
+    private boolean compactLayout(Font font) {
+        return getHeight() - normalListTop(font) < ROW_HEIGHT;
+    }
+
     private int listBottom() {
         return getY() + getHeight() - 4;
     }
 
     private void clampScroll(Font font) {
+        scrollOffset = Math.min(maxScrollRows(font), Math.max(0, scrollOffset));
+    }
+
+    /**
+     * Maximum scroll target in rows. scrollOffset counts rows while the
+     * viewport and content heights are pixels: clamps and thumb geometry
+     * must convert between the two, or the thumb crawls at a sixteenth of
+     * the cursor speed and the list can scroll past its last row.
+     */
+    private int maxScrollRows(Font font) {
         int visible = Math.max(0, listBottom() - listTop(font));
-        int maxOffset = Math.max(0, rows.size() * ROW_HEIGHT - visible);
-        scrollOffset = Math.min(maxOffset, Math.max(0, scrollOffset));
+        return Math.max(0, (rows.size() * ROW_HEIGHT - visible) / ROW_HEIGHT);
+    }
+
+    /**
+     * Per-render-frame scroll animation, ticked from the render pass so it
+     * keeps running while the mouse is still. Two jobs: ease the rendered
+     * offset toward the target (wheel steps glide instead of jumping), and
+     * while a middle-press autoscroll is active move the rendered position
+     * continuously at a speed proportional to the cursor's distance from
+     * the press point — browser autoscroll feel, same direction (cursor
+     * below the anchor scrolls down), pixel-smooth at any speed.
+     */
+    private void tickScroll(double mouseY, Font font) {
+        long now = System.currentTimeMillis();
+        long dt = lastFrameMs < 0 ? 16 : Math.min(100, now - lastFrameMs);
+        lastFrameMs = now;
+        if (panActive && !rows.isEmpty()) {
+            double displacement = mouseY - panAnchorY;
+            double speed = 0.0;
+            if (Math.abs(displacement) > PAN_DEADZONE_PX) {
+                speed = Math.min(
+                        PAN_MAX_ROWS_PER_SEC,
+                        (displacement - Math.signum(displacement) * PAN_DEADZONE_PX) * PAN_ROWS_PER_SEC_PER_PX);
+            }
+            // Integrate the velocity straight into the rendered position, so
+            // rows slide pixel by pixel and slow autoscroll stays as smooth
+            // as fast; the integer target follows the rendered position.
+            renderOffset = Math.min(maxScrollRows(font),
+                    Math.max(0, renderOffset + speed * dt / 1000.0));
+            scrollOffset = (int) Math.round(renderOffset);
+        } else if (scrolling) {
+            renderOffset = scrollOffset;
+        } else {
+            renderOffset += (scrollOffset - renderOffset) * (1.0 - Math.exp(-dt / SCROLL_EASE_MS));
+            if (Math.abs(scrollOffset - renderOffset) < 0.01) {
+                renderOffset = scrollOffset;
+            }
+            int maxRows = maxScrollRows(font);
+            renderOffset = Math.min(maxRows, Math.max(0, renderOffset));
+        }
+    }
+
+    /**
+     * A hit target only while visible: the 1.21.11+ pipeline resolves a
+     * single click/scroll winner through {@code isMouseOver}, whose
+     * vanilla default ignores {@code visible}, so a hidden panel would
+     * otherwise swallow clicks and scrolls meant for the widgets sharing
+     * this rectangle.
+     */
+    @Override
+    public boolean isMouseOver(double mouseX, double mouseY) {
+        return visible && super.isMouseOver(mouseX, mouseY);
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         final MouseButtonEvent event = new MouseButtonEvent(mouseX, mouseY, button);
-        if (!visible || event.button() != 0) {
+        if (!visible || event.button() != InputConstants.MOUSE_BUTTON_LEFT) {
             return false;
         }
         if (!isMouseOver(mouseX, mouseY) || rows.isEmpty()) {
             return false;
         }
         Font font = Minecraft.getInstance().font;
+        // Pressing the scrollbar strip starts a thumb drag (vanilla
+        // AbstractScrollArea semantics). Returning true makes the container
+        // focus this panel and set the dragging flag, so the following left
+        // drags route back into {@link #mouseDragged} and the release into
+        // {@link #mouseReleased}.
+        if (overflows(font) && isOverScrollbar(mouseX, mouseY, font)) {
+            // Jump the thumb under the cursor, then drag it 1:1.
+            scrolling = true;
+            int trackLen = listBottom() - listTop(font);
+            int thumbHeight = Math.max(4, trackLen * trackLen / (rows.size() * ROW_HEIGHT));
+            int maxRows = maxScrollRows(font);
+            double target = (mouseY - listTop(font) - thumbHeight / 2.0) * maxRows
+                    / Math.max(1, trackLen - thumbHeight);
+            scrollOffset = (int) Math.round(Math.min(maxRows, Math.max(0, target)));
+            scrollDragRows = scrollOffset;
+            renderOffset = scrollOffset;
+            return true;
+        }
         int listTop = listTop(font);
         int listBottom = listBottom();
         if (mouseY < listTop || mouseY >= listBottom) {
             return false;
         }
-        int index = scrollOffset + (int) ((mouseY - listTop) / ROW_HEIGHT);
+        int index = (int) Math.floor(renderOffset) + (int) ((mouseY - listTop) / ROW_HEIGHT);
         if (index < 0 || index >= rows.size()) {
             return false;
         }
@@ -342,19 +490,101 @@ public final class BiomeSharePanel extends AbstractWidget {
         return true;
     }
 
+    /**
+     * Drags the scrollbar thumb. The container only relays drag events for
+     * the primary button while the dragging flag is set, which the press in
+     * {@link #mouseClicked} arranged; the per-frame {@code dragY} accumulates
+     * into a sub-row offset so slow drags are not lost to rounding. Outside
+     * the track the offset snaps to the nearest end (vanilla behavior).
+     */
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (!visible || !scrolling || button != InputConstants.MOUSE_BUTTON_LEFT) {
+            return false;
+        }
+        Font font = Minecraft.getInstance().font;
+        int listTop = listTop(font);
+        int listBottom = listBottom();
+        int trackLen = listBottom - listTop;
+        int thumbHeight = Math.max(4, trackLen * trackLen / (rows.size() * ROW_HEIGHT));
+        int maxRows = maxScrollRows(font);
+        if (mouseY < listTop) {
+            scrollDragRows = 0;
+        } else if (mouseY >= listBottom) {
+            scrollDragRows = maxRows;
+        } else {
+            // Rows per gui pixel such that the thumb tracks the cursor 1:1.
+            double rowsPerPx = maxRows / (double) Math.max(1, trackLen - thumbHeight);
+            scrollDragRows += dragY * rowsPerPx;
+        }
+        scrollDragRows = Math.min(maxRows, Math.max(0, scrollDragRows));
+        scrollOffset = (int) Math.round(scrollDragRows);
+        renderOffset = scrollOffset;
+        return true;
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (scrolling && button == InputConstants.MOUSE_BUTTON_LEFT) {
+            scrolling = false;
+            return true;
+        }
+        return false;
+    }
+
+    /** True when the table overflows the viewport and the scrollbar shows. */
+    private boolean overflows(Font font) {
+        int visible = Math.max(0, listBottom() - listTop(font));
+        return rows.size() * ROW_HEIGHT > visible && visible > 0;
+    }
+
+    /** The 6px hit strip covering the rendered scrollbar on the list's right edge. */
+    private boolean isOverScrollbar(double mouseX, double mouseY, Font font) {
+        int listTop = listTop(font);
+        int listBottom = listBottom();
+        return mouseX >= getX() + width - SCROLLBAR_HIT_WIDTH && mouseX <= getX() + width
+                && mouseY >= listTop && mouseY < listBottom;
+    }
+
+    /**
+     * Starts a middle-button autoscroll anchored at the given mouse Y.
+     * Returns false when the table cannot scroll (hidden or empty), so the
+     * caller can pass the press through. While the button is held, the
+     * render pass keeps scrolling at a speed proportional to the cursor's
+     * distance from the anchor — browser autoscroll feel. The screen routes
+     * the release: vanilla's container does not forward non-primary
+     * releases to the focused child.
+     */
+    public boolean beginScrollPan(double mouseY) {
+        if (!visible || rows.isEmpty()) {
+            return false;
+        }
+        panActive = true;
+        panAnchorY = mouseY;
+        return true;
+    }
+
+    /** Ends a middle-button autoscroll. */
+    public void endScrollPan() {
+        panActive = false;
+    }
+
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double deltaX, double deltaY) {
         if (!visible || rows.isEmpty() || !isMouseOver(mouseX, mouseY)) {
             return false;
         }
-        int steps = (int) deltaY;
+        int steps = (int) deltaY * WHEEL_STEP_ROWS;
         if (steps == 0 && deltaY != 0.0) {
-            steps = deltaY > 0 ? 1 : -1;
+            steps = deltaY > 0 ? WHEEL_STEP_ROWS : -WHEEL_STEP_ROWS;
+        }
+        if (panActive) {
+            // The wheel takes over, like a browser: cancel the autoscroll
+            // and apply the step to the position it leaves behind.
+            endScrollPan();
         }
         Font font = Minecraft.getInstance().font;
-        int visible = Math.max(0, listBottom() - listTop(font));
-        int maxOffset = Math.max(0, rows.size() * ROW_HEIGHT - visible);
-        scrollOffset = Math.min(maxOffset, Math.max(0, scrollOffset - steps));
+        scrollOffset = Math.min(maxScrollRows(font), Math.max(0, scrollOffset - steps));
         return true;
     }
 

@@ -38,4 +38,4 @@ class RegionAnalyzerTest {
         org.junit.jupiter.api.Assertions.assertEquals(100L, ins.classifiedSamples());
         org.junit.jupiter.api.Assertions.assertEquals(100L, ins.terrainCounts().get(TerrainCategory.UNKNOWN));
     }
-}
+}

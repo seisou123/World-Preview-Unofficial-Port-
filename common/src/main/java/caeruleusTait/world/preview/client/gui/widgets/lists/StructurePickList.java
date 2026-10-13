@@ -5,6 +5,7 @@ package caeruleusTait.world.preview.client.gui.widgets.lists;
 import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.gui.input.MouseButtonEvent;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
@@ -141,7 +142,7 @@ public class StructurePickList extends BaseObjectSelectionList<StructurePickList
         @Override
         public boolean mouseClicked(double mouseX, double mouseY, int button) {
             final MouseButtonEvent event = new MouseButtonEvent(mouseX, mouseY, button);
-            if (event.button() != 0) {
+            if (event.button() != InputConstants.MOUSE_BUTTON_LEFT) {
                 return false;
             }
             StructurePickList.this.minecraft.getSoundManager()

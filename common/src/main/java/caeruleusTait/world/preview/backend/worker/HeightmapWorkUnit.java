@@ -213,4 +213,9 @@ public class HeightmapWorkUnit extends WorkUnit {
     public long flags() {
         return PreviewStorage.FLAG_HEIGHT;
     }
+
+    @Override
+    public int coverageChunks() {
+        return numChunks;
+    }
 }

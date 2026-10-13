@@ -130,6 +130,17 @@ public class SeedSearchHistory {
         return entry.favorite;
     }
 
+    /** Removes every non-favorite entry. Returns the number of removed entries. */
+    public int clearNonFavorite() {
+        int before = entries.size();
+        entries.removeIf(entry -> !entry.favorite);
+        int removed = before - entries.size();
+        if (removed > 0) {
+            save();
+        }
+        return removed;
+    }
+
     /** Removes a seed from the store. Returns true when it existed. */
     public boolean remove(String seed) {
         boolean removed = entries.removeIf(entry -> entry.seed.equals(seed));

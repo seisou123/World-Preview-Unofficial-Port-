@@ -108,4 +108,4 @@ class BiomeRarityTest {
         assertTrue(BiomeRarity.topBiomes(Map.of(), id -> "x", 100L, 5).isEmpty());
         assertTrue(BiomeRarity.topBiomes(Map.of((short) 1, 1L), id -> "x", 1L, 0).isEmpty());
     }
-}
+}

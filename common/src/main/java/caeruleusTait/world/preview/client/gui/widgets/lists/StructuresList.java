@@ -8,6 +8,7 @@ import caeruleusTait.world.preview.client.gui.input.MouseButtonEvent;
 import caeruleusTait.world.preview.client.gui.widgets.ToggleButton;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.Util;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -231,7 +232,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             lastClickX = mouseX;
             lastClickY = mouseY;
             lastClickButton = button;
-            if (event.button() == 1 && onRightClick != null) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_RIGHT && onRightClick != null) {
                 // Right-click: open the seed search pre-filled with this structure
                 minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
                 onRightClick.accept(this);
@@ -242,7 +243,7 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
                 toggleVisible.onPress();
                 return true;
             }
-            if (doubleClick && event.button() == 0 && onDoubleClick != null) {
+            if (doubleClick && event.button() == InputConstants.MOUSE_BUTTON_LEFT && onDoubleClick != null) {
                 onDoubleClick.accept(this);
             }
             return true;

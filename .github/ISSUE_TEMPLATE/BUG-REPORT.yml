@@ -10,7 +10,7 @@ body:
         Please provide as much information as possible in order to help us address your issue!
 
         This tracker belongs to the **community fork** of World Preview, which supports Minecraft
-        **1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2 and 26.3** on **Fabric and NeoForge**. If you are running the original
+        **1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2 and 26.3** on **Fabric and NeoForge** (1.20.1 ships on **Forge**). If you are running the original
         mod (rather than this fork) on Minecraft 1.21 or older, please report your issue to the
         [original project](https://modrinth.com/mod/world-preview) instead.
   - type: textarea
@@ -47,6 +47,7 @@ body:
       options:
         - Fabric
         - NeoForge
+        - Forge
       default: 0
     validations:
       required: true
