@@ -100,8 +100,8 @@ preview's own biome colors, with a JSON legend next to the PNG), an optional con
 an optional coordinate grid. A grayscale heightmap PNG and per-category pixel counts in the
 sidecar JSON are opt-in, and biomes are sampled at the Y layer the preview is scrolled to. It can also walk every dimension of the seed in one batch, and the
 analysis screen's "Export This Region" action opens it prefilled with the analyzed area. Every
-completed export is appended to a history file, and the export screen browses its twelve most
-recent entries; clicking a row copies the exported file's absolute path. Output goes to
+completed export is appended to a history file, and the export screen browses the full history;
+clicking a row copies the exported file's absolute path. Output goes to
 `config/world_preview/terrain_exports/`. The plain "save the preview as PNG" button in
 the settings writes a JSON sidecar with the seed, dimension and view parameters next to the
 image.
