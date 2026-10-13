@@ -141,8 +141,7 @@ rather than finished.
 ### Taken over from the original unchanged
 
 - The biome, heightmap and Y-intersection views, and the structure visibility toggles.
-- The load order while dragging: biomes → structures → heightmap → intersections → adjacent
-  Y layers.
+- The layer load order: biomes → structures → heightmap → intersections → adjacent Y layers.
 - Click-and-drag panning, arrow-key panning, `Home` to recentre on the origin.
 - Persistent seed storage, biome highlighting, the cache for in-game and world-creation
   previews (with optional compression) and the thread-count setting.
@@ -167,9 +166,10 @@ configured in `Settings` (the wrench button, top-right over the map).
 
 ### Moving on the map
 
-- **Drag** the map to travel along X and Z. Dragging queues work in this order: biomes not yet
-  sampled on the current Y layer → structures (if enabled) → heightmap (if enabled) →
-  intersections (if enabled) → adjacent Y layers (if enabled).
+- **Drag** the map to travel along X and Z. While the mouse is held, the biome layer samples one
+  point per chunk and the detail layers — structures, heightmap, intersections and the adjacent
+  Y layers — wait; releasing re-samples the dragged area at full resolution and queues the
+  detail layers.
 - **Scroll** to zoom by default. `Ctrl`+scroll always zooms, `Alt`+scroll always moves along
   the Y axis; the behaviour of the bare wheel is a setting.
 - Moving along Y lets you see cave biomes. Note that non-cave biomes span the whole world
