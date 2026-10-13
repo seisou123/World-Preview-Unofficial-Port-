@@ -130,6 +130,14 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
                 SETTINGS_GENERAL_ZOOM_TOOLTIP,
                 val -> cfg.scrollWheelZooms = val);
         y += rowH;
+        y = addCheckboxRow(x, y, SETTINGS_GENERAL_OPEN_AT_PLAYER, cfg.openAtPlayer,
+                SETTINGS_GENERAL_OPEN_AT_PLAYER_TOOLTIP,
+                val -> cfg.openAtPlayer = val);
+        y += rowH;
+        y = addCheckboxRow(x, y, SETTINGS_GENERAL_HOVER_NOISE, cfg.hoverNoiseValues,
+                SETTINGS_GENERAL_HOVER_NOISE_TOOLTIP,
+                val -> cfg.hoverNoiseValues = val);
+        y += rowH;
 
         // ===== Section 3: Other =====
         y += 8;
@@ -268,6 +276,9 @@ Minecraft.getInstance().player.sendSystemMessage(resultMsg);
         cfg.showStatistics = defaults.showStatistics;
         cfg.showCoordinates = defaults.showCoordinates;
         cfg.scrollWheelZooms = defaults.scrollWheelZooms;
+        cfg.dragDownsamples = defaults.dragDownsamples;
+        cfg.openAtPlayer = defaults.openAtPlayer;
+        cfg.hoverNoiseValues = defaults.hoverNoiseValues;
         cfg.enablePreload = defaults.enablePreload;
         cfg.preloadOnlyWhenIdle = defaults.preloadOnlyWhenIdle;
         cfg.preloadRadius = defaults.preloadRadius;

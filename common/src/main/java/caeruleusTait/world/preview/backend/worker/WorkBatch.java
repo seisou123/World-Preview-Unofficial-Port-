@@ -31,15 +31,33 @@ public class WorkBatch {
     // cancelled batches to continue processing.
     private volatile boolean isCanceled = false;
 
+    // Set by process() on every exit path (success, failure, cancel).  The
+    // queue pass uses it to prune batches that no longer have a future:
+    // differential cancel keeps overlapping batches in currentBatches, and
+    // without this flag a finished (or failed) batch would stay there forever,
+    // counting as active and poisoning the in-flight chunk set.
+    private volatile boolean finished = false;
+
     // TaskGroup adapter: wraps the batch's work units for group-level operations.
     private final TaskGroup taskGroup;
 
     // Write-side staleness guard (attached by WorkManager): results computed
     // for a worldgen context that has since been replaced (seed/dimension/
     // generator switch or shutdown) must never be written into the new
-    // context's storage.
-    private LongSupplier epochSupplier;
+    // context's storage.  Volatile: read from whatever thread runs the batch;
+    // WorkManager attaches it before submission, whose happens-before edge
+    // already publishes it - the volatile keeps that invariant local instead
+    // of relying on executor semantics.
+    private volatile LongSupplier epochSupplier;
     private long epochAtQueue = Long.MIN_VALUE;
+
+    // Drag-tier staleness guard (attached by WorkManager for batches
+    // carrying drag-tier coarse units): a batch that outlives its drag
+    // session must not write coarse results or grant coarse completion
+    // marks after the release pass has started refining.  Volatile for the
+    // same reason as epochSupplier.
+    private volatile LongSupplier tierSupplier;
+    private long tierAtQueue = Long.MIN_VALUE;
 
     public WorkBatch(List<WorkUnit> workUnits, Object completedSynchro, PreviewData previewData) {
         this.workUnits = workUnits;
@@ -72,6 +90,17 @@ public class WorkBatch {
         return epochSupplier != null && epochSupplier.getAsLong() != epochAtQueue;
     }
 
+    /** Attaches the drag-tier staleness guard. Called by WorkManager before submission. */
+    public void attachTierGuard(LongSupplier tierSupplier, long tierAtQueue) {
+        this.tierSupplier = tierSupplier;
+        this.tierAtQueue = tierAtQueue;
+    }
+
+    /** True when the drag-tier generation changed since this batch was queued. */
+    private boolean isTierStale() {
+        return tierSupplier != null && tierSupplier.getAsLong() != tierAtQueue;
+    }
+
     public void process() {
         try {
             if (isCanceled()) {
@@ -80,9 +109,10 @@ public class WorkBatch {
 
             // 1. Run work units collecting results; check isCanceled in loop.
             // On cancellation, break instead of returning so work that already
-            // finished is not dropped: batches are canceled at the start of
-            // every queue pass (drags re-queue every ~50ms), so dying with
-            // finished units in hand is the common case, not the exception.
+            // finished is not dropped: a differential re-queue cancels only
+            // batches whose chunks all left the viewport, but drags still
+            // re-queue every ~50ms, so dying with finished units in hand is
+            // the common case, not the exception.
             // Units interrupted mid-sampling are excluded from markCompleted:
             // their partial writes are idempotent, but only fully-run units may
             // receive the completed bit ("completed => all quarts sampled").
@@ -111,25 +141,63 @@ public class WorkBatch {
                 return;
             }
 
-            // 2. Apply results first — on failure, do NOT mark completed so work can be retried
-            try {
-                applyChunkResult(res);
-            } catch (Exception e) {
-                LOGGER.error("Failed to apply chunk results; leaving work units incomplete for retry", e);
+            // 1.6. Discard results from a drag session that has already
+            // ended: the release pass drops the coarse completion marks and
+            // re-samples at full resolution, so a late coarse batch must not
+            // re-mark them.
+            if (isTierStale()) {
+                LOGGER.info("Discarding {} work result(s): drag sampling tier changed since queueing",
+                        res.size());
                 return;
             }
 
-            // 3. Only mark completed after successful apply, and only for units
-            // that ran to completion
+            // 2. Apply results and grant completions as ONE critical section
+            // under completedSynchro — the same lock the drag-tier release
+            // sweep takes (WorkManager.exitDragTier).  Both staleness guards
+            // are re-checked INSIDE the lock and the whole write is skipped
+            // when either moved: a batch preempted between the checks above
+            // and this block could otherwise apply coarse values after the
+            // release sweep had already run — leaving coarse fill masked
+            // behind a fine completion bit that nothing re-samples.  Under the
+            // lock both orders are safe: either the sweep runs after this
+            // block and clears every coarse mark it granted (and the fine
+            // marks of the chunks it touched), or this block observes the
+            // bumped epoch and discards itself without writing anything.
+            // On apply failure, do NOT mark completed so work can be retried.
             synchronized (completedSynchro) {
+                if (isStale() || isTierStale()) {
+                    LOGGER.info("Discarding {} work result(s): superseded before publish", res.size());
+                    return;
+                }
+                try {
+                    applyChunkResult(res);
+                } catch (Exception e) {
+                    LOGGER.error("Failed to apply chunk results; leaving work units incomplete for retry", e);
+                    return;
+                }
                 doneUnits.forEach(WorkUnit::markCompleted);
             }
 
-            // 4. Notify the render thread that new data was written
+            // 3. Notify the render thread that new data was written
             workUnits.get(0).storage.notifyWrite();
         } catch (Exception e) {
             LOGGER.error("WorkBatch process failed", e);
+        } finally {
+            // Terminal on every exit path: success, failed apply (retry comes
+            // from a later pass re-queueing these chunks), cancellation and
+            // staleness discards.
+            finished = true;
         }
+    }
+
+    /**
+     * True once {@link #process()} has run to any exit (success, failure,
+     * cancellation or stale discard).  A finished batch must never be treated
+     * as in-flight again: its chunks are either completed (storage probe will
+     * skip them) or failed (a later pass must be able to re-queue them).
+     */
+    public boolean isFinished() {
+        return finished;
     }
 
     private void applyChunkResult(List<WorkResult> workResultList) {

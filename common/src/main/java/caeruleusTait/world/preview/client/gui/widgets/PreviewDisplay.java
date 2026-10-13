@@ -289,6 +289,13 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     // guarantee requires the full path.
     private QueueGenerationKey lastQueueKey = null;
 
+    // Drag state of the last queueGeneration frame (see queueGeneration):
+    // the false->true->false flip drives WorkManager's deferred
+    // detail-layer queuing and the release-time queue-key invalidation.
+    private boolean dragDeferredLayersState = false;
+    /** Latches the drag fast-mode across a whole physical drag (see queueGeneration). */
+    private boolean dragLatchActive = false;
+
     // --- Viewport force-load safety net ---
     // When sampling is fully idle but the visible viewport still contains
     // chunks without completed biome sampling (lost pending handoff in
@@ -755,7 +762,15 @@ resizeImage();
         int ddx = b.getX() - a.getX();
         int ddz = b.getZ() - a.getZ();
         int dist = (int) Math.round(Math.sqrt((double) ddx * ddx + (double) ddz * ddz));
-        String text = String.format("%dm §7(Δ %d, %d)§r", dist, ddx, ddz);
+        // Height difference from the same storage-backed probe the hover uses;
+        // omitted (not "0") when either endpoint's column is unsampled.
+        HoverInspector.HoverInfo ha = hoverInspector.heightProbeAt(sa.getX(), sa.getZ());
+        HoverInspector.HoverInfo hb = hoverInspector.heightProbeAt(sb.getX(), sb.getZ());
+        String dhPart = "";
+        if (ha != null && hb != null && ha.height() != Short.MIN_VALUE && hb.height() != Short.MIN_VALUE) {
+            dhPart = String.format(", Δh §b%+d§r", hb.height() - ha.height());
+        }
+        String text = String.format("%dm §7(Δ %d, %d%s)§r", dist, ddx, ddz, dhPart);
         int lx = (sa.getX() + sb.getX()) / 2;
         int ly = (sa.getZ() + sb.getZ()) / 2 - 12;
         guiGraphics.fill(lx - 2, ly - 1, lx + minecraft.font.width(text) + 2, ly + minecraft.font.lineHeight, 0x99000000);
@@ -856,6 +871,42 @@ resizeImage();
                                       int quartExpand, int quartStride, int preload) {}
 
     void queueGeneration() {
+        // === Deferred detail layers while dragging ===
+        // During a drag only the biome layer is queued (see
+        // WorkManager.setDeferredLayersWhileDragging): the base map appears
+        // almost synchronously with the cursor and the heightmap/structure
+        // layers wait for release.  The state flip must also run on
+        // throttled drag frames, so it sits above the drag-queue throttle
+        // below.
+        // Latch the drag fast-mode for the WHOLE physical drag: totalDrag can
+        // return to exactly zero while the button is still held (dragging back
+        // to the origin), and the raw predicate would then flip the mode off
+        // and on again mid-drag — cancelling every in-flight batch and arming a
+        // coarse sweep on each flicker.  The latch releases only when the
+        // button is released (clicked == false).
+        if (isDragging()) {
+            dragLatchActive = true;
+        }
+        if (!interaction.isClicked()) {
+            dragLatchActive = false;
+        }
+        final boolean dragging = dragLatchActive && interaction.isClicked();
+        if (dragging != dragDeferredLayersState) {
+            dragDeferredLayersState = dragging;
+            workManager.setDeferredLayersWhileDragging(dragging);
+            if (!dragging) {
+                // Leaving the drag fast-mode consumed both dedup guards while
+                // dragging (the biome-only passes recorded the viewport and
+                // its key); the release must re-issue the unchanged viewport
+                // so the deferred detail layers and the full-resolution
+                // re-sampling of the coarse fill are guaranteed to be queued —
+                // including releases that arrive through paths which never
+                // reset the guards themselves (a cancelled drag below the
+                // click threshold, or an interrupted press).
+                lastQueueKey = null;
+                lastQueuedRange = null;
+            }
+        }
         // Live drag center so newly revealed areas start sampling while the user
         // still holds the mouse.  Throttle during drag (50ms) so we do not cancel
         // worker batches every pixel; WorkManager still collapses rapid range
@@ -875,18 +926,22 @@ resizeImage();
             // the early queue's in-flight work and restarts sampling from
             // scratch — a major cause of the "black screen until drag" bug.
             // BUG FIX: the busy check must also treat a queue pass that is
-            // still CREATING its batches as busy.  queueRangeReal clears
-            // currentBatches before rebuilding them, which for large viewports
-            // takes tens of milliseconds — several frames observe
-            // activeBatchCount()==0 during that window, flip preload from 0 to
-            // the full radius, and the viewport range starts oscillating
+            // still CREATING its batches as busy.  A pass building its batches
+            // for a large viewport takes tens of milliseconds — several frames
+            // observe no running work during that window, flip preload from 0
+            // to the full radius, and the viewport range starts oscillating
             // between "with preload" and "without".  Each new pass cancels the
             // previous one's batches mid-flight, workers never finish anything
             // and the map never loads (log shows alternating
             // "Queued N {early abort}" / "Queued N+ring" lines several times
-            // per second).  isQueueRunning() spans that whole window.
+            // per second).  isIdle() spans that whole window via its
+            // isQueueRunning() check.  It is deliberately used instead of
+            // activeBatchCount(): differential cancel retains finished batches
+            // in the tracked set until the next pass prunes them, so
+            // activeBatchCount can stay > 0 while nothing is actually running,
+            // which would pin preload at 0 forever.
             if (config.preloadOnlyWhenIdle && workManager.isSetup()
-                    && (workManager.isQueueRunning() || workManager.activeBatchCount() > 0)) {
+                    && !workManager.isIdle()) {
                 preload = 0;
             } else {
                 preload = config.preloadRadius;
@@ -1004,7 +1059,12 @@ resizeImage();
         }
         final int w = map.worldMaxX() - map.worldMinX();
         final int h = map.worldMaxZ() - map.worldMinZ();
-        final int yQuart = QuartPos.fromBlock(center().getY());
+        // Full-vertical units anchor their completed bits at y == 0 (the same
+        // layer the queue-side probe consults); probing the view layer there
+        // would never see a completion and the force-requeue safety net would
+        // spin on an already-sampled viewport.
+        final int probeY = config.buildFullVertChunk ? 0 : center().getY();
+        final int yQuart = QuartPos.fromBlock(probeY);
         for (int ix = 0; ix <= 2; ix++) {
             for (int iz = 0; iz <= 2; iz++) {
                 final int qx = QuartPos.fromBlock(map.worldMinX() + (w * ix) / 2);
@@ -1036,6 +1096,14 @@ resizeImage();
 
     @Override
     public boolean isMouseOver(double mouseX, double mouseY) {
+        // A hidden map is never a hit target: the 1.21.11+ pipeline
+        // resolves click and scroll winners through isMouseOver, whose
+        // vanilla default ignores `visible`, so the hidden map would
+        // claim the analysis screen's whole content rectangle on its
+        // chart tabs.
+        if (!visible) {
+            return false;
+        }
         if (!super.isMouseOver(mouseX, mouseY)) {
             return false;
         }

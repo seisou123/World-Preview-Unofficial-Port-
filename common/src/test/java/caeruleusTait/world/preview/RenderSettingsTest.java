@@ -4,6 +4,8 @@ import net.minecraft.resources.Identifier;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
@@ -15,6 +17,21 @@ import static org.junit.jupiter.api.Assertions.assertSame;
  * keeps valid values untouched.
  */
 class RenderSettingsTest {
+
+    @Test
+    void centerInitializedSurvivesCopyAndApply() {
+        // Headless-safe: the flag is set by resetCenter/centerOn in-game, but
+        // those need the live WorldPreview; here the flag is set directly and
+        // only the copy/apply transport is under test.
+        RenderSettings source = RenderSettings.defaults();
+        source.centerInitialized = true;
+        assertTrue(source.copy().centerInitialized, "copy() must carry centerInitialized");
+
+        RenderSettings target = RenderSettings.defaults();
+        target.apply(source);
+        assertTrue(target.centerInitialized, "apply() must carry centerInitialized (config load path)");
+        assertFalse(RenderSettings.defaults().centerInitialized, "defaults stay unplaced");
+    }
 
     @Test
     void renderOnlyLevelsKeepQuartStrideAtOne() {

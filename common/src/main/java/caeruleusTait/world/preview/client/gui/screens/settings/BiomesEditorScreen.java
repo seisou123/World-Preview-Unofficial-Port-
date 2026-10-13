@@ -4,6 +4,7 @@ import caeruleusTait.world.preview.client.gui.screens.PreviewContainer;
 import caeruleusTait.world.preview.backend.color.PreviewData;
 import caeruleusTait.world.preview.client.gui.screens.settings.BiomesTab;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -31,6 +32,8 @@ public class BiomesEditorScreen extends Screen {
     private final BiomesTab biomesTab;
     private final java.util.Map<Identifier, BiomesList.BiomeEntry.State> initialStates = new java.util.HashMap<>();
     private GridLayout bottomButtons;
+    /** True between a middle-press autoscroll start on the biome list and its release. */
+    private boolean listPanActive;
 
     public BiomesEditorScreen(Screen parent, PreviewContainer previewContainer) {
         this(parent, previewContainer, null);
@@ -97,5 +100,34 @@ public class BiomesEditorScreen extends Screen {
     public void onClose() {
         // Keep edits in the parent settings session; SettingsScreen restores them on Cancel.
         this.minecraft.gui.setScreen(parent);
+    }
+
+    @Override
+    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+        // A middle press on the biome list starts a browser-style autoscroll
+        // (the list ticks it from its render pass, so it keeps scrolling while
+        // the mouse holds still). The screen only routes the release: vanilla's
+        // container does not forward non-primary releases to the focused child.
+        BiomesList list = biomesTab.biomesList();
+        if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE
+                && list.visible
+                && list.isMouseOver(event.x(), event.y())
+                && list.beginScrollPan(event.y())) {
+            listPanActive = true;
+            return true;
+        }
+        return super.mouseClicked(event, doubleClick);
+    }
+
+    @Override
+    public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+        if (listPanActive) {
+            listPanActive = false;
+            biomesTab.biomesList().endScrollPan();
+            if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        return super.mouseReleased(event);
     }
 }

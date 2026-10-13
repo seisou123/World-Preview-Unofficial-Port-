@@ -109,4 +109,4 @@ class SeedSearchHistoryTest {
         assertEquals(SeedSearchHistory.MAX_ENTRIES, history.size());
         assertNotNull(history.find("favorite-seed"), "favorites survive trimming");
     }
-}
+}

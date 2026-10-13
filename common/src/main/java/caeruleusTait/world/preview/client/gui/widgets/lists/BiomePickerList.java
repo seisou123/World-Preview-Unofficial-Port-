@@ -3,6 +3,7 @@
 package caeruleusTait.world.preview.client.gui.widgets.lists;
 
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Tooltip;
@@ -222,7 +223,7 @@ public class BiomePickerList extends BaseObjectSelectionList<BiomePickerList.Row
 
         @Override
         public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
-            if (event.button() != 0) {
+            if (event.button() != InputConstants.MOUSE_BUTTON_LEFT) {
                 return false;
             }
             BiomePickerList.this.minecraft.getSoundManager()

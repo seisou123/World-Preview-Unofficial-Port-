@@ -241,6 +241,11 @@ public class BiomesTab implements Tab {
         return SETTINGS_BIOMES_TITLE;
     }
 
+    /** The tab's biome list, for the host screen's middle-press autoscroll routing. */
+    public BiomesList biomesList() {
+        return biomesList;
+    }
+
     @Override
     public void visitChildren(Consumer<AbstractWidget> consumer) {
         toRender.forEach(consumer);
