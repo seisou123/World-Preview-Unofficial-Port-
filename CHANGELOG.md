@@ -11,6 +11,7 @@
 
 ### Improvements
 
+- While the map is dragged, the biome layer now samples one sample per chunk and the detail layers (structures, heightmap, intersections and the adjacent Y layers) wait for the drag to end; the coarsely filled area is re-sampled at full resolution in place on release. The behaviour is on by default and has no setting of its own yet
 - Reworked the terrain map export screen layout: settings, status and the category legend now sit in outlined panels matching the seed search and analysis screens, the export/settings tab pair is gone, the layout no longer overflows small gui heights such as GUI scale 4, and the progress bar keeps showing its percentage and coloring failures red
 - A refused export start now reports the reason instead of doing nothing
 - A batch export no longer aborts the remaining dimensions when one dimension fails, and batch runs now show elapsed and remaining time like single-dimension exports
