@@ -166,6 +166,17 @@ public final class HeightHistogramChart extends AbstractWidget {
         graphics.text(font, line, boxX + 4, boxY + 2, TOOLTIP_TEXT);
     }
 
+    /**
+     * Display-only: never a hit target. The 1.21.11+ pipeline resolves a
+     * single click/scroll winner through {@code isMouseOver} with no
+     * fallthrough, so a covering chart must not claim hits; the tooltip
+     * reads the render-pass mouse position, not hit testing.
+     */
+    @Override
+    public boolean isMouseOver(double mouseX, double mouseY) {
+        return false;
+    }
+
     @Override
     public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
         // Display-only: never consume clicks that should reach other widgets.

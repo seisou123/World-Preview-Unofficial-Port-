@@ -360,7 +360,7 @@ public class SampleUtils implements AutoCloseable {
                         try {
                             Util.copyBetweenDirs(tempDataPackDir, dataPackDir, x);
                         } catch (IOException e) {
-                            e.printStackTrace();
+                            LOGGER.error("Failed to copy datapack entry {} into the preview world", x, e);
                         }
                     });
                 }

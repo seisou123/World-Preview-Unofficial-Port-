@@ -96,6 +96,9 @@ public class HeightmapWorkUnit extends WorkUnit {
         // Descend block by block from the top of the effective range; a point
         // leaves the active set as soon as its column hits an opaque state.
         // (Aquifer here is EmptyAquifer: null density result means solid.)
+        // Cancellation is checked at the outer Y boundary only; the inner
+        // point loop cannot abort early (partial columns would corrupt the
+        // compaction below), so a spot check there would only add cost.
         for (int y = effMaxY; y >= effMinY && count > 0 && !isCanceled(); --y) {
             for (int idx = 0; idx < count; ++idx) {
                 float density = finalDensity.sampleValue(xs[idx], y, zs[idx]);
@@ -158,5 +161,10 @@ public class HeightmapWorkUnit extends WorkUnit {
     @Override
     public long flags() {
         return PreviewStorage.FLAG_HEIGHT;
+    }
+
+    @Override
+    public int coverageChunks() {
+        return numChunks;
     }
 }

@@ -8,7 +8,7 @@ Each modified file carries a prominent header notice referencing this file.
 
 ---
 
-## Modified Java Source Files (57)
+## Modified Java Source Files (60)
 
 These files existed in the original project and have been modified for this fork.
 
@@ -36,6 +36,7 @@ These files existed in the original project and have been modified for this fork
 - `common/src/main/java/caeruleusTait/world/preview/backend/storage/PreviewSectionFull.java`
 - `common/src/main/java/caeruleusTait/world/preview/backend/storage/PreviewSectionHalf.java`
 - `common/src/main/java/caeruleusTait/world/preview/backend/storage/PreviewSectionQuarter.java`
+- `common/src/main/java/caeruleusTait/world/preview/backend/storage/PreviewSectionStructure.java`
 - `common/src/main/java/caeruleusTait/world/preview/backend/storage/PreviewStorage.java`
 - `common/src/main/java/caeruleusTait/world/preview/backend/storage/PreviewStorageCacheManager.java`
 
@@ -65,6 +66,7 @@ These files existed in the original project and have been modified for this fork
 - `fabric/src/main/java/caeruleusTait/world/preview/client/WorldPreviewClient.java`
 - `neoforge/src/main/java/caeruleusTait/world/preview/client/WorldPreviewClient.java`
 - `common/src/main/java/caeruleusTait/world/preview/client/WorldPreviewComponents.java`
+- `common/src/main/java/caeruleusTait/world/preview/client/gui/PreviewDisplayDataProvider.java`
 
 ### Client — GUI Screens
 - `common/src/main/java/caeruleusTait/world/preview/client/gui/screens/InGamePreviewScreen.java`
@@ -88,10 +90,11 @@ These files existed in the original project and have been modified for this fork
 - `common/src/main/java/caeruleusTait/world/preview/mixin/StructureTemplatePaletteMixin.java`
 - `common/src/main/java/caeruleusTait/world/preview/mixin/client/CreateWorldScreenAccessor.java`
 - `common/src/main/java/caeruleusTait/world/preview/mixin/client/CreateWorldScreenMixin.java`
+- `common/src/main/java/caeruleusTait/world/preview/mixin/client/TabManagerMixin.java`
 
 ---
 
-## Modified Resource Files (8)
+## Modified Resource Files (12)
 
 - `fabric/src/main/resources/fabric.mod.json`
 - `fabric/src/main/resources/world_preview.accesswidener`
@@ -101,6 +104,10 @@ These files existed in the original project and have been modified for this fork
 - `common/src/main/resources/assets/world_preview/lang/pt_pt.json`
 - `common/src/main/resources/assets/world_preview/lang/ru_ru.json`
 - `common/src/main/resources/assets/world_preview/lang/zh_cn.json`
+- `common/src/main/resources/assets/world_preview/icon.png` — replaced with this fork's icon
+- `neoforge/src/main/resources/META-INF/accesstransformer.cfg` — converted from the Fabric access widener; neither the upstream BeardifierMarker nor the Tooltip constructor entry is carried on this version
+- `common/src/main/resources/data/c/tags/worldgen/structure/display_on_map_by_default.json` — marks `minecraft:trial_chambers` as `required: false` so the tag also loads where that structure does not exist
+- upstream's `assets/world_preview/shaders/core/hsv.fsh` and `hsv.json` — not carried over: an unused core-shader pair this fork's renderer does not reference
 
 ---
 

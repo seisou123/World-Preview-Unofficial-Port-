@@ -98,6 +98,9 @@ public class IntersectionWorkUnit extends WorkUnit {
         for (int yTemp = yMin; yTemp <= yMax && !isCanceled(); yTemp += yStride) {
             final int y = Math.min(yTemp, yMax - 1);
             final WorkResult res = results.get((yTemp - yMin) / yStride);
+            // Cancellation is checked once per Y level at the loop head; the
+            // per-point body only appends to this level's result, so a spot
+            // check inside it would buy nothing.
             for (int i = 0; i < count; ++i) {
                 float density = finalDensity.sampleValue(xs[i], y, zs[i]);
                 BlockState blockState = aquifer.computeSubstance(xs[i], y, zs[i], density);
@@ -125,5 +128,10 @@ public class IntersectionWorkUnit extends WorkUnit {
     @Override
     public long flags() {
         return PreviewStorage.FLAG_INTERSECT;
+    }
+
+    @Override
+    public int coverageChunks() {
+        return numChunks;
     }
 }

@@ -199,6 +199,23 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
     }
 
     /**
+     * Structural inputs this tab contributes to the preview setup (datapack
+     * lists, feature flags, world preset).  Exposed for the container's
+     * setup-fingerprint gate so a redundant updateSettings chain can skip the
+     * rebuild instead of tearing down a healthy WorkManager.
+     */
+    @Override
+    public Object worldgenStructuralFingerprint() {
+        try {
+            return currentFingerprint(uiState.getSettings().dataConfiguration());
+        } catch (RuntimeException e) {
+            // UI state not fingerprintable yet: differ on purpose so the
+            // container takes the conservative full-rebuild path.
+            return new Object();
+        }
+    }
+
+    /**
      * Full sandbox load, unchanged from the original previewWorldCreationContext()
      * body. The result only depends on the datapack configuration plus the
      * world type preset; the seed is just an options component.
@@ -273,7 +290,7 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
             return;
         }
         minecraft.gui.setScreen(new PreviewCacheLoadingScreen(SAVING_PREVIEW));
-        writeCacheFile(previewContainer.workManager().previewStorage(), cacheDir().resolve(filename(seed)));
+        writeCacheFile(storage, cacheDir().resolve(filename(seed)));
         previewContainer.setCacheLoading(true);
         minecraft.gui.setScreen(createWorldScreen);
         previewContainer.setCacheLoading(false);

@@ -17,8 +17,10 @@ import java.util.Set;
  * via a {@link ModCompat} record that specifies adapter factories
  * and optional configuration overrides.
  *
- * <p>Mods registered here are automatically detected and applied
- * when their ChunkGenerator is encountered during sampling.
+ * <p>Registration is currently groundwork: the sampling pipeline consults
+ * only the selected adapter's capability flags (which match the vanilla
+ * adapter's flags for every built-in entry), so none of these entries
+ * change sampling behaviour yet.
  */
 public final class KnownModCompat {
     private static final Logger LOGGER = LoggerFactory.getLogger("world_preview_known_compat");
@@ -80,7 +82,9 @@ public final class KnownModCompat {
 
                     @Override
                     public short[][] generateBiomes(caeruleusTait.world.preview.backend.analysis.WorldgenContext ctx, int chunkX, int chunkZ) {
-                        // Delegate to SampleUtils for actual biome sampling
+                        // Stub: adapters are not wired into sampling yet.  Do not
+                        // enable this without a real implementation - an all-zero
+                        // array would blank out the mod's biomes.
                         return new short[4][4];
                     }
 

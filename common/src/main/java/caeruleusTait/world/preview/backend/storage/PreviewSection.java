@@ -40,6 +40,13 @@ public abstract class PreviewSection {
 
     private final BitSet completed = new BitSet(SECTION_SIZE * HALF_SIZE);
 
+    // Drag-tier completion marks: completion granted to units sampled with
+    // the drag-time coarse sampler.  Kept separate from {@link #completed}
+    // so the coarse marks can be dropped in one sweep on drag release
+    // without touching fine completions; they are session-local and never
+    // serialized.
+    private final BitSet coarseCompleted = new BitSet(SECTION_SIZE * HALF_SIZE);
+
     protected PreviewSection(int quartX, int quartZ) {
         this.quartX = quartX & MASK;
         this.quartZ = quartZ & MASK;
@@ -205,7 +212,22 @@ public abstract class PreviewSection {
      * Chunk coords
      */
     public synchronized boolean isCompleted(ChunkPos chunkPos) {
-        return completed.get((chunkPos.x() - chunkX) * SECTION_SIZE + (chunkPos.z() - chunkZ));
+        return completed.get((chunkPos.x() - chunkX) * SECTION_SIZE + (chunkPos.z() - chunkZ))
+                || coarseCompleted.get((chunkPos.x() - chunkX) * SECTION_SIZE + (chunkPos.z() - chunkZ));
+    }
+
+    /**
+     * Chunk coords.  Like {@link #isCompleted} but also requires that the
+     * chunk was NOT touched by the drag tier: coarse sampling overwrites a
+     * chunk's sixteen quarts with one sample, so a chunk carrying both a fine
+     * and a coarse mark may hold coarse values under a fine completion (the
+     * two units raced the drag edge).  Consumers that treat a stored value as
+     * ground truth (analysis fact reuse, terrain export probes) use this
+     * variant so such a chunk is re-sampled instead of trusted.
+     */
+    public synchronized boolean isCompletedFine(ChunkPos chunkPos) {
+        final int index = (chunkPos.x() - chunkX) * SECTION_SIZE + (chunkPos.z() - chunkZ);
+        return completed.get(index) && !coarseCompleted.get(index);
     }
 
     /**
@@ -213,6 +235,34 @@ public abstract class PreviewSection {
      */
     public synchronized void markCompleted(ChunkPos chunkPos) {
         completed.set((chunkPos.x() - chunkX) * SECTION_SIZE + (chunkPos.z() - chunkZ));
+    }
+
+    /**
+     * Chunk coords.  Completion granted to a unit sampled with the drag-tier
+     * coarse sampler.  {@link #isCompleted} reports it so the queue probe
+     * stays accurate while dragging; {@link #clearCoarseCompletions} drops
+     * the marks on release so the fine pass re-samples those chunks.
+     */
+    public synchronized void markCompletedCoarse(ChunkPos chunkPos) {
+        coarseCompleted.set((chunkPos.x() - chunkX) * SECTION_SIZE + (chunkPos.z() - chunkZ));
+    }
+
+    /**
+     * Drops every drag-tier completion mark, and with each of them the fine
+     * completion of the same chunk.  The chunk must be re-sampled at full
+     * resolution after a drag touched it: coarse sampling overwrote all
+     * sixteen of its quarts with one sample, and while a coarse-marked chunk
+     * normally carries no fine mark (the queue probe skips fine-completed
+     * chunks), a fine unit that raced the drag edge can have granted one
+     * anyway — leaving the coarse values masked behind a fine completion and
+     * never re-sampled.  Chunks the drag never touched keep their fine marks
+     * untouched.
+     */
+    public synchronized void clearCoarseCompletions() {
+        for (int i = coarseCompleted.nextSetBit(0); i >= 0; i = coarseCompleted.nextSetBit(i + 1)) {
+            completed.clear(i);
+        }
+        coarseCompleted.clear();
     }
 
     public AccessData calcQuartOffsetData(int minQuartX, int minQuartZ, int maxQuartX, int maxQuartZ) {

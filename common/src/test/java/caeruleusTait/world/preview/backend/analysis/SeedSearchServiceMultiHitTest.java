@@ -141,4 +141,4 @@ class SeedSearchServiceMultiHitTest {
         assertInstanceOf(SeedSearchResult.Hit.class, resultRef.get());
         assertTrue(((SeedSearchResult.Hit) resultRef.get()).score() > 0);
     }
-}
+}

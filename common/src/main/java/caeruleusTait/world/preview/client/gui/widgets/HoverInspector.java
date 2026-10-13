@@ -72,7 +72,8 @@ class HoverInspector {
     // rebuild automatically; textWidth is the panel wrap width so a widget
     // resize (different GUI scale / panel size) also rebuilds.
     private record TooltipKey(int kind, int x, int y, int z, int height,
-                              String name, boolean showControls, String language, int textWidth) {}
+                              String name, boolean showControls, boolean hoverNoise,
+                              String language, int textWidth) {}
 
     // Fully resolved tooltip: built text plus its final panel layout
     // (newline split + font wrapping + panel sizing).  The cursor
@@ -182,6 +183,19 @@ class HoverInspector {
         if (!shouldShowHoverData(mouseX, mouseY)) {
             return null;
         }
+        return queryHover(mouseX, mouseY);
+    }
+
+    /**
+     * Ungated hover query for overlays that already hold valid map positions
+     * (the measure tool's Δh): answers even when the cursor is elsewhere, so
+     * an active measurement never loses its height readout.
+     */
+    HoverInfo heightProbeAt(double mouseX, double mouseY) {
+        return queryHover(mouseX, mouseY);
+    }
+
+    private HoverInfo queryHover(double mouseX, double mouseY) {
         final Minecraft minecraft = host.minecraft();
         int guiScale = (int) minecraft.getWindow().getGuiScale();
         final double scaleBlockPos = host.scaleBlockPos();
@@ -366,9 +380,9 @@ class HoverInspector {
 
     /**
      * Builds the Level-2 tooltip cache key from the current hover state.
-     * Everything that can change the rendered tooltip is part of the key;
-     * anything not in the key (temperature/noise values, hover list entries
-     * beyond the first structure) does not affect the tooltip text.
+     * Everything that can change the rendered tooltip is part of the key
+     * (including the opt-in noise values); hover list entries beyond the
+     * first structure do not affect the text.
      */
     private TooltipKey buildTooltipKey(List<StructHoverHelperEntry> structuresInfos,
                                        HoverInfo hoverInfo,
@@ -396,7 +410,7 @@ class HoverInspector {
             height = hoverInfo.height;
             name = hoverInfo.entry == null ? null : hoverInfo.entry.name();
         }
-        return new TooltipKey(kind, x, y, z, height, name, config.showControls,
+        return new TooltipKey(kind, x, y, z, height, name, config.showControls, config.hoverNoiseValues,
                 host.minecraft().getLanguageManager().getSelected(), layoutTextWidth());
     }
 
@@ -425,7 +439,8 @@ class HoverInspector {
                 );
             }
         } else {
-            // Hover panel: biome + coords + height only (noise values removed).
+            // Hover panel: biome + coords + height; the seven noise values are
+            // already computed for every hover and shown behind an opt-in.
             // When controls are enabled, only the zoom hint is appended via lang.
             String height = hoverInfo.height > Short.MIN_VALUE ? String.format("§b%d§r", hoverInfo.height) : "§7<N/A>§r";
 
@@ -445,7 +460,17 @@ class HoverInspector {
                 );
             }
         }
+        if (config.hoverNoiseValues && hoverInfo != null) {
+            ((net.minecraft.network.chat.MutableComponent) tooltipComponent).append(Component.translatable(
+                    "world_preview.preview-display.tooltip.noise",
+                    noise(hoverInfo.temperature), noise(hoverInfo.humidity), noise(hoverInfo.continentalness),
+                    noise(hoverInfo.erosion), noise(hoverInfo.depth), noise(hoverInfo.weirdness), noise(hoverInfo.pv)));
+        }
         return tooltipComponent;
+    }
+
+    private static String noise(double value) {
+        return Double.isNaN(value) ? "§7<N/A>§r" : String.format("%.2f", value);
     }
 
     /**

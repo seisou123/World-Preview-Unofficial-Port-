@@ -5,6 +5,7 @@ package caeruleusTait.world.preview.client.gui.screens;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructurePickList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -31,6 +32,8 @@ public final class StructureSelectScreen extends Screen {
 
     private EditBox filterBox;
     private StructurePickList pickList;
+    /** True between a middle-press autoscroll start on the pick list and its release. */
+    private boolean listPanActive;
 
     public StructureSelectScreen(SeedSearchScreen parent, PreviewContainer container, @Nullable Identifier currentId) {
         super(WorldPreviewComponents.SEARCH_STRUCTURE_PICK);
@@ -104,5 +107,33 @@ public final class StructureSelectScreen extends Screen {
             return true;
         }
         return false;
+    }
+
+    @Override
+    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+        // A middle press on the pick list starts a browser-style autoscroll
+        // (the list ticks it from its render pass, so it keeps scrolling while
+        // the mouse holds still). The screen only routes the release: vanilla's
+        // container does not forward non-primary releases to the focused child.
+        if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE
+                && pickList.visible
+                && pickList.isMouseOver(event.x(), event.y())
+                && pickList.beginScrollPan(event.y())) {
+            listPanActive = true;
+            return true;
+        }
+        return super.mouseClicked(event, doubleClick);
+    }
+
+    @Override
+    public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+        if (listPanActive) {
+            listPanActive = false;
+            pickList.endScrollPan();
+            if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        return super.mouseReleased(event);
     }
 }

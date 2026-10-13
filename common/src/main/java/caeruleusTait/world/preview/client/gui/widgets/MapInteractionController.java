@@ -211,15 +211,15 @@ class MapInteractionController {
         // clicks are NOT consumed here - they must flow through to
         // onClick()/super.mouseClicked() so AbstractWidget sets its dragging
         // flag, without which onDrag never fires and slider dragging dies.
-        if (event.button() != 0 && host.zoomSliderHit(event.x(), event.y())) {
+        if (event.button() != InputConstants.MOUSE_BUTTON_LEFT && host.zoomSliderHit(event.x(), event.y())) {
             return true;
         }
         // Region select: right click cancels the mode.
-        if (regionSelectMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
+        if (regionSelectMode && event.button() == InputConstants.MOUSE_BUTTON_RIGHT && host.widgetIsMouseOver(event.x(), event.y())) {
             setRegionSelectMode(false);
             return true;
         }
-        if (spawnPinMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
+        if (spawnPinMode && event.button() == InputConstants.MOUSE_BUTTON_RIGHT && host.widgetIsMouseOver(event.x(), event.y())) {
             removeSpawnPin();
             host.playDownSound();
             return true;
@@ -229,7 +229,7 @@ class MapInteractionController {
         // right-click branch placed in onClick() is unreachable dead code.
 
         // Measure tool: right click clears both points.
-        if (measureMode && event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
+        if (measureMode && event.button() == InputConstants.MOUSE_BUTTON_RIGHT && host.widgetIsMouseOver(event.x(), event.y())) {
             measureA = null;
             measureB = null;
             return true;
@@ -238,8 +238,21 @@ class MapInteractionController {
         // Copy coordinates on right click:
         // - Ctrl+Right click (or always if height unavailable): plain "x y z" / "x ~ z"
         // - Right click: /tp @s x y z  (game-ready teleport)
-        if (event.button() == 1 && host.widgetIsMouseOver(event.x(), event.y())) {
+        if (event.button() == InputConstants.MOUSE_BUTTON_RIGHT && host.widgetIsMouseOver(event.x(), event.y())) {
             host.playDownSound();
+
+            // A waypoint pin under the cursor wins: its own recorded position
+            // (including the Y layer at creation time) beats the cursor's
+            // surface estimate.
+            final Waypoint pinned = host.waypointAt(event.x(), event.y());
+            if (pinned != null) {
+                final String pinnedCoordinates = String.format("/tp @s %d %d %d", pinned.x(), pinned.y(), pinned.z());
+                host.minecraft().keyboardHandler.setClipboard(pinnedCoordinates);
+                host.showCopiedMessage(Component.translatable(
+                        "world_preview.preview-display.coordinates.copied.waypoint",
+                        pinned.name(), pinnedCoordinates));
+                return true;
+            }
 
             final HoverInspector.HoverInfo hoverInfo = host.hoverInspector.hoveredBiome(event.x(), event.y());
             if (hoverInfo != null) {
@@ -273,7 +286,7 @@ class MapInteractionController {
         // other mode so a click on the slider never places a waypoint, pins
         // the spawn, or selects a biome. AbstractWidget already set its
         // dragging flag, so subsequent onDrag calls keep re-leveling.
-        if (event.button() == 0 && host.zoomSliderHit(event.x(), event.y())) {
+        if (event.button() == InputConstants.MOUSE_BUTTON_LEFT && host.zoomSliderHit(event.x(), event.y())) {
             zoomSliderDragging = true;
             applySliderLevel(event.x());
             return;
@@ -283,7 +296,7 @@ class MapInteractionController {
         // before the pan path below (clicked stays false, so onDrag/onRelease
         // take their region branches instead of panning / biome-selecting).
         if (regionSelectMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_LEFT) {
                 regionDragStart = host.screenToBlock(event.x(), event.y());
                 regionDragEnd = regionDragStart;
             }
@@ -292,7 +305,7 @@ class MapInteractionController {
 
         // Spawn pin placement
         if (spawnPinMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_LEFT) {
                 BlockPos pos = host.screenToBlock(event.x(), event.y());
                 if (pos != null) {
                     spawnPinPos = pos;
@@ -309,7 +322,7 @@ class MapInteractionController {
         // opens its editor instead of placing a duplicate. Either way the mode
         // exits after the click.
         if (waypointMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_LEFT) {
                 BlockPos pos = host.screenToBlock(event.x(), event.y());
                 if (pos != null) {
                     Waypoint hit = host.waypointAt(event.x(), event.y());
@@ -328,7 +341,7 @@ class MapInteractionController {
         // Measure tool: first click sets point A, second click sets point B
         // (restarting from A on the next click). Right click clears.
         if (measureMode && host.widgetIsMouseOver(event.x(), event.y())) {
-            if (event.button() == 0) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_LEFT) {
                 BlockPos pos = host.screenToBlock(event.x(), event.y());
                 if (pos != null) {
                     if (measureA == null || measureB != null) {

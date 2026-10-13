@@ -165,20 +165,43 @@ public class WorldPreview {
 
         NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartedEvent event) -> {
             if (!SpawnOverrideManager.shouldApply()) return;
-            SpawnOverrideManager.markApplied();
             var server = event.getServer();
-            if (server.isDedicatedServer()) return;
-            if (!cfg.spawnOverrideEnabled) return;
+            if (server.isDedicatedServer()) {
+                SpawnOverrideManager.markApplied();
+                return;
+            }
+            if (!cfg.spawnOverrideEnabled) {
+                SpawnOverrideManager.markApplied();
+                return;
+            }
             String command = "setworldspawn " + cfg.spawnOverrideX + " 100 " + cfg.spawnOverrideZ;
+            boolean failed = false;
             try {
+                // performPrefixedCommand reports command errors (a syntax or
+                // argument failure) through the command source instead of
+                // throwing and returns nothing on this MC version, so the
+                // world's actual spawn position is the success signal.
                 server.getCommands().performPrefixedCommand(
                         server.createCommandSourceStack(),
                         command
                 );
-                LOGGER.info("Spawn override applied at X={}, Z={}", cfg.spawnOverrideX, cfg.spawnOverrideZ);
             } catch (Exception e) {
-                LOGGER.error("Failed to apply spawn override", e);
+                failed = true;
+                LOGGER.error("Failed to apply spawn override; it is not applied to this world", e);
             }
+            if (!failed) {
+                var spawn = server.overworld().getRespawnData().pos();
+                if (spawn.getX() == cfg.spawnOverrideX && spawn.getZ() == cfg.spawnOverrideZ) {
+                    LOGGER.info("Spawn override applied at X={}, Z={}", cfg.spawnOverrideX, cfg.spawnOverrideZ);
+                } else {
+                    failed = true;
+                    LOGGER.error("setworldspawn did not take effect; the spawn override is not applied to this world");
+                }
+            }
+            // The apply point here is the one-shot server-started event: a
+            // pending flag would only ever fire again for whichever world
+            // loads next, so consume the flag either way instead of retrying.
+            SpawnOverrideManager.markApplied();
         });
         // Register reload listeners via NeoForge event instead of mixin
         NeoForge.EVENT_BUS.addListener(this::onAddReloadListeners);

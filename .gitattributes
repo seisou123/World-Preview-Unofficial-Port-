@@ -1,0 +1,11 @@
+# All text files use LF in the repository and on disk. The Windows batch
+# wrapper keeps CRLF; known binary formats are marked explicitly.
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.jar  binary
+*.png  binary
+*.gif  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
