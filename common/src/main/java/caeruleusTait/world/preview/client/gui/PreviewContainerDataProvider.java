@@ -16,6 +16,18 @@ import java.nio.file.Path;
 
 public interface PreviewContainerDataProvider extends PreviewStorageCacheManager {
 
+    /**
+     * Structural fingerprint of the worldgen inputs this provider feeds into
+     * the preview setup (datapack lists, feature flags, world preset; the
+     * in-game provider's world is fixed for the session and returns null).
+     * Must return equal objects exactly when a setup rebuild would produce
+     * identical sampling infrastructure; returning {@code null} always
+     * compares equal.
+     */
+    default Object worldgenStructuralFingerprint() {
+        return null;
+    }
+
     @Nullable WorldCreationContext previewWorldCreationContext();
 
     void registerSettingsChangeListener(Runnable listener);

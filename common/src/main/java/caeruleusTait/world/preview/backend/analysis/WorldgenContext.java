@@ -123,7 +123,12 @@ public final class WorldgenContext implements AutoCloseable {
     }
 
     public String fingerprint() {
-        return Long.toHexString(seed()) + ":" + dimension() + ":" + levelStem.generator().getClass().getName();
+        // Lineage key for in-memory result checks (search viewport, waypoints).
+        // The full world identity's short key covers datapacks, the registry
+        // digest and compat configuration, so results produced under a
+        // different datapack or mod layout are rejected instead of silently
+        // reused; the value is never persisted, so the format change is safe.
+        return identity().shortKey();
     }
 
     /**

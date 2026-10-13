@@ -16,15 +16,17 @@ structures, heightmap and Y-layer intersections.
 
 | Minecraft | Fabric | NeoForge / Forge | Branch |
 |-----------|--------|-----------------|--------|
-| `1.20.1`  | ✅ | Forge ✅ | release assets only |
-| `1.21.1`  | ✅ | NeoForge ✅ | release assets only |
-| `1.21.11` | ✅ | NeoForge ✅ | `1.21.11-fabric` / `1.21.11-neoforge` |
-| `26.1.2`  | ✅ | NeoForge ✅ | `26.1.2-fabric` / `26.1.2-neoforge` |
-| `26.2`    | ✅ | NeoForge ✅ | `26.2-fabric` / `26.2-neoforge` |
-| `26.3`    | ✅ | NeoForge ✅ | release assets only |
+| `1.20.1`  | ✅ | Forge ✅ | `1.20.1` |
+| `1.21.1`  | ✅ | NeoForge ✅ | `1.21.1` |
+| `1.21.11` | ✅ | NeoForge ✅ | `1.21.11` |
+| `26.1.2`  | ✅ | NeoForge ✅ | `26.1.2` |
+| `26.2`    | ✅ | NeoForge ✅ | `26.2` |
+| `26.3`    | ✅ | NeoForge ✅ | `26.3` |
 
-This branch is the `26.1.2` line of the table above. Rows marked `release assets`
-only` are shipped as jars and have no branch of their own yet.
+This branch is the `26.1.2` line of the table above. Every supported version has its own
+branch named after the Minecraft version; the default branch `main` only carries the
+README, the CHANGELOG and the issue templates. To work on a version, check out that
+version's branch, e.g. `git clone -b <minecraft version> https://github.com/seisou123/World-Preview-Unofficial-Port-.git`.
 
 Minecraft versions other than those listed above are not covered by this fork; for older 1.20.x
 and 1.21 releases outside this list, the original mod remains available.
@@ -68,9 +70,9 @@ unchanged from upstream behaviour.
 ### Added in this fork
 
 Most of the following are opt-in: each has its own button or setting, and none of them change the
-preview until you turn them on; the exceptions — drag preloading, which is on by default, and the
-automatic backup and migration of the config files — only affect sampling work and files, never
-what the preview shows.
+preview until you turn them on; the exceptions — drag preloading, which is on by default, the
+automatic backup and migration of the config files, and the mod compatibility registry, which has
+no setting of its own yet — only affect sampling work and files, never what the preview shows.
 
 **Seed search** scans random seeds against a set of criteria: up to four biomes (any of them
 counts), a structure, a minimum biome area share, a maximum distance to the nearest matching biome
@@ -80,25 +82,41 @@ for; concentric-ring ones such as strongholds are not supported yet.
 
 The seed screen brings the seed box with Random and Save, the search criteria, and the results,
 history, favourites and saved-seed lists together in one place. Matching searches are stored; a row
-applies its seed on click, adds it to favourites on `Shift`+right-click and deletes it on
-right-click. A **seed
+applies its seed on click, adds it to favourites on `Shift`+right-click, saves it to the
+saved-seed list on `Ctrl`+right-click and deletes it on right-click; the history view also
+has a button that clears all non-favourite entries. A **seed
 comparison** screen puts the current seed next to up to seven others and reports biome diversity,
 water share, the dominant biome and a spawn score.
 
 The **world analysis engine** works on a region you select: biome distribution, height range,
 mean height, slope statistics and flat-area ratio, plus a terrain cross-section, a height
 histogram and a spawn quality score with reasons. The tables export as CSV and JSON into
-`config/world_preview/reports/`.
+`config/world_preview/reports/`. Structure rows in the overview are clickable to drop a
+waypoint at a structure; one button adds waypoints for every structure in the analyzed region.
 
 **Terrain map export** writes the current seed's terrain as a high-resolution PNG, with a
-configurable radius and blocks-per-pixel, nine terrain classes and an optional contour overlay.
-It can also walk every dimension of the seed in one batch. Output goes to
-`config/world_preview/terrain_exports/`. There is also a plain "save the preview as PNG" button
-in the settings.
+configurable radius and blocks-per-pixel, nine terrain classes or opt-in per-biome colors (the
+preview's own biome colors, with a JSON legend next to the PNG), an optional contour overlay and
+an optional coordinate grid. A grayscale heightmap PNG and per-category pixel counts in the
+sidecar JSON are opt-in, and biomes are sampled at the Y layer the preview is scrolled to. It can also walk every dimension of the seed in one batch, and the
+analysis screen's "Export This Region" action opens it prefilled with the analyzed area. Every
+completed export is appended to a history file, and the export screen browses its twelve most
+recent entries; clicking a row copies the exported file's absolute path. Output goes to
+`config/world_preview/terrain_exports/`. The plain "save the preview as PNG" button in
+the settings writes a JSON sidecar with the seed, dimension and view parameters next to the
+image.
+
+Two further opt-ins live in `Settings → General`: **Open preview at player** anchors the
+preview's initial view on the player's position instead of the last position or the world
+origin, and **Hover: noise values** appends the sampled temperature, humidity, continentalness,
+erosion, depth, weirdness and peaks-valleys values to the map hover panel. The map also
+remembers its last position between sessions.
 
 **Waypoints** are named, coloured pins stored per seed and dimension. Switch on `Waypoints` and
-left-click the map to place one; left-click a pin again to rename, recolour or delete it. The
-**measure tool** works with two clicks and reports the distance and the axis deltas; right-click
+left-click the map to place one; left-click a pin again to rename, recolour or delete it, and
+right-click it to copy a `/tp` command to its coordinates. The
+**measure tool** works with two clicks and reports the distance, the axis deltas and the surface height
+difference between both endpoints; right-click
 clears it. **Spawn point override** places a spawn pin during world creation and applies those
 coordinates as the world's spawn point, without cheats.
 
@@ -108,13 +126,14 @@ altitude, ambient and exaggeration) and **contour lines** at a configurable inte
 and peaks & valleys, each with its own colour gradient and drawn as a smooth gradient.
 
 Smaller things: a **minimap**, live statistics, coordinates, per-biome block counts,
-**preloading** of the area around the viewport (optionally only when worker threads are idle),
-automatic **backup and migration** of the config files and a **mod compatibility framework** that
-adapts to modded chunk generators — currently Terralith, Biomes O' Plenty, TerraFirmaCraft (off by
-default), Oh The Biomes You'll Go, Astral Sorcery, Nature's Spirit, Oh The Trees, Awaken, Wither
-Storm Mod and TofuCraft. Mods that are not on this list are left alone: biomes, structures and
-colour maps they add are picked up through the datapack mechanism. Sampling, export and analysis
-also cover **other dimensions**, including ones with non-standard height limits.
+**preloading** of the area around the viewport (optionally only when worker threads are idle) and
+automatic **backup and migration** of the config files. Sampling is mod-agnostic: biomes,
+structures and colour maps that world-gen mods add are picked up through the datapack mechanism.
+A built-in **mod compatibility registry** (Terralith, Biomes O' Plenty, TerraFirmaCraft, Oh The
+Biomes You'll Go, Astral Sorcery, Nature's Spirit, Oh The Trees, Awaken, Wither Storm Mod and
+TofuCraft are pre-registered) is groundwork for dedicated per-mod generator handling and does not
+change sampling yet. Sampling, export and analysis also cover **other dimensions**, including ones
+with non-standard height limits.
 
 **Performance** has had several passes over the render path, sampling and idle-frame cost. Ongoing
 rather than finished.
@@ -254,7 +273,7 @@ also need Fabric API; NeoForge and Forge users do not need anything beyond the l
 ## Mod compatibility and known issues
 
 This mod is compatible with most mods, including those that add biomes and dimensions.
-For a list of mods with dedicated compatibility handling, see *Added in this fork* above.
+For the state of the built-in mod compatibility registry, see *Added in this fork* above.
 
 ### TerraFirmaCraft (TFC)
 
@@ -272,10 +291,12 @@ That comes from the data TFC exposes, not from a bug in TFC.
 - The original mod, its design and the large majority of its code are by
   [Caeruleus Draconis](https://github.com/caeruleusDraconis) & [Taiterio](https://github.com/Taiterio).
   This fork only exists because of their work.
+- The original project's source repository:
+  [caeruleusDraconis/world-preview](https://github.com/caeruleusDraconis/world-preview).
+- This fork is maintained by a single person.
 - Anything the port adds, and anything it breaks, is this fork's own responsibility.
 - Licensed under **Apache-2.0**; see [LICENSE](LICENSE).
 - User-visible release history: [CHANGELOG.md](CHANGELOG.md).
 - A per-file record of the upstream sources this fork modified ships as `CHANGES.md` in each
   version branch — for example
-  [1.21.11-fabric](https://github.com/seisou123/World-Preview-Unofficial-Port-/blob/1.21.11-fabric/CHANGES.md).
-  Branches that have not been pushed to the remote yet carry the same file in this branch.
+  [1.21.11](https://github.com/seisou123/World-Preview-Unofficial-Port-/blob/1.21.11/CHANGES.md).

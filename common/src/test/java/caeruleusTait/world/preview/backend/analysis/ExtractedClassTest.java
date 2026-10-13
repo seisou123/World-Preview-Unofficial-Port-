@@ -163,4 +163,4 @@ class ExtractedClassTest {
         assertEquals(319, DimensionHelper.clampY(500, -64, 384));
         assertEquals(100, DimensionHelper.clampY(100, -64, 384));
     }
-}
+}

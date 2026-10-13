@@ -81,4 +81,4 @@ class PreviewSectionUncompressedLockFreeReadTest {
         assertNull(writerError.get());
         assertFalse(writer.isAlive(), "writer thread did not terminate");
     }
-}
+}

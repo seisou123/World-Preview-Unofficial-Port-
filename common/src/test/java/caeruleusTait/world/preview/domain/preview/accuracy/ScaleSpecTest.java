@@ -31,4 +31,4 @@ class ScaleSpecTest {
     void invalidPixelsPerChunk_throws() {
         assertThrows(IllegalArgumentException.class, () -> ScaleSpec.fromPixelsPerChunk(3));
     }
-}
+}

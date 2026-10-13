@@ -46,6 +46,31 @@ public abstract class WorkUnit implements Task {
     // idempotent partial writes and are re-sampled in full on a later pass.
     private volatile boolean wasInterrupted;
 
+    // Drag-tier marking: set right after construction for units bound to
+    // the drag-time coarse sampler.  Coarse units complete on a separate
+    // section bitset and freeze the drag session's tier epoch, so their
+    // batches are invalidated together with that session.  Written before
+    // the unit is published to the worker pool (executor submit
+    // happens-before), so no volatile is needed.
+    private boolean coarseSampling;
+    private long tierEpoch = Long.MIN_VALUE;
+
+    /** Marks this unit as drag-tier coarse and freezes the drag session's tier epoch. */
+    public void setCoarseSampling(boolean coarse, long tierEpoch) {
+        this.coarseSampling = coarse;
+        this.tierEpoch = tierEpoch;
+    }
+
+    /** True when this unit was sampled with the drag-tier coarse sampler. */
+    public boolean isCoarseSampling() {
+        return coarseSampling;
+    }
+
+    /** The drag-tier epoch frozen at construction ({@link Long#MIN_VALUE} for fine units). */
+    public long tierEpoch() {
+        return tierEpoch;
+    }
+
     // Task interface support
     private final TaskId taskId = TaskId.generate();
     private final AtomicReference<TaskState> taskState = new AtomicReference<>(TaskState.QUEUED);
@@ -87,12 +112,28 @@ public abstract class WorkUnit implements Task {
 
     public abstract long flags();
 
+    /**
+     * Number of chunks this unit samples along each axis from its anchor
+     * chunk.  Plain units cover a single chunk (the default); region units
+     * (fast heightmap/intersection) cover a numChunks x numChunks area
+     * starting at their 16-aligned anchor.  Used by viewport-overlap tests
+     * that must not cancel a region whose anchor slid off-screen while most
+     * of its area is still visible.
+     */
+    public int coverageChunks() {
+        return 1;
+    }
+
     public boolean isCompleted() {
         return primarySection.isCompleted(chunkPos);
     }
 
     public void markCompleted() {
-        primarySection.markCompleted(chunkPos);
+        if (coarseSampling) {
+            primarySection.markCompletedCoarse(chunkPos);
+        } else {
+            primarySection.markCompleted(chunkPos);
+        }
     }
 
     public List<WorkResult> work() {
@@ -123,7 +164,7 @@ public abstract class WorkUnit implements Task {
             taskResult.set(TaskResult.success(result));
             return result;
         } catch (Throwable e) {
-            e.printStackTrace();
+            LOGGER.error("Work unit at {} failed", chunkPos, e);
             taskState.set(TaskState.FAILED);
             taskResult.set(TaskResult.error(e));
             throw e;
