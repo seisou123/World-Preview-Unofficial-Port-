@@ -22,7 +22,7 @@
 - The in-game preview now remembers the last map position between sessions; an opt-in Open preview at player setting anchors the initial view on the player instead
 - The hover panel can show the sampled temperature, humidity, continentalness, erosion, depth, weirdness and peaks-valleys values behind an opt-in setting, measured distances show the surface height difference between both endpoints, and viewport PNG exports write a JSON sidecar with the seed, dimension, world identity and view center
 - The analysis screen's structure rows are clickable to add a waypoint, and a footer button drops every structure in the analyzed region into the waypoint list at once
-- Terrain map exports append to a history file and the export screen browses its twelve most recent entries; clicking a row copies the exported file's absolute path
+- Terrain map exports append to a history file and the export screen browses the full history; clicking a row copies the exported file's absolute path
 - Holding Ctrl while right-clicking a seed search result saves it to the saved-seed library, and the history view gained a button that clears all non-favorite entries
 - Right-clicking a waypoint pin on the preview map copies a /tp command with the waypoint's coordinates
 - Terrain map exports can color the map per biome (opt-in): every pixel takes the biome's preview color — the same colors the preview's biome view uses, including user overrides — instead of the nine terrain categories, and the export metadata JSON carries a per-biome legend mapping every used color to its biome id and name
