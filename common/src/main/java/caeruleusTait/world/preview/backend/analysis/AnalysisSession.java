@@ -150,6 +150,19 @@ public final class AnalysisSession extends Session {
         }
     }
 
+    /**
+     * True when the live preview batches all vertical levels into one work
+     * unit anchored at y=0, which is also the layer that mode stores its
+     * completion bits on; the facts probes must read the same layer the queue
+     * probe uses.  Mirrors the headless-safe global-config fallback of the
+     * storage layer: without a mod instance the default (per-layer completion)
+     * applies.
+     */
+    private static boolean fullVerticalBatching() {
+        final caeruleusTait.world.preview.WorldPreview preview = caeruleusTait.world.preview.WorldPreview.get();
+        return preview != null && preview.cfg() != null && preview.cfg().buildFullVertChunk;
+    }
+
     private static Sampler createContextSampler(AnalysisRequest request, WorldgenContext context,
                                                 PreviewData previewData,
                                                 @org.jetbrains.annotations.Nullable PreviewStorage facts) {
@@ -162,16 +175,29 @@ public final class AnalysisSession extends Session {
             // seed & dimension). Biome/height are stored per quart, which is
             // exactly the resolution worldgen defines them at, so any block
             // coordinate inside the quart maps to the same value.
+            //
+            // The reuse requires a FULL-RESOLUTION completion: a chunk the
+            // drag tier filled with its 4x4-quart coarse sampler reports a
+            // real-but-coarse value here, and accepting it would quantize the
+            // analysis metrics.  isChunkSampledFine excludes coarse-touched
+            // chunks, so such a chunk re-samples through the worldgen context
+            // instead.  The completion probe is per-chunk while the value read
+            // is per-quart, which is sound: the fine sampler writes all
+            // sixteen quarts of a chunk before the chunk is marked complete.
+            // The biome completion bits live on the layer the biome units
+            // anchored at: y=0 under full-vertical batching, the sample's own
+            // y otherwise (same split as the terrain-export probe).
             if (facts != null) {
-                biome = facts.getRawData4(
-                        net.minecraft.core.QuartPos.fromBlock(x),
-                        net.minecraft.core.QuartPos.fromBlock(y),
-                        net.minecraft.core.QuartPos.fromBlock(z),
-                        PreviewStorage.FLAG_BIOME);
-                if (request.includeHeight()) {
-                    height = facts.getRawData4(
-                            net.minecraft.core.QuartPos.fromBlock(x), 0,
-                            net.minecraft.core.QuartPos.fromBlock(z), PreviewStorage.FLAG_HEIGHT);
+                final int quartX = net.minecraft.core.QuartPos.fromBlock(x);
+                final int quartZ = net.minecraft.core.QuartPos.fromBlock(z);
+                final int quartY = net.minecraft.core.QuartPos.fromBlock(y);
+                final int completionQuartY = fullVerticalBatching() ? 0 : quartY;
+                if (facts.isChunkSampledFine(quartX, completionQuartY, quartZ, PreviewStorage.FLAG_BIOME)) {
+                    biome = facts.getRawData4(quartX, quartY, quartZ, PreviewStorage.FLAG_BIOME);
+                }
+                if (request.includeHeight()
+                        && facts.isChunkSampledFine(quartX, 0, quartZ, PreviewStorage.FLAG_HEIGHT)) {
+                    height = facts.getRawData4(quartX, 0, quartZ, PreviewStorage.FLAG_HEIGHT);
                 }
             }
 

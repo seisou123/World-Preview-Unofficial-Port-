@@ -27,6 +27,12 @@ public class WorldPreviewConfig {
     public int searchMinAreaPercent = 0;
     public int searchMaxDistance = 0;
     public boolean scrollWheelZooms = true;
+    // Drag-time coarse sampling: while the map is dragged, the biome layer
+    // samples one quart-column per chunk and the detail layers wait for
+    // release; the coarse fill is refined in place on release.
+    public boolean dragDownsamples = true;
+    public boolean openAtPlayer = false;
+    public boolean hoverNoiseValues = false;
     public boolean enablePreload = true;
     public boolean preloadOnlyWhenIdle = true;
     public int preloadRadius = 128;
@@ -109,6 +115,9 @@ public class WorldPreviewConfig {
         searchMinAreaPercent = source.searchMinAreaPercent;
         searchMaxDistance = source.searchMaxDistance;
         scrollWheelZooms = source.scrollWheelZooms;
+        dragDownsamples = source.dragDownsamples;
+        openAtPlayer = source.openAtPlayer;
+        hoverNoiseValues = source.hoverNoiseValues;
         enablePreload = source.enablePreload;
         preloadOnlyWhenIdle = source.preloadOnlyWhenIdle;
         preloadRadius = source.preloadRadius;

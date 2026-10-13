@@ -5,6 +5,7 @@ package caeruleusTait.world.preview.client.gui.widgets.lists;
 import caeruleusTait.world.preview.backend.color.PreviewData;
 import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.gui.screens.PreviewContainer;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -248,13 +249,13 @@ public class BiomesList extends BaseObjectSelectionList<BiomesList.BiomeEntry> {
 
                 @Override
         public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
-            if (event.button() == 1 && onRightClick != null) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_RIGHT && onRightClick != null) {
                 // Right-click: trigger search/stop
                 minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
                 onRightClick.accept(this);
                 return true;
             }
-            if (event.button() != 0) {
+            if (event.button() != InputConstants.MOUSE_BUTTON_LEFT) {
                 return false;
             }
 

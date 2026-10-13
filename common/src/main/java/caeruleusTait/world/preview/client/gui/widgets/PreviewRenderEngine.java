@@ -250,7 +250,7 @@ class PreviewRenderEngine {
             }
             peaksValleysLut = pvLut;
         } catch (Throwable e) {
-            e.printStackTrace();
+            WorldPreview.LOGGER.error("Failed to build the peaks & valleys transform LUT; falling back to per-pixel transforms", e);
             // (R10) Never trust a partially built transform LUT; the noise
             // branch falls back to the per-pixel path while it is null.
             peaksValleysLut = null;
@@ -327,10 +327,40 @@ class PreviewRenderEngine {
                     .format(java.time.LocalDateTime.now());
             final java.io.File outFile = new java.io.File(dir, "preview_" + timestamp + ".png");
             previewImg.writeToFile(outFile);
+            writeExportMetadata(outFile.toPath(), timestamp);
             return outFile.getAbsolutePath();
         } catch (Exception e) {
             WorldPreview.LOGGER.error("Failed to export preview image", e);
             return null;
+        }
+    }
+
+    /**
+     * Sidecar JSON for the exported viewport: world lineage and view center in
+     * the terrain export metadata style, so a shared screenshot maps back to
+     * the world and zoom it was taken from.
+     */
+    private void writeExportMetadata(java.nio.file.Path pngPath, String timestamp) {
+        try {
+            com.google.gson.JsonObject metadata = new com.google.gson.JsonObject();
+            metadata.addProperty("timestamp", timestamp);
+            var context = WorldPreview.get().workManager().worldgenContext();
+            if (context != null) {
+                metadata.addProperty("seed", Long.toString(context.seed()));
+                metadata.addProperty("dimension", context.dimension());
+                metadata.addProperty("identity", context.identity().shortKey());
+            }
+            var c = host.center();
+            metadata.addProperty("centerX", c.getX());
+            metadata.addProperty("centerY", c.getY());
+            metadata.addProperty("centerZ", c.getZ());
+            metadata.addProperty("pixelsPerChunk", host.renderSettings().pixelsPerChunk());
+            String name = pngPath.getFileName().toString();
+            java.nio.file.Path metaPath = pngPath.resolveSibling(name.substring(0, name.length() - 4) + ".json");
+            java.nio.file.Files.writeString(metaPath,
+                    new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(metadata) + "\n");
+        } catch (Exception e) {
+            WorldPreview.LOGGER.error("Failed to write preview export metadata", e);
         }
     }
 

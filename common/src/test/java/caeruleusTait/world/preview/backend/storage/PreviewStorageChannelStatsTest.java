@@ -122,4 +122,4 @@ class PreviewStorageChannelStatsTest {
         assertFalse(noNoise.noiseSupported());
         assertTrue(noNoise.noiseAt(0, Y, 0, FLAG_NOISE_TEMPERATURE).isEmpty());
     }
-}
+}

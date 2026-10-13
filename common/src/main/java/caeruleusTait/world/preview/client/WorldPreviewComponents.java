@@ -172,8 +172,6 @@ public class WorldPreviewComponents {
     public static final Component TERRAIN_EXPORT_TITLE = Component.translatable("world_preview.terrain_export.title");
     public static final Component TERRAIN_EXPORT_OPEN = Component.translatable("world_preview.terrain_export.open");
     public static final Component TERRAIN_EXPORT_OPEN_TOOLTIP = Component.translatable("world_preview.terrain_export.open.tooltip");
-    public static final Component TERRAIN_EXPORT_RADIUS = Component.translatable("world_preview.terrain_export.radius");
-    public static final Component TERRAIN_EXPORT_RESOLUTION = Component.translatable("world_preview.terrain_export.resolution");
     public static final Component TERRAIN_EXPORT_START = Component.translatable("world_preview.terrain_export.start");
     public static final Component TERRAIN_EXPORT_CANCEL = Component.translatable("world_preview.terrain_export.cancel");
     public static final Component TERRAIN_EXPORT_LEGEND = Component.translatable("world_preview.terrain_export.legend");
@@ -182,6 +180,30 @@ public class WorldPreviewComponents {
     public static final Component TERRAIN_EXPORT_CANCELLED = Component.translatable("world_preview.terrain_export.cancelled");
     public static final Component TERRAIN_EXPORT_BATCH = Component.translatable("world_preview.terrain_export.batch");
     public static final Component TERRAIN_EXPORT_BATCH_TOOLTIP = Component.translatable("world_preview.terrain_export.batch.tooltip");
+    public static final Component TERRAIN_EXPORT_UNSUPPORTED = Component.translatable("world_preview.terrain_export.unsupported");
+    public static final Component TERRAIN_EXPORT_REJECTED = Component.translatable("world_preview.terrain_export.rejected");
+    public static final Component TERRAIN_EXPORT_CONTOURS = Component.translatable("world_preview.terrain_export.contours");
+    public static final Component TERRAIN_EXPORT_GRID = Component.translatable("world_preview.terrain_export.grid");
+    public static final Component TERRAIN_EXPORT_HEIGHTMAP = Component.translatable("world_preview.terrain_export.heightmap");
+    public static final Component TERRAIN_EXPORT_FROM_ANALYSIS = Component.translatable("world_preview.terrain_export.from_analysis");
+    public static final Component TERRAIN_EXPORT_HISTORY = Component.translatable("world_preview.terrain_export.history");
+    public static final Component TERRAIN_EXPORT_HISTORY_EMPTY = Component.translatable("world_preview.terrain_export.history_empty");
+    public static final Component TERRAIN_EXPORT_HISTORY_COPIED = Component.translatable("world_preview.terrain_export.history_copied");
+    public static final Component TERRAIN_EXPORT_COLORS = Component.translatable("world_preview.terrain_export.colors");
+    public static final Component TERRAIN_EXPORT_COLORS_TOOLTIP = Component.translatable("world_preview.terrain_export.colors.tooltip");
+    public static final Component TERRAIN_EXPORT_COLORS_BIOMES = Component.translatable("world_preview.terrain_export.colors.biomes");
+    public static final Component TERRAIN_EXPORT_COLORS_CATEGORIES = Component.translatable("world_preview.terrain_export.colors.categories");
+    public static final Component TERRAIN_EXPORT_BIOME_LEGEND = Component.translatable("world_preview.terrain_export.biome_legend");
+    public static final Component ANALYSIS_SAVE_STRUCTURE_WAYPOINTS = Component.translatable("world_preview.analysis.save_structure_waypoints");
+    public static final Component ANALYSIS_SAVE_STRUCTURE_WAYPOINTS_TOOLTIP = Component.translatable("world_preview.analysis.save_structure_waypoints.tooltip");
+    public static final Component SEARCH_CLEAR_HISTORY = Component.translatable("world_preview.search.clear_history");
+    public static final Component SEARCH_SAVED_TO_LIBRARY = Component.translatable("world_preview.search.saved_to_library");
+    public static final Component SEARCH_HISTORY_CLEARED = Component.translatable("world_preview.search.history_cleared");
+
+    public static final Component SETTINGS_GENERAL_OPEN_AT_PLAYER = Component.translatable("world_preview.settings.general.open_at_player");
+    public static final Component SETTINGS_GENERAL_OPEN_AT_PLAYER_TOOLTIP = Component.translatable("world_preview.settings.general.open_at_player.tooltip");
+    public static final Component SETTINGS_GENERAL_HOVER_NOISE = Component.translatable("world_preview.settings.general.hover_noise");
+    public static final Component SETTINGS_GENERAL_HOVER_NOISE_TOOLTIP = Component.translatable("world_preview.settings.general.hover_noise.tooltip");
 
     // === Hillshade ===
     public static final Component SETTINGS_HILLSHADE = Component.translatable("world_preview.settings.general.hillshade");

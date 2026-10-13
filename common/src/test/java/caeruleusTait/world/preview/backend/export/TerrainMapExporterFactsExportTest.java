@@ -36,12 +36,29 @@ class TerrainMapExporterFactsExportTest {
     private static final int Y_MIN = -64;
     private static final int Y_MAX = 320;
 
+    /** True where NativeImage.fillRect takes ABGR (1.20.1 and 1.21.1). */
+    private static final boolean NATIVE_IMAGE_WANTS_ABGR = nativeImageWantsAbgr();
+
     /** Stand-alone "minecraft:plains" holder; classifies as PLAINS via id keywords. */
     private static TerrainMapExporter.BiomeSampler plainsSampler() {
         Holder<Biome> plains = Holder.Reference.createStandAlone(
                 new HolderOwner<Biome>() {},
                 ResourceKey.create(Registries.BIOME, Identifier.parse("minecraft:plains")));
         return (blockX, blockZ) -> plains;
+    }
+
+    /**
+     * NativeImage pixel order changed in 1.21.11: older builds expose
+     * {@code getPixelRGBA}, 1.21.11+ exposes {@code getPixel}. Detect it once
+     * so the assertions check the exact color the exporter writes.
+     */
+    private static boolean nativeImageWantsAbgr() {
+        try {
+            NativeImage.class.getMethod("getPixelRGBA", int.class, int.class);
+            return true;
+        } catch (NoSuchMethodException notOlderMapping) {
+            return false;
+        }
     }
 
     private static TerrainExportSpec tinySpec() {
@@ -56,8 +73,9 @@ class TerrainMapExporterFactsExportTest {
             int[] pixels = new int[width * height];
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    // getPixel converts the stored ABGR value back to the exact
-                    // color the exporter passed to fillRect.
+                    // getPixel returns the color in the format fillRect expects:
+                    // ABGR on builds exposing getPixelRGBA (1.20.1/1.21.1),
+                    // ARGB from 1.21.6 on (NativeImage switched to ARGB).
                     pixels[y * width + x] = image.getPixel(x, y);
                 }
             }
@@ -71,11 +89,23 @@ class TerrainMapExporterFactsExportTest {
         }
     }
 
-    private void exportAndCheck(@org.jetbrains.annotations.Nullable TerrainMapExporter.BiomeFacts facts,
-                                int expectedColor) throws Exception {
+    /**
+     * Category color in the pixel format NativeImage stores on this version.
+     * The exporter keeps ARGB buffers and converts at the NativeImage sink, so
+     * pre-1.21.11 builds must expect the channel-swapped value.
+     */
+    private static int storageColor(TerrainCategory category) {
+        int argb = category.argbColor();
+        return NATIVE_IMAGE_WANTS_ABGR
+                ? ((argb & 0xFF00FF00) | ((argb >>> 16) & 0xFF) | ((argb & 0xFF) << 16))
+                : argb;
+    }
+
+    private void exportAndCheck(TerrainMapExporter.BiomeFacts facts,
+                                TerrainCategory expectedColor) throws Exception {
         TerrainMapExporter exporter = new TerrainMapExporter(2);
         TerrainMapExporter.Result result = exporter.export(
-                tinySpec(), plainsSampler(), null, null, facts, Y_MIN, Y_MAX,
+                tinySpec(), plainsSampler(), TerrainMapExporter.categories(facts.resolver()), null, null, facts, Y_MIN, Y_MAX,
                 tempDir, "facts_", () -> false, p -> { });
 
         assertTrue(Files.exists(result.pngPath()), "export must write the PNG");
@@ -83,7 +113,50 @@ class TerrainMapExporterFactsExportTest {
         assertTrue(metadata.contains("\"heightSource\": \"estimated\""),
                 "fact hits count as estimated heights; expected estimated metadata");
 
-        assertUniform(readPixels(result.pngPath()), expectedColor);
+        assertUniform(readPixels(result.pngPath()), storageColor(expectedColor));
+    }
+
+    @Test
+    void heightmapPngAndCategoryPixelsMetadata() throws Exception {
+        TerrainMapExporter exporter = new TerrainMapExporter(2);
+
+        // Without the heightmap request no height file is written.
+        TerrainMapExporter.Result plain = exporter.export(
+                tinySpec(), plainsSampler(), TerrainMapExporter.categories(null), null, null, null, Y_MIN, Y_MAX,
+                tempDir, "plain_", () -> false, p -> { });
+        assertTrue(Files.notExists(plain.pngPath().resolveSibling(
+                plain.pngPath().getFileName().toString().replace(".png", "_height.png"))),
+                "no heightmap PNG without the request");
+
+        // 256/16 = 32 -> 32x32 pixels, heightmap on; every pixel is PLAINS.
+        TerrainExportSpec spec = new TerrainExportSpec(256, 16, 0, 0, false, 1, 0, true);
+        TerrainMapExporter.Result result = exporter.export(
+                spec, plainsSampler(), TerrainMapExporter.categories(null), null, null, null, Y_MIN, Y_MAX,
+                tempDir, "height_", () -> false, p -> { });
+
+        String metadata = Files.readString(result.metadataPath());
+        assertTrue(metadata.contains("\"categoryPixels\""), "metadata must carry per-category pixel counts");
+        assertTrue(metadata.contains("\"PLAINS\": 1024"), "all 32x32 pixels are plains");
+        assertTrue(metadata.contains("\"exportHeightmap\": true"), "metadata must record the heightmap request");
+        assertTrue(metadata.contains("\"heightmap\""), "metadata must describe the heightmap encoding");
+
+        // Height PNG: same footprint, gray = offset*255/ySpan over the plains
+        // estimate height. R=G=B, so the ABGR/ARGB sink difference is a no-op.
+        Path heightPath = result.pngPath().resolveSibling(
+                result.pngPath().getFileName().toString().replace(".png", "_height.png"));
+        assertTrue(Files.exists(heightPath), "heightmap PNG must sit next to the terrain PNG");
+        int expectedGray = TerrainMapExporter.grayForOffset(
+                TerrainMapExporter.toHeightFieldOffset(
+                        TerrainClassifier.categoryHeight(TerrainCategory.PLAINS), Y_MIN, Y_MAX - Y_MIN),
+                Y_MAX - Y_MIN);
+        int expectedPixel = 0xFF000000 | (expectedGray << 16) | (expectedGray << 8) | expectedGray;
+        try (InputStream in = Files.newInputStream(heightPath); NativeImage image = NativeImage.read(in)) {
+            for (int y = 0; y < image.getHeight(); y++) {
+                for (int x = 0; x < image.getWidth(); x++) {
+                    assertEquals(expectedPixel, image.getPixel(x, y), "heightmap pixel " + x + "," + y);
+                }
+            }
+        }
     }
 
     @Test
@@ -94,7 +167,7 @@ class TerrainMapExporterFactsExportTest {
                 new TerrainMapExporter.IdTableResolver(
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
                         new short[]{0, 50}));
-        exportAndCheck(facts, TerrainCategory.OCEAN.pixelColor());
+        exportAndCheck(facts, TerrainCategory.OCEAN);
     }
 
     @Test
@@ -105,7 +178,7 @@ class TerrainMapExporterFactsExportTest {
                 new TerrainMapExporter.IdTableResolver(
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
                         new short[]{0, 50}));
-        exportAndCheck(facts, TerrainCategory.PLAINS.pixelColor());
+        exportAndCheck(facts, TerrainCategory.PLAINS);
     }
 
     @Test
@@ -116,6 +189,6 @@ class TerrainMapExporterFactsExportTest {
                 new TerrainMapExporter.IdTableResolver(
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
                         new short[]{0, 50}));
-        exportAndCheck(facts, TerrainCategory.PLAINS.pixelColor());
+        exportAndCheck(facts, TerrainCategory.PLAINS);
     }
 }

@@ -142,4 +142,4 @@ class TaskSchedulerTest {
         @Override public void resume() { paused = false; }
         @Override public boolean isPaused() { return paused; }
     }
-}
+}

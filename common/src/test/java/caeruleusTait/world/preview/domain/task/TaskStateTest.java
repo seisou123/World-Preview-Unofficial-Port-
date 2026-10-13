@@ -64,4 +64,4 @@ class TaskStateTest {
         assertFalse(TaskState.PAUSED.isActive());
         assertFalse(TaskState.COMPLETED.isActive());
     }
-}
+}

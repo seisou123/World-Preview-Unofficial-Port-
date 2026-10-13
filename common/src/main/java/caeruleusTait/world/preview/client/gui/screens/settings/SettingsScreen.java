@@ -8,10 +8,12 @@ import caeruleusTait.world.preview.backend.color.PreviewMappingData;
 import caeruleusTait.world.preview.client.gui.screens.PreviewContainer;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import caeruleusTait.world.preview.domain.ui.PageRegistry;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
@@ -42,6 +44,8 @@ public class SettingsScreen extends Screen {
     private Button cancelButton;
     private Button resetButton;
     private SettingsContentContainer contentContainer;
+    /** True between a middle-press autoscroll start on the content container and its release. */
+    private boolean contentPanActive;
 
     public SettingsScreen(Screen parent, PreviewContainer previewContainer) {
         super(SETTINGS_TITLE);
@@ -401,6 +405,37 @@ public class SettingsScreen extends Screen {
         if (currentPage != null) {
             currentPage.tick();
         }
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        // A middle press inside the content viewport starts a browser-style
+        // autoscroll (the container ticks it from its render pass, so it keeps
+        // scrolling while the mouse holds still). The screen only routes the
+        // release: vanilla's container does not forward non-primary releases
+        // to the focused child.
+        if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE
+                && contentContainer != null
+                && contentContainer.isMouseOver(event.x(), event.y())
+                && contentContainer.beginScrollPan(event.y())) {
+            contentPanActive = true;
+            return true;
+        }
+        return super.mouseClicked(event, doubleClick);
+    }
+
+    @Override
+    public boolean mouseReleased(MouseButtonEvent event) {
+        if (contentPanActive) {
+            contentPanActive = false;
+            if (contentContainer != null) {
+                contentContainer.endScrollPan();
+            }
+            if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        return super.mouseReleased(event);
     }
 
     @Override

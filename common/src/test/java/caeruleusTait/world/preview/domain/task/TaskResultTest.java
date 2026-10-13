@@ -66,4 +66,4 @@ class TaskResultTest {
         assertEquals(1.0, new TaskProgress(10, 10, 0, "").percentage());
         assertEquals(1.0, new TaskProgress(15, 10, 0, "").percentage());
     }
-}
+}

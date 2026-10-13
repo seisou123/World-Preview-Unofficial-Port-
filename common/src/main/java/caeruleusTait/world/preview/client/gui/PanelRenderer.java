@@ -153,9 +153,7 @@ public final class PanelRenderer {
 
     /**
      * Progress bar: a 12px tall dark slot filled from the left according to
-     * {@code pct} (0-100) in the given color. (Origin:
-     * {@code TerrainExportScreen#renderProgressBar}, whose private copy stays
-     * in place for now.)
+     * {@code pct} (0-100) in the given color. (Origin: {@code TerrainExportScreen}.)
      */
     public static void progressBar(GuiGraphics g, int x, int y, int w, double pct, int color) {
         g.fill(x, y, x + w, y + 12, 0xFF333344);

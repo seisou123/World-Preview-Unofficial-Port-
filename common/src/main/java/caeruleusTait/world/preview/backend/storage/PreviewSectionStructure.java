@@ -1,3 +1,5 @@
+// Modified from original World Preview (https://modrinth.com/mod/world-preview).
+// See CHANGES.md for details.
 package caeruleusTait.world.preview.backend.storage;
 
 import org.apache.commons.lang3.NotImplementedException;
