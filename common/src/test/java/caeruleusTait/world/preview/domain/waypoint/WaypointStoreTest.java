@@ -122,4 +122,4 @@ class WaypointStoreTest {
         Waypoint waypoint = Waypoint.create("  ", 0, 64, 0, DIM, 0, SEED);
         assertEquals("waypoint", waypoint.name());
     }
-}
+}

@@ -2,7 +2,7 @@ package caeruleusTait.world.preview.backend.export;
 
 import java.nio.file.Path;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -22,7 +22,7 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
  * Unlike the TFC version ({@code LandWaterExportController}):
  * <ul>
  *   <li>TFC supports batch preset exports; this controller handles single configurable exports</li>
- *   <li>TFC uses a dedicated coordination thread; this uses {@link CompletableFuture} + single-thread executor</li>
+ *   <li>TFC uses a dedicated coordination thread; this uses a single-thread executor</li>
  *   <li>TFC has a CANCELLING intermediate phase; this uses a simpler state machine</li>
  * </ul>
  * </p>
@@ -40,15 +40,19 @@ public final class TerrainExportController implements AutoCloseable {
     private volatile long finishedNanos;
     @Nullable private volatile Path outputPath;
     @Nullable private volatile String errorMessage;
-    @Nullable private volatile CompletableFuture<TerrainMapExporter.Result> future;
+    private boolean closed;
 
     public TerrainExportController(int workerThreads) {
-        this.exporter = new TerrainMapExporter(workerThreads);
-        this.coordinator = Executors.newSingleThreadExecutor(r -> {
+        this(new TerrainMapExporter(workerThreads), Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "wp-terrain-export-coordinator");
             t.setDaemon(true);
             return t;
-        });
+        }));
+    }
+
+    TerrainExportController(TerrainMapExporter exporter, ExecutorService coordinator) {
+        this.exporter = exporter;
+        this.coordinator = coordinator;
     }
 
     /**
@@ -60,6 +64,7 @@ public final class TerrainExportController implements AutoCloseable {
     public synchronized boolean start(
             TerrainExportSpec spec,
             TerrainMapExporter.BiomeSampler sampler,
+            TerrainMapExporter.TerrainColorSource colorSource,
             @Nullable TerrainMapExporter.HeightProbe heightProbe,
             @Nullable TerrainMapExporter.ExportContext exportContext,
             @Nullable TerrainMapExporter.BiomeFacts biomeFacts,
@@ -67,7 +72,7 @@ public final class TerrainExportController implements AutoCloseable {
             int yMax,
             Path outputDir
     ) {
-        if (state == State.RUNNING) {
+        if (closed || state == State.RUNNING) {
             return false;
         }
 
@@ -80,44 +85,38 @@ public final class TerrainExportController implements AutoCloseable {
         errorMessage = null;
         state = State.RUNNING;
 
-        future = CompletableFuture.supplyAsync(() -> {
-            try {
-                return exporter.export(
-                        spec,
-                        sampler,
-                        heightProbe,
-                        exportContext,
-                        biomeFacts,
-                        yMin,
-                        yMax,
-                        outputDir,
-                        "",
-                        cancelRequested::get,
-                        completedPixels::addAndGet
-                );
-            } catch (CancellationException e) {
-                throw e;
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }, coordinator);
-
-        future.whenComplete((result, ex) -> {
-            if (ex != null) {
-                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                if (cause instanceof CancellationException) {
-                    state = State.CANCELLED;
-                } else {
-                    errorMessage = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
-                    state = State.FAILED;
-                    LOGGER.error("Terrain export failed", cause);
+        try {
+            coordinator.execute(() -> {
+                TerrainMapExporter.Result result = null;
+                Throwable failure = null;
+                try {
+                    result = exporter.export(spec, sampler, colorSource, heightProbe, exportContext, biomeFacts,
+                            yMin, yMax, outputDir, "", cancelRequested::get, completedPixels::addAndGet);
+                } catch (Throwable ex) {
+                    failure = ex;
                 }
-            } else {
-                outputPath = result.pngPath();
-                state = State.COMPLETED;
-            }
+                synchronized (TerrainExportController.this) {
+                    finishedNanos = System.nanoTime();
+                    if (failure instanceof CancellationException) {
+                        state = State.CANCELLED;
+                    } else if (failure != null) {
+                        errorMessage = failure.getMessage() != null
+                                ? failure.getMessage() : failure.getClass().getSimpleName();
+                        state = State.FAILED;
+                        LOGGER.error("Terrain export failed", failure);
+                    } else {
+                        outputPath = result.pngPath();
+                        completedPixels.set(totalPixels);
+                        state = State.COMPLETED;
+                    }
+                }
+            });
+        } catch (RejectedExecutionException ex) {
             finishedNanos = System.nanoTime();
-        });
+            errorMessage = "Terrain export executor is closed";
+            state = State.FAILED;
+            return false;
+        }
 
         return true;
     }
@@ -135,7 +134,7 @@ public final class TerrainExportController implements AutoCloseable {
     /**
      * Get the current state snapshot.
      */
-    public Status status() {
+    public synchronized Status status() {
         long now = (finishedNanos == 0L) ? System.nanoTime() : finishedNanos;
         long elapsed = (startedNanos == 0L) ? 0L : Math.max(0L, now - startedNanos);
         long completed = Math.min(completedPixels.get(), totalPixels);
@@ -145,7 +144,8 @@ public final class TerrainExportController implements AutoCloseable {
             remainingNanos = (long) ((double) elapsed * (totalPixels - completed) / completed);
         }
 
-        double pct = totalPixels <= 0L ? 0.0 : 100.0 * completed / totalPixels;
+        double pct = state == State.COMPLETED ? 100.0
+                : totalPixels <= 0L ? 0.0 : Math.min(99.0, 100.0 * completed / totalPixels);
 
         return new Status(state, completed, totalPixels, pct, elapsed, remainingNanos, outputPath, errorMessage);
     }
@@ -158,9 +158,11 @@ public final class TerrainExportController implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        closed = true;
         cancel();
-        coordinator.shutdownNow();
+        // Keep queued work runnable so it observes cancellation and publishes a terminal state.
+        coordinator.shutdown();
     }
 
     // ===== Internal types =====

@@ -112,4 +112,4 @@ class SessionDomainTest {
         @Override public void onCancel(Session s) { cancelCount++; }
         @Override public void onClose(Session s) { closeCount++; }
     }
-}
+}

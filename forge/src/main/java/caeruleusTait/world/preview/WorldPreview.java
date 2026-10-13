@@ -170,20 +170,40 @@ public class WorldPreview {
         if (net.minecraftforge.fml.ModList.get() != null) {
         MinecraftForge.EVENT_BUS.addListener((net.minecraftforge.event.server.ServerStartedEvent event) -> {
             if (!SpawnOverrideManager.shouldApply()) return;
-            SpawnOverrideManager.markApplied();
             var server = event.getServer();
-            if (server.isDedicatedServer()) return;
-            if (!cfg.spawnOverrideEnabled) return;
+            if (server.isDedicatedServer()) {
+                SpawnOverrideManager.markApplied();
+                return;
+            }
+            if (!cfg.spawnOverrideEnabled) {
+                SpawnOverrideManager.markApplied();
+                return;
+            }
             String command = "setworldspawn " + cfg.spawnOverrideX + " 100 " + cfg.spawnOverrideZ;
+            boolean failed = false;
             try {
-                server.getCommands().performPrefixedCommand(
+                // performPrefixedCommand reports command errors (a syntax or
+                // argument failure) through the command source instead of
+                // throwing; the return value is the only reliable success
+                // signal.
+                int result = server.getCommands().performPrefixedCommand(
                         server.createCommandSourceStack(),
                         command
                 );
-                LOGGER.info("Spawn override applied at X={}, Z={}", cfg.spawnOverrideX, cfg.spawnOverrideZ);
+                if (result > 0) {
+                    LOGGER.info("Spawn override applied at X={}, Z={}", cfg.spawnOverrideX, cfg.spawnOverrideZ);
+                } else {
+                    failed = true;
+                    LOGGER.error("setworldspawn did not report success; the spawn override is not applied to this world");
+                }
             } catch (Exception e) {
-                LOGGER.error("Failed to apply spawn override", e);
+                failed = true;
+                LOGGER.error("Failed to apply spawn override; it is not applied to this world", e);
             }
+            // The apply point here is the one-shot server-started event: a
+            // pending flag would only ever fire again for whichever world
+            // loads next, so consume the flag either way instead of retrying.
+            SpawnOverrideManager.markApplied();
         });
 
         // Register reload listeners via Forge event instead of mixin

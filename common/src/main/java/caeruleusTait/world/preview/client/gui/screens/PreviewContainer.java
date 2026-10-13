@@ -77,6 +77,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import caeruleusTait.world.preview.backend.export.TerrainCategory;
 import caeruleusTait.world.preview.backend.export.TerrainClassifier;
+import caeruleusTait.world.preview.backend.export.TerrainExportColorMode;
 import caeruleusTait.world.preview.backend.export.TerrainExportController;
 import caeruleusTait.world.preview.backend.export.TerrainExportSpec;
 import caeruleusTait.world.preview.backend.export.TerrainMapExporter;
@@ -166,8 +167,19 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private PreviewData previewData;
     private SeedSearchService seedSearchService;
     private TerrainExportController terrainExportController;
-    private volatile TerrainMapExporter.BiomeSampler terrainExportSampler;
-    /** Worldgen epoch the current terrainExportSampler/seedSearchFactory were built for. */
+    /**
+     * Quart-space biome query over the worldgen context's noise resolver.
+     * The export layer is chosen per export (the preview center's Y at start
+     * time), so only this resolver-shaped query is captured at setup; the
+     * per-export {@code BiomeSampler} is assembled in {@link #startTerrainExport}.
+     */
+    @FunctionalInterface
+    private interface NoiseBiomeQuery {
+        Holder<Biome> get(int quartX, int quartY, int quartZ);
+    }
+
+    private volatile NoiseBiomeQuery terrainExportNoise;
+    /** Worldgen epoch the current terrainExportNoise/seedSearchFactory were built for. */
     private volatile long samplerContextEpoch = -1;
     private volatile SeedSearchService.SeedContextFactory seedSearchFactory;
     // Analysis session lifecycle: the container owns the session so closing the
@@ -280,6 +292,13 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     // structuralStrideSnapshot == -1 means "no snapshot".
     private boolean structuralFullVertSnapshot;
     private int structuralStrideSnapshot = -1;
+
+    /**
+     * Setup inputs of the last completed updateSettings_real (see
+     * computeSetupInputs).  null until the first setup completes; only
+     * accessed from the render thread (updateSettings_real runs there).
+     */
+    private Object lastSetupInputs;
     private RenderSettings.SamplerType structuralSamplerSnapshot;
     private ResourceLocation structuralDimensionSnapshot;
 
@@ -681,6 +700,15 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         previewDisplay.setOccludingWidgetsSupplier(() -> toRender);
     }
 
+    /**
+     * Re-arms the display's occluder-yield list for the main preview screen.
+     * Screens that reuse the display (the analysis screen) swap the list for
+     * their own widgets while open; this restores the main list on close.
+     */
+    public void rearmDisplayOccluders() {
+        previewDisplay.setOccludingWidgetsSupplier(() -> toRender);
+    }
+
     /** Factory for the standard 20x20 icon button used across the toolbar. */
     private static OldStyleImageButton iconButton(int texX, int texY, Button.OnPress onPress) {
         return new OldStyleImageButton(
@@ -797,7 +825,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                         if (e == null) {
                             setupFailed = false;
                         } else {
-                            e.printStackTrace();
+                            LOGGER.error("Preview setup failed", e);
                             setupFailed = true;
                         }
                         // Always reset isUpdating when this update completes
@@ -818,10 +846,56 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
     }
 
+    /**
+     * Everything a setup rebuild consumes: the worldgen context content (seed,
+     * datapacks, feature flags, world preset — via the provider's structural
+     * fingerprint and the data configuration), the selected dimension, the
+     * sampling stride, and the config fields that define the sampled data's
+     * identity.  Pure render options deliberately stay out — they change
+     * without touching the sampling infrastructure; per-queue sampling toggles
+     * (structures/heightmap/intersections) are covered by
+     * applySamplingFeatureToggles and need no rebuild.  Both the skip check
+     * and the post-setup store call this, so values the setup normalizes
+     * (colorMap fallback, height-range validation, dimension auto-select) are
+     * captured as stored.
+     */
+    private Object computeSetupInputs(@Nullable WorldCreationContext wcContext) {
+        return java.util.Arrays.asList(
+                dataProvider.seed(),
+                dataProvider.worldgenStructuralFingerprint(),
+                dataProvider.worldDataConfiguration(wcContext),
+                renderSettings.dimension,
+                renderSettings.quartStride(),
+                cfg.colorMap,
+                cfg.heightmapMinY,
+                cfg.heightmapMaxY,
+                cfg.numThreads(),
+                cfg.buildFullVertChunk,
+                cfg.storeNoiseSamples,
+                cfg.onlySampleInVisualRange
+        );
+    }
+
     private void updateSettings_real(@Nullable WorldCreationContext wcContext) {
         LOGGER.info("[WP-Update] updateSettings_real start: wcContext={}", wcContext != null ? "non-null" : "null");
         updateSeedAndConfigUI();
 
+        // Fingerprint gate: when nothing a setup consumes has changed since the
+        // last completed one (a config save or a listener firing right after
+        // startup), re-running the rebuild would cancel the WorkManager,
+        // discard every completed work result and recreate the sampling
+        // infrastructure for nothing.  The liveness check keeps the
+        // conservative full path for torn-down states (cancel/suspend), where
+        // a rebuild is exactly what the caller needs.  The toggles are
+        // re-applied because they are not part of the fingerprint: they are
+        // per-queue decisions, not data identity.
+        final Object setupInputs = computeSetupInputs(wcContext);
+        if (setupInputs.equals(lastSetupInputs)
+                && workManager.isSetup() && workManager.previewStorage() != null) {
+            LOGGER.info("[WP-Update] updateSettings_real skipped: setup inputs unchanged");
+            applySamplingFeatureToggles();
+            return;
+        }
         WorldDataConfiguration worldDataConfiguration = dataProvider.worldDataConfiguration(wcContext);
         Registry<Biome> biomeRegistry = dataProvider.registryAccess(wcContext).registryOrThrow(Registries.BIOME);
         Registry<Structure> strucutreRegistry = dataProvider.registryAccess(wcContext).registryOrThrow(Registries.STRUCTURE);
@@ -896,6 +970,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         previewDisplay.setHighlightCaves(false);
         previewDisplay.resetGenerationTimer();
         toggleCaves.selected = false;
+        lastSetupInputs = computeSetupInputs(wcContext);
         LOGGER.info("[WP-Update] updateSettings_real complete: previewStorage={}", workManager.previewStorage() != null);
     }
 
@@ -997,7 +1072,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
      */
     private void invalidateWorldScopedTasks() {
         // Drop the stale factories first so no new task can capture them.
-        terrainExportSampler = null;
+        terrainExportNoise = null;
         seedSearchFactory = null;
         samplerContextEpoch = -1;
         closeStructureSampler();
@@ -1136,12 +1211,14 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 compositeRegistryAccess.lookupOrThrow(net.minecraft.core.registries.Registries.NOISE),
                 currentSeed);
         final var terrainSampler = terrainRandomState.sampler();
-        final int terrainQuartY = net.minecraft.core.QuartPos.fromBlock(64);
-        terrainExportSampler = (blockX, blockZ) ->
+        // The export layer is chosen per export (the preview center's Y at
+        // start time, spec.exportY), so only the quart-space resolver query
+        // is captured here.
+        terrainExportNoise = (quartX, quartY, quartZ) ->
             biomeSource.getNoiseBiome(
-                net.minecraft.core.QuartPos.fromBlock(blockX),
-                terrainQuartY,
-                net.minecraft.core.QuartPos.fromBlock(blockZ),
+                quartX,
+                quartY,
+                quartZ,
                 terrainSampler);
 
         // Remember which worldgen epoch these snapshots belong to; background
@@ -1351,6 +1428,15 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         return lastSeedSearchCriteria;
     }
 
+    /** Player-anchored initial center for the next open, set by the in-game preview screen (opt-in). */
+    @Nullable
+    private BlockPos initialCenterOverride;
+
+    /** Anchors the preview's initial center on the given position for the next open ("open at player"). */
+    public void setInitialCenterOverride(@Nullable BlockPos pos) {
+        initialCenterOverride = pos;
+    }
+
     /** The session-level advanced search options edited by the seed search screens. */
     public SeedSearchOptions seedSearchOptions() {
         return seedSearchOptions;
@@ -1358,8 +1444,15 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 
     private void queueEarlyPreviewRange() {
         // Early queue: start sampling the center region immediately so the
-        // worker threads are busy while we set up the rest of the GUI.
-        renderSettings.resetCenter();
+        // worker threads are busy while we set up the rest of the GUI. The
+        // center itself only resets when it was never placed: a persisted
+        // position (or the opt-in player anchor) survives reopening.
+        if (initialCenterOverride != null) {
+            renderSettings.centerOn(initialCenterOverride);
+            initialCenterOverride = null;
+        } else if (!renderSettings.centerInitialized) {
+            renderSettings.resetCenter();
+        }
         // Invalidate the render cache and queued-range guard so the next
         // render frame sees a genuinely fresh center and re-uploads new data.
         // Without this, lastQueuedRange still holds the previous drag range,
@@ -1507,7 +1600,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                         return NativeImage.read(in);
                     }
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOGGER.error("Failed to load the player icon; using a blank fallback", e);
                     return new NativeImage(16, 16, true);
                 }
             });
@@ -1519,7 +1612,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                         return NativeImage.read(in);
                     }
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    LOGGER.error("Failed to load the spawn icon; using a blank fallback", e);
                     return new NativeImage(16, 16, true);
                 }
             });
@@ -1529,7 +1622,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             } catch (Exception e) {
                 playerIcon = new NativeImage(16, 16, true);
                 spawnIcon = new NativeImage(16, 16, true);
-                e.printStackTrace();
+                LOGGER.error("Failed to load the player and spawn icons; using blank fallbacks", e);
             }
         } finally {
             executor.shutdown();
@@ -1563,7 +1656,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 return NativeImage.read(in);
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            LOGGER.error("Failed to decode structure icon '{}'; using a blank fallback", iconId, e);
             return new NativeImage(16, 16, true);
         }
     }
@@ -1654,6 +1747,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
         // Inside the coalesce window: remember the newest counts and schedule
         // one trailing flush so the final state is never dropped.
+        if (closed) {
+            return;
+        }
         pendingVisibleBiomes = visibleBiomes;
         if (pendingBiomesListFlush == null || pendingBiomesListFlush.isDone()) {
             long delayMs = Math.max(1, (BIOMES_LIST_MIN_INTERVAL_NANOS - elapsed) / 1_000_000L);
@@ -1721,6 +1817,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         pendingSeedEditValue = seed;
         if (pendingSeedEditCommit != null) {
             pendingSeedEditCommit.cancel(false);
+        }
+        if (closed) {
+            return;
         }
         pendingSeedEditCommit = reloadExecutor.schedule(
                 () -> minecraft.execute(() -> setSeedImmediate(seed)),
@@ -1982,8 +2081,17 @@ public void onScreenReentry() {
             return;
         }
         previewDisplay().invalidateRenderCache();
-        workManager.cancel();
-        start();
+        if (workManager.rebuildSamplerAndStorage()) {
+            // Stride-only rebuild: the worldgen context, color data and worker
+            // pools are still valid — only the sampler and storage were
+            // swapped in place.  reloadData (not just invalidateRenderCache)
+            // drops the display's queue dedup guards and throttle state so the
+            // render loop re-queues the viewport against the fresh storage.
+            previewDisplay.reloadData();
+        } else {
+            workManager.cancel();
+            start();
+        }
         markStructuralRebuildApplied();
     }
 
@@ -2385,20 +2493,77 @@ public void onScreenReentry() {
 
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
         closed = true;
-        if (pendingSeedEditCommit != null) {
-            pendingSeedEditCommit.cancel(false);
+        // Kill any in-flight updateSettings chain first: a continuation already
+        // posted to the render thread would otherwise pass its revision check
+        // after this close, rebuild the worker pools and reallocate icons that
+        // are then never released.
+        invalidatePendingUpdates();
+        RuntimeException closeError = null;
+        try {
+            if (pendingSeedEditCommit != null) {
+                pendingSeedEditCommit.cancel(false);
+            }
+            if (pendingBiomesListFlush != null) {
+                pendingBiomesListFlush.cancel(false);
+            }
+            try {
+                seedSearchService.close();
+                terrainExportController.close();
+                closeActiveAnalysisSession();
+            } catch (RuntimeException e) {
+                // Keep going: workManager.cancel() below must still run.
+                closeError = e;
+            }
+            workManager.cancel();
+        } catch (RuntimeException e) {
+            if (closeError == null) {
+                closeError = e;
+            } else {
+                closeError.addSuppressed(e);
+            }
+        } finally {
+            // Each release step is isolated: a throw from one must not skip
+            // the others, and the original closeError is rethrown even when
+            // a release step throws (attached as a suppressed exception).
+            RuntimeException releaseError = null;
+            try {
+                previewDisplay.close();
+            } catch (RuntimeException e) {
+                releaseError = e;
+            }
+            try {
+                freeStructureIcons();
+                freePlayerAndSpawnIcons();
+            } catch (RuntimeException e) {
+                if (releaseError == null) {
+                    releaseError = e;
+                }
+            }
+            try {
+                closeReloadExecutor();
+            } catch (RuntimeException e) {
+                if (releaseError == null) {
+                    releaseError = e;
+                }
+            }
+            if (releaseError != null) {
+                if (closeError != null) {
+                    releaseError.addSuppressed(closeError);
+                }
+                closeError = releaseError;
+            }
         }
-        if (pendingBiomesListFlush != null) {
-            pendingBiomesListFlush.cancel(false);
+        if (closeError != null) {
+            throw closeError;
         }
-        seedSearchService.close();
-        terrainExportController.close();
-        closeActiveAnalysisSession();
-        workManager.cancel();
-        previewDisplay.close();
-        freeStructureIcons();
-        freePlayerAndSpawnIcons();
+    }
+
+    /** Shuts the reload executor down and awaits its termination. */
+    private void closeReloadExecutor() {
         if (reloadExecutor != null) {
             reloadExecutor.shutdownNow();
             boolean interrupted = false;
@@ -2573,24 +2738,46 @@ public void onScreenReentry() {
     }
 
     public void openTerrainExportScreen() {
-        if (terrainExportSampler == null) return;
+        if (terrainExportNoise == null) return;
         minecraft.setScreen(new TerrainExportScreen(parentScreen, this));
     }
 
-    public void startTerrainExport(TerrainExportSpec spec) {
-        if (terrainExportController.isRunning()) return;
-        if (terrainExportSampler == null) return;
+    /** @return false when the export was not started (busy, no sampler, or stale worldgen context). */
+    public boolean startTerrainExport(TerrainExportSpec spec) {
+        if (terrainExportController.isRunning()) return false;
+        // Capture the query once: a world switch mid-export nulls the field,
+        // but the running export must keep sampling its own captured context
+        // until the epoch guard and cancellation stop it.
+        NoiseBiomeQuery noise = terrainExportNoise;
+        if (noise == null) return false;
         // Lineage guard: the sampler was built for a specific worldgen context.
         // After a seed/dimension/generator switch the old sampler must not
         // produce exports labeled with (or sampling) the new world.
         if (samplerContextEpoch != workManager.epoch()) {
             LOGGER.warn("Terrain export rejected: worldgen context changed since the sampler was built");
-            return;
+            return false;
         }
         Path outputDir = worldPreview.configDir().resolve("terrain_exports");
-        terrainExportController.start(spec, terrainExportSampler, heightProbe(), exportOrigin(),
-                buildTerrainExportBiomeFacts(),
-                workManager.yMin(), workManager.yMax(), outputDir);
+        // The export evaluates biomes at the Y layer the preview is scrolled
+        // to (spec.exportY, captured at start time), so the exported map
+        // matches the viewed layer and the storage fast path below hits the
+        // sampled layer.
+        final int exportQuartY = net.minecraft.core.QuartPos.fromBlock(spec.exportY());
+        TerrainMapExporter.BiomeSampler sampler = (blockX, blockZ) -> noise.get(
+                net.minecraft.core.QuartPos.fromBlock(blockX), exportQuartY,
+                net.minecraft.core.QuartPos.fromBlock(blockZ));
+        TerrainMapExporter.BiomeFacts biomeFacts = buildTerrainExportBiomeFacts(spec);
+        TerrainMapExporter.TerrainColorSource colorSource;
+        if (spec.colorMode() == TerrainExportColorMode.BIOMES) {
+            TerrainMapExporter.BiomeColorTable colorTable = buildTerrainExportBiomeColors();
+            colorSource = colorTable != null
+                    ? TerrainMapExporter.biomes(colorTable)
+                    : TerrainMapExporter.categories(biomeFacts == null ? null : biomeFacts.resolver());
+        } else {
+            colorSource = TerrainMapExporter.categories(biomeFacts == null ? null : biomeFacts.resolver());
+        }
+        return terrainExportController.start(spec, sampler, colorSource, heightProbe(), exportOrigin(),
+                biomeFacts, workManager.yMin(), workManager.yMax(), outputDir);
     }
 
     /**
@@ -2602,7 +2789,7 @@ public void onScreenReentry() {
      * context, or table build failure). Storage access is strictly read-only.
      */
     @Nullable
-    private TerrainMapExporter.BiomeFacts buildTerrainExportBiomeFacts() {
+    private TerrainMapExporter.BiomeFacts buildTerrainExportBiomeFacts(TerrainExportSpec spec) {
         final var storage = workManager.previewStorage();
         if (storage == null || previewData == null || workManager.worldgenContext() == null) {
             return null;
@@ -2642,18 +2829,23 @@ public void onScreenReentry() {
             return null;
         }
 
-        // The export sampler evaluates biomes at Y=64, so reuse the storage's
-        // Y=64 biome layer. Completion bits live on the primary section layer:
+        // The export sampler evaluates biomes at the spec's export Y (the
+        // preview center's Y at start time), so reuse the storage's matching
+        // biome layer. Completion bits live on the primary section layer:
         // y=0 with full-vertical chunk sampling, the sampled layer itself
         // otherwise. An unsampled or partially sampled chunk makes the probe
         // answer null (noise-sampling fallback for that pixel) — never a
-        // stale or missing value.
-        final int completionQuartY = net.minecraft.core.QuartPos.fromBlock(cfg.buildFullVertChunk ? 0 : 64);
-        final int dataQuartY = net.minecraft.core.QuartPos.fromBlock(64);
+        // stale or missing value.  Only FULL-RESOLUTION completion counts:
+        // a chunk the drag tier filled with its coarse sampler is treated as
+        // unsampled here, so the export falls back to sampling instead of
+        // baking a 4x4-quart block into the image.
+        final int dataQuartY = net.minecraft.core.QuartPos.fromBlock(spec.exportY());
+        final int completionQuartY = cfg.buildFullVertChunk
+                ? net.minecraft.core.QuartPos.fromBlock(0) : dataQuartY;
         TerrainMapExporter.BiomeIdProbe probe = (blockX, blockZ) -> {
             int qx = net.minecraft.core.QuartPos.fromBlock(blockX);
             int qz = net.minecraft.core.QuartPos.fromBlock(blockZ);
-            if (!storage.isChunkSampled(qx, completionQuartY, qz,
+            if (!storage.isChunkSampledFine(qx, completionQuartY, qz,
                     caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_BIOME)) {
                 return null;
             }
@@ -2664,6 +2856,43 @@ public void onScreenReentry() {
 
         return new TerrainMapExporter.BiomeFacts(
                 probe, new TerrainMapExporter.IdTableResolver(categoryById, estimatedHeightById));
+    }
+
+    /**
+     * Per-id biome color table for the export's biome color mode: preview
+     * color, registry tag and display name for every registered biome id,
+     * sharing the storage id space with {@link #buildTerrainExportBiomeFacts}.
+     * Registry-level data with no storage dependency, so the batch path (no
+     * facts) can use it too. Returns {@code null} when preview data is
+     * missing or the table cannot be built; callers fall back to the
+     * category color source.
+     */
+    @Nullable
+    public TerrainMapExporter.BiomeColorTable buildTerrainExportBiomeColors() {
+        if (previewData == null) {
+            return null;
+        }
+        try {
+            final PreviewData.BiomeData[] biomeDataById = previewData.biomeId2BiomeData();
+            final int[] colorById = new int[biomeDataById.length];
+            final String[] tagById = new String[biomeDataById.length];
+            final String[] nameById = new String[biomeDataById.length];
+            for (int id = 0; id < biomeDataById.length; id++) {
+                final PreviewData.BiomeData biomeData = biomeDataById[id];
+                if (biomeData == null || biomeData.tag() == null) {
+                    continue;
+                }
+                // The preview engine paints biome pixels as color|0xFF000000
+                // (textureColor), so the export uses the same opaque ARGB.
+                colorById[id] = biomeData.color() | 0xFF000000;
+                tagById[id] = biomeData.tag().toString();
+                nameById[id] = biomeData.name();
+            }
+            return new TerrainMapExporter.BiomeColorTable(colorById, tagById, nameById);
+        } catch (Exception e) {
+            LOGGER.warn("Terrain export biome color table unavailable; falling back to category colors", e);
+            return null;
+        }
     }
 
     /** Real-height probe over the live preview storage; null when unavailable. */
@@ -2825,5 +3054,26 @@ public void onScreenReentry() {
 
     public List<AbstractWidget> widgets() {
         return toRender;
+    }
+
+    /**
+     * Starts a middle-press autoscroll on whichever sidebar list is visible.
+     * Returns false when no visible list can scroll, so the press falls
+     * through to normal dispatch.
+     */
+    public boolean beginListScrollPan(double mouseX, double mouseY) {
+        if (biomesList.visible && biomesList.isMouseOver(mouseX, mouseY)) {
+            return biomesList.beginScrollPan(mouseY);
+        }
+        if (structuresList.visible && structuresList.isMouseOver(mouseX, mouseY)) {
+            return structuresList.beginScrollPan(mouseY);
+        }
+        return false;
+    }
+
+    /** Ends any middle-press autoscroll started by {@link #beginListScrollPan}. */
+    public void endListScrollPan() {
+        biomesList.endScrollPan();
+        structuresList.endScrollPan();
     }
 }

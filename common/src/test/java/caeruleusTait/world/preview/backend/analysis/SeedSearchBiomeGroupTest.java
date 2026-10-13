@@ -188,4 +188,4 @@ class SeedSearchBiomeGroupTest {
         var hit = (SeedSearchResult.Hit) resultRef.get();
         assertTrue(hit.score() > 0, "group hit must score above zero");
     }
-}
+}

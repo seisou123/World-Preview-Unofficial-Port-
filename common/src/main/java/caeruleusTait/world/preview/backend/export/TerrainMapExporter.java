@@ -6,17 +6,27 @@ import net.minecraft.core.Holder;
 import net.minecraft.world.level.biome.Biome;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.File;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+
+
 import java.time.format.DateTimeFormatter;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -122,6 +132,203 @@ public final class TerrainMapExporter {
         }
     }
 
+    /** Per-id biome color table over the storage biome-id space (biome color mode). */
+    public record BiomeColorTable(int[] colorById, String[] tagById, String[] nameById) {
+    }
+
+    /**
+     * Per-pixel color source for the exported map: turns the biome identity of
+     * each pixel (a storage id on the fast path, a freshly sampled holder on
+     * the noise path) into an opaque ARGB color and a metadata statistics
+     * bucket. Implementations also self-describe the metadata: the
+     * {@code classificationMode} value and the color legend. The exporter is
+     * otherwise agnostic of whether it paints terrain categories or biomes.
+     */
+    public interface TerrainColorSource {
+        /**
+         * Color for a storage biome id (fast path). Only called for ids the
+         * facts resolver knows, so the resolver guard and the color table
+         * always agree on the same id space.
+         */
+        int colorForId(short id);
+
+        /** Metadata statistics bucket for a storage biome id (fast path). */
+        int bucketForId(short id);
+
+        /**
+         * Color for a freshly sampled holder (noise path). A null holder or a
+         * biome without a table entry falls back to the {@code UNKNOWN}
+         * category color so unresolvable pixels stay visible.
+         */
+        int colorForHolder(@Nullable Holder<Biome> holder);
+
+        /** Metadata statistics bucket for a freshly sampled holder; -1 skips the pixel. */
+        int bucketForHolder(@Nullable Holder<Biome> holder);
+
+        /** Number of metadata statistics buckets. */
+        int bucketCount();
+
+        /** Value written into the metadata's {@code classificationMode} field. */
+        String modeName();
+
+        /** Writes the pixel-count statistics and the color legend into the export metadata. */
+        void writeLegend(JsonObject metadata, long[] statCounts);
+    }
+
+    /** Category mode: the historical nine-category coloring over the facts resolver. */
+    private record CategoryColorSource(@Nullable BiomeIdResolver resolver) implements TerrainColorSource {
+        @Override
+        public int colorForId(short id) {
+            return resolver != null ? resolver.category(id).argbColor() : TerrainCategory.UNKNOWN.argbColor();
+        }
+
+        @Override
+        public int bucketForId(short id) {
+            return resolver != null ? resolver.category(id).ordinal() : TerrainCategory.UNKNOWN.ordinal();
+        }
+
+        @Override
+        public int colorForHolder(@Nullable Holder<Biome> holder) {
+            return TerrainClassifier.classify(holder).argbColor();
+        }
+
+        @Override
+        public int bucketForHolder(@Nullable Holder<Biome> holder) {
+            return TerrainClassifier.classify(holder).ordinal();
+        }
+
+        @Override
+        public int bucketCount() {
+            return TerrainCategory.values().length;
+        }
+
+        @Override
+        public String modeName() {
+            return "vanilla_biome_tag_priority";
+        }
+
+        @Override
+        public void writeLegend(JsonObject metadata, long[] statCounts) {
+            JsonObject categoryPixels = new JsonObject();
+            for (TerrainCategory category : TerrainCategory.values()) {
+                categoryPixels.addProperty(category.name(), statCounts[category.ordinal()]);
+            }
+            metadata.add("categoryPixels", categoryPixels);
+            JsonArray categories = new JsonArray();
+            for (TerrainCategory category : TerrainCategory.values()) {
+                JsonObject entry = new JsonObject();
+                entry.addProperty("name", category.name());
+                entry.addProperty("color", category.hexColor());
+                categories.add(entry);
+            }
+            metadata.add("categories", categories);
+        }
+    }
+
+    /**
+     * Biome mode: every pixel takes its biome's preview color. Storage ids
+     * index the color table directly; freshly sampled holders are bridged
+     * through their registry key's path, and unknown biomes fall back to the
+     * {@code UNKNOWN} category color.
+     */
+    private static final class BiomeColorSource implements TerrainColorSource {
+        private final int[] colorById;
+        private final String[] tagById;
+        private final String[] nameById;
+        private final Map<String, Short> idByTag;
+
+        BiomeColorSource(BiomeColorTable table) {
+            this.colorById = table.colorById();
+            this.tagById = table.tagById();
+            this.nameById = table.nameById();
+            this.idByTag = new java.util.HashMap<>();
+            for (short id = 0; id < tagById.length; id++) {
+                if (tagById[id] != null) {
+                    idByTag.put(tagById[id], id);
+                }
+            }
+        }
+
+        @Override
+        public int colorForId(short id) {
+            return knownColor(id) ? colorById[id] : TerrainCategory.UNKNOWN.argbColor();
+        }
+
+        @Override
+        public int bucketForId(short id) {
+            return id;
+        }
+
+        @Override
+        public int colorForHolder(@Nullable Holder<Biome> holder) {
+            short id = idForHolder(holder);
+            return id >= 0 ? colorById[id] : TerrainCategory.UNKNOWN.argbColor();
+        }
+
+        @Override
+        public int bucketForHolder(@Nullable Holder<Biome> holder) {
+            return idForHolder(holder);
+        }
+
+        @Override
+        public int bucketCount() {
+            return colorById.length;
+        }
+
+        @Override
+        public String modeName() {
+            return "biome_colors";
+        }
+
+        @Override
+        public void writeLegend(JsonObject metadata, long[] statCounts) {
+            JsonObject biomePixels = new JsonObject();
+            JsonArray biomes = new JsonArray();
+            for (int id = 0; id < tagById.length; id++) {
+                if (tagById[id] == null) {
+                    continue;
+                }
+                biomePixels.addProperty(tagById[id], statCounts[id]);
+                JsonObject entry = new JsonObject();
+                entry.addProperty("id", tagById[id]);
+                if (nameById[id] != null) {
+                    entry.addProperty("name", nameById[id]);
+                }
+                entry.addProperty("color", hexColor(colorById[id]));
+                biomes.add(entry);
+            }
+            metadata.add("biomePixels", biomePixels);
+            metadata.add("biomes", biomes);
+        }
+
+        private short idForHolder(@Nullable Holder<Biome> holder) {
+            if (holder == null) {
+                return -1;
+            }
+            return holder.unwrapKey()
+                    .map(key -> idByTag.getOrDefault(key.location().toString(), (short) -1))
+                    .orElse((short) -1);
+        }
+
+        private boolean knownColor(short id) {
+            return id >= 0 && id < colorById.length && colorById[id] != 0;
+        }
+
+        private static String hexColor(int argb) {
+            return String.format("#%02X%02X%02X", (argb >>> 16) & 0xFF, (argb >>> 8) & 0xFF, argb & 0xFF);
+        }
+    }
+
+    /** Category mode color source; a null resolver only serves the noise path. */
+    public static TerrainColorSource categories(@Nullable BiomeIdResolver resolver) {
+        return new CategoryColorSource(resolver);
+    }
+
+    /** Biome mode color source over the per-id preview color table. */
+    public static TerrainColorSource biomes(BiomeColorTable table) {
+        return new BiomeColorSource(table);
+    }
+
     /**
      * Execute terrain map export with a filename prefix (used by batch exports to
      * tag each file with its dimension, e.g. {@code terrain_overworld_...}).
@@ -139,12 +346,16 @@ public final class TerrainMapExporter {
             BooleanSupplier cancelled,
             LongConsumer progress
     ) throws Exception {
-        return export(spec, sampler, null, null, null, yMin, yMax, outputDir, filenamePrefix, cancelled, progress);
+        return export(spec, sampler, categories(null), null, null, null, yMin, yMax, outputDir, filenamePrefix, cancelled, progress);
     }
 
     /**
-     * Full export entry: optional real-height probe, optional world lineage
-     * for the metadata, and optional storage-backed biome facts.
+     * Full export entry: the pixel color source, an optional real-height
+     * probe, optional world lineage for the metadata, and optional
+     * storage-backed biome facts.
+     * {@code colorSource} decides whether pixels take the nine terrain
+     * category colors or their biome's preview color; the metadata's
+     * classificationMode and color legend come from the same source.
      * {@code heightProbe == null} keeps the legacy estimate behavior; when
      * supplied, real heights win and the metadata records the height source
      * per pixel set. {@code biomeFacts == null} keeps the pure noise-sampling
@@ -158,6 +369,7 @@ public final class TerrainMapExporter {
     public Result export(
             TerrainExportSpec spec,
             BiomeSampler sampler,
+            TerrainColorSource colorSource,
             @Nullable HeightProbe heightProbe,
             @Nullable ExportContext exportContext,
             @Nullable BiomeFacts biomeFacts,
@@ -168,145 +380,184 @@ public final class TerrainMapExporter {
             BooleanSupplier cancelled,
             LongConsumer progress
     ) throws Exception {
+        if (!TerrainExportSpec.isSupported(spec.coverageRadius(), spec.blocksPerPixel())) {
+            throw new IllegalArgumentException("Export exceeds the pixel allocation limit");
+        }
+        checkCancelled(cancelled);
         Files.createDirectories(outputDir);
-
         int width = spec.imageWidth();
         int height = spec.imageHeight();
         int ySpan = Math.max(1, yMax - yMin);
-
         String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
         String filename = filenamePrefix + "terrain_" + timestamp + "_"
                 + spec.centerX() + "_" + spec.centerZ() + "_"
-                + spec.coverageRadius() + ".png";
+                + spec.coverageRadius() + "_" + UUID.randomUUID() + ".png";
         Path pngPath = outputDir.resolve(filename);
-        Path partPath = pngPath.resolveSibling(pngPath.getFileName() + ".part");
-        Files.deleteIfExists(partPath);
-
-        // Build tile task list
-        List<TileTask> tasks = buildTileTasks(spec, width, height);
-        int totalTiles = tasks.size();
-
+        Path partPath = pngPath.resolveSibling(filename + ".part");
+        Path metaPath = pngPath.resolveSibling(filename.substring(0, filename.length() - 4) + ".json");
+        Path metaPart = metaPath.resolveSibling(metaPath.getFileName() + ".part");
+        boolean writeHeightmap = spec.exportHeightmap();
+        Path heightPath = null;
+        Path heightPart = null;
+        if (writeHeightmap) {
+            String heightName = filename.substring(0, filename.length() - 4) + "_height.png";
+            heightPath = outputDir.resolve(heightName);
+            heightPart = heightPath.resolveSibling(heightName + ".part");
+        }
+        AtomicBoolean stopping = new AtomicBoolean();
+        BooleanSupplier taskCancelled = () -> stopping.get() || cancelled.getAsBoolean();
         ExecutorService workers = Executors.newFixedThreadPool(workerThreads, new ExportThreadFactory());
-        List<Future<TileResult>> futures = new ArrayList<>(totalTiles);
-
-        NativeImage image = new NativeImage(NativeImage.Format.RGBA, width, height, false);
-
+        ExecutorCompletionService<TileResult> completions = new ExecutorCompletionService<>(workers);
+        Set<Future<TileResult>> inFlight = new HashSet<>();
+        boolean complete = false;
         try {
-            // Submit all tile tasks
-            for (TileTask task : tasks) {
-                final TileTask t = task;
-                futures.add(workers.submit(() ->
-                        sampleTile(t, spec, sampler, heightProbe, biomeFacts, yMin, ySpan, cancelled, progress)));
-            }
-
-            // Collect results in completion order, write to NativeImage, collect height data
-            short[] heightField = null;
-            if (spec.exportContours()) {
-                heightField = new short[width * height];
-            }
-
-            // Track how many pixels used real vs estimated heights for metadata.
-            AtomicInteger realHeightPixels = new AtomicInteger();
-
-            // In contour mode every pixel is repainted by the grayscale + contour
-            // pass below, so the terrain color write is skipped entirely.
-            final boolean writeTerrainColors = heightField == null;
-
-            for (Future<TileResult> future : futures) {
+            int[] colors = new int[width * height];
+            short[] heights = spec.exportContours() || spec.exportHeightmap()
+                    ? new short[width * height] : null;
+            int columns = (width + TILE_SIZE - 1) / TILE_SIZE;
+            int totalTiles = columns * ((height + TILE_SIZE - 1) / TILE_SIZE);
+            int submitted = 0;
+            int collected = 0;
+            int realHeightPixels = 0;
+            long[] statCounts = new long[colorSource.bucketCount()];
+            while (collected < totalTiles) {
                 checkCancelled(cancelled);
-                TileResult tile = await(future);
-                realHeightPixels.addAndGet(tile.realHeightCount);
-                // Write tile pixels to NativeImage and collect height data
+                while (submitted < totalTiles && inFlight.size() < workerThreads * 2) {
+                    int tx = (submitted % columns) * TILE_SIZE;
+                    int ty = (submitted / columns) * TILE_SIZE;
+                    TileTask task = new TileTask(tx, ty, Math.min(TILE_SIZE, width - tx),
+                            Math.min(TILE_SIZE, height - ty));
+                    inFlight.add(completions.submit(() -> sampleTile(task, spec, sampler, colorSource,
+                            heightProbe, biomeFacts, yMin, ySpan, taskCancelled, progress)));
+                    submitted++;
+                }
+                Future<TileResult> ready;
+                try {
+                    ready = completions.poll(50, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new CancellationException("Terrain export interrupted");
+                }
+                if (ready == null) continue;
+                inFlight.remove(ready);
+                TileResult tile = await(ready);
+                realHeightPixels += tile.realHeightCount;
+                for (int i = 0; i < statCounts.length; i++) {
+                    statCounts[i] += tile.statCounts[i];
+                }
                 for (int row = 0; row < tile.rowCount; row++) {
-                    int y = tile.startY + row;
-                    if (y >= height) break;
-                    int rowOffset = row * tile.tileWidth;
-                    if (writeTerrainColors) {
-                        fillRowRuns(image, tile.pixels, rowOffset, tile.startX, y, tile.tileWidth, width);
-                    }
-                    if (heightField != null) {
-                        for (int col = 0; col < tile.tileWidth; col++) {
-                            int x = tile.startX + col;
-                            if (x >= width) break;
-                            heightField[y * width + x] = tile.heights[rowOffset + col];
-                        }
+                    int target = (tile.startY + row) * width + tile.startX;
+                    System.arraycopy(tile.pixels, row * tile.tileWidth, colors, target, tile.tileWidth);
+                    if (heights != null) {
+                        System.arraycopy(tile.heights, row * tile.tileWidth, heights, target, tile.tileWidth);
                     }
                 }
+                collected++;
             }
-
             checkCancelled(cancelled);
-
-            // Contour overlay post-processing
-            if (spec.exportContours() && heightField != null) {
-                // Rebuild color buffer from height field
-                int[] colorBuffer = new int[width * height];
-                for (int py = 0; py < height; py++) {
-                    for (int px = 0; px < width; px++) {
-                        // Pixels already written above; rebuild with terrain classification colors
-                        // We already have colors in tile.pixels, but they've been written to image
-                        // Generate rough colors from heightField here
-                        int h = heightField[py * width + px] & 0xFFFF;
-                        int gray = grayForOffset(h, ySpan);
-                        colorBuffer[py * width + px] = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
-                    }
-                }
-                ContourRenderer cr = new ContourRenderer(spec.contourInterval(), true, 0xC08B4513, 0x608B6914);
-                cr.render(heightField, colorBuffer, width, height);
-                for (int py = 0; py < height; py++) {
-                    fillRowRuns(image, colorBuffer, py * width, 0, py, width, width);
-                }
+            if (heights != null) {
+                overlayContours(heights, colors, width, height, spec.contourInterval(), cancelled);
             }
-
-            // Grid overlay post-processing (drawn on top of terrain and contours)
             if (spec.gridIntervalBlocks() > 0) {
-                drawGridOverlay(image, spec, width, height);
+                drawGridOverlay(colors, spec, width, height, cancelled);
             }
-
-            // Write PNG file (write .part first, then atomic move)
-            image.writeToFile(partPath.toFile());
+            checkCancelled(cancelled);
+            try (NativeImage image = new NativeImage(NativeImage.Format.RGBA, width, height, false)) {
+                for (int y = 0; y < height; y++) {
+                    checkCancelled(cancelled);
+                    fillRowRuns(image, colors, y * width, 0, y, width, width);
+                }
+                checkCancelled(cancelled);
+                // Native PNG encoding cannot be interrupted; cancellation is checked immediately after it.
+                image.writeToFile(partPath.toFile());
+            }
+            if (writeHeightmap) {
+                // Grayscale height field from the same offsets the contour
+                // overlay consumes; run-merged like the color rows. R=G=B, so
+                // the ABGR/ARGB sink difference is a no-op for these pixels.
+                try (NativeImage gray = new NativeImage(NativeImage.Format.RGBA, width, height, false)) {
+                    int[] row = new int[width];
+                    for (int y = 0; y < height; y++) {
+                        checkCancelled(cancelled);
+                        for (int x = 0; x < width; x++) {
+                            int g = grayForOffset(heights[y * width + x], ySpan);
+                            row[x] = 0xFF000000 | (g << 16) | (g << 8) | g;
+                        }
+                        fillRowRuns(gray, row, 0, 0, y, width, width);
+                    }
+                    checkCancelled(cancelled);
+                    gray.writeToFile(heightPart.toFile());
+                }
+            }
+            checkCancelled(cancelled);
+            Files.writeString(metaPart, buildMetadata(spec, width, height, timestamp,
+                    heightProbe != null, realHeightPixels, exportContext, yMin, ySpan,
+                    writeHeightmap ? heightPath.getFileName().toString() : null, colorSource, statCounts));
+            checkCancelled(cancelled);
             moveCompleteFile(partPath, pngPath);
-
-            // Write metadata JSON
-            String metadata = buildMetadata(spec, width, height, timestamp,
-                    heightProbe != null, realHeightPixels.get(), exportContext);
-            Path metaPath = pngPath.resolveSibling(filename.replace(".png", ".json"));
-            Path metaPart = metaPath.resolveSibling(metaPath.getFileName() + ".part");
-            Files.writeString(metaPart, metadata);
-            moveCompleteFile(metaPart, metaPath);
-
-            return new Result(pngPath, metaPath);
-        } catch (CancellationException e) {
-            cleanupQuiet(partPath);
-            cleanupQuiet(pngPath.resolveSibling(filename.replace(".png", ".json") + ".part"));
-            throw e;
-        } catch (Exception e) {
-            cleanupQuiet(partPath);
-            throw e;
-        } finally {
-            image.close();
-            for (Future<TileResult> f : futures) {
-                f.cancel(true);
+            checkCancelled(cancelled);
+            if (writeHeightmap) {
+                moveCompleteFile(heightPart, heightPath);
             }
+            checkCancelled(cancelled);
+            moveCompleteFile(metaPart, metaPath);
+            checkCancelled(cancelled);
+            complete = true;
+            appendHistory(outputDir, spec, filename,
+                    writeHeightmap ? heightPath.getFileName().toString() : null, exportContext, timestamp);
+            return new Result(pngPath, metaPath);
+        } finally {
+            stopping.set(true);
+            for (Future<TileResult> future : inFlight) future.cancel(true);
             workers.shutdownNow();
+            // The caller may release the sampling world as soon as export returns.
+            // Never let a cancelled worker outlive that world or publish progress into a new run.
+            boolean interrupted = Thread.interrupted();
+            for (;;) {
+                try {
+                    if (workers.awaitTermination(100, TimeUnit.MILLISECONDS)) break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+            if (!complete) {
+                cleanupQuiet(partPath);
+                if (heightPart != null) cleanupQuiet(heightPart);
+                cleanupQuiet(metaPart);
+                cleanupQuiet(pngPath);
+                if (heightPath != null) cleanupQuiet(heightPath);
+                cleanupQuiet(metaPath);
+            }
         }
     }
 
-    private List<TileTask> buildTileTasks(TerrainExportSpec spec, int width, int height) {
-        List<TileTask> tasks = new ArrayList<>();
-        for (int ty = 0; ty < height; ty += TILE_SIZE) {
-            for (int tx = 0; tx < width; tx += TILE_SIZE) {
-                int tw = Math.min(TILE_SIZE, width - tx);
-                int th = Math.min(TILE_SIZE, height - ty);
-                tasks.add(new TileTask(tx, ty, tw, th));
+    /** Render overlapping two-row strips, retaining the global minor-then-major pass order. */
+    static void overlayContours(short[] heights, int[] colors, int width, int height,
+                                int interval, BooleanSupplier cancelled) {
+        short[] stripHeights = new short[width * 2];
+        int[] stripColors = new int[width * 2];
+        int[] intervals = {Math.max(1, interval / 5), interval};
+        int[] lineColors = {0x608B6914, 0xC08B4513};
+        for (int pass = 0; pass < intervals.length; pass++) {
+            // Blending treats each channel identically, so the renderer also accepts ARGB buffers.
+            ContourRenderer renderer = new ContourRenderer(intervals[pass], false,
+                    lineColors[pass], lineColors[pass]);
+            for (int y = 0; y < height - 1; y++) {
+                checkCancelled(cancelled);
+                System.arraycopy(heights, y * width, stripHeights, 0, stripHeights.length);
+                System.arraycopy(colors, y * width, stripColors, 0, stripColors.length);
+                renderer.render(stripHeights, stripColors, width, 2);
+                System.arraycopy(stripColors, 0, colors, y * width, stripColors.length);
             }
         }
-        return tasks;
     }
 
     private static TileResult sampleTile(
             TileTask task,
             TerrainExportSpec spec,
             BiomeSampler sampler,
+            TerrainColorSource colorSource,
             @Nullable HeightProbe heightProbe,
             @Nullable BiomeFacts biomeFacts,
             int yMin,
@@ -317,14 +568,13 @@ public final class TerrainMapExporter {
         int[] pixels = new int[task.tileWidth * task.tileHeight];
         short[] heights = new short[task.tileWidth * task.tileHeight];
         int realHeightCount = 0;
+        long[] statCounts = new long[colorSource.bucketCount()];
         int minBlockX = spec.minBlockX();
         int minBlockZ = spec.minBlockZ();
         int bpp = spec.blocksPerPixel();
 
         for (int row = 0; row < task.tileHeight; row++) {
-            if ((row & 15) == 0) {
-                checkCancelled(cancelled);
-            }
+            checkCancelled(cancelled);
             int pixelZ = task.startY + row;
             int blockZ = minBlockZ + pixelZ * bpp;
             int rowOffset = row * task.tileWidth;
@@ -340,6 +590,11 @@ public final class TerrainMapExporter {
                 if (heightProbe != null) {
                     try {
                         realHeight = heightProbe.heightAt(blockX, blockZ);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("Terrain export interrupted");
+                    } catch (CancellationException e) {
+                        throw e;
                     } catch (Exception ignored) {
                         realHeight = null;
                     }
@@ -355,6 +610,11 @@ public final class TerrainMapExporter {
                     Short stored = null;
                     try {
                         stored = biomeFacts.probe().biomeIdAt(blockX, blockZ);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("Terrain export interrupted");
+                    } catch (CancellationException e) {
+                        throw e;
                     } catch (Exception ignored) {
                         stored = null;
                     }
@@ -366,7 +626,11 @@ public final class TerrainMapExporter {
                             heights[rowOffset + col] = toHeightFieldOffset(
                                     biomeFacts.resolver().estimatedHeight(stored), yMin, ySpan);
                         }
-                        pixels[rowOffset + col] = biomeFacts.resolver().category(stored).pixelColor();
+                        pixels[rowOffset + col] = colorSource.colorForId(stored);
+                        int storedBucket = colorSource.bucketForId(stored);
+                        if (storedBucket >= 0) {
+                            statCounts[storedBucket]++;
+                        }
                         continue;
                     }
                 }
@@ -374,6 +638,11 @@ public final class TerrainMapExporter {
                 Holder<Biome> biomeHolder;
                 try {
                     biomeHolder = sampler.sample(blockX, blockZ);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new CancellationException("Terrain export interrupted");
+                } catch (CancellationException e) {
+                    throw e;
                 } catch (Exception e) {
                     biomeHolder = null;
                 }
@@ -385,14 +654,19 @@ public final class TerrainMapExporter {
                     heights[rowOffset + col] = toHeightFieldOffset(estimateHeight(biomeHolder), yMin, ySpan);
                 }
 
-                TerrainCategory category = TerrainClassifier.classify(biomeHolder);
-                pixels[rowOffset + col] = category.pixelColor();
+                pixels[rowOffset + col] = colorSource.colorForHolder(biomeHolder);
+                int holderBucket = colorSource.bucketForHolder(biomeHolder);
+                if (holderBucket >= 0) {
+                    statCounts[holderBucket]++;
+                }
             }
 
+            checkCancelled(cancelled);
             progress.accept(task.tileWidth);
         }
 
-        return new TileResult(task.startX, task.startY, task.tileWidth, task.tileHeight, pixels, heights, realHeightCount);
+        return new TileResult(task.startX, task.startY, task.tileWidth, task.tileHeight, pixels, heights, realHeightCount,
+                statCounts);
     }
 
     /**
@@ -418,7 +692,10 @@ public final class TerrainMapExporter {
      */
     private static void fillRowRuns(NativeImage image, int[] pixels, int rowOffset,
                                     int startX, int y, int cols, int imageWidth) {
-        fillRowRuns(image::fillRect, pixels, rowOffset, startX, y, cols, imageWidth);
+        // 1.20.1/1.21.1 NativeImage.fillRect expects ABGR; all export buffers remain ARGB.
+        fillRowRuns((x, row, w, h, argb) -> image.fillRect(x, row, w, h,
+                (argb & 0xFF00FF00) | ((argb >>> 16) & 0xFF) | ((argb & 0xFF) << 16)),
+                pixels, rowOffset, startX, y, cols, imageWidth);
     }
 
     /** Sink abstraction over {@code NativeImage#fillRect} so run merging is unit-testable. */
@@ -442,32 +719,23 @@ public final class TerrainMapExporter {
         }
     }
 
-    /**
-     * Draws the block-coordinate grid overlay. A pixel lies on a grid line when
-     * its block coordinate modulo the grid interval falls within one pixel step;
-     * floorMod keeps negative world coordinates aligned to the same grid.
-     * <p>
-     * Painted as full-row / full-column fills instead of per-pixel rects:
-     * {@code fillRect} overwrites (no blending) and the grid color is constant,
-     * so drawing a line once per row/column produces exactly the same pixels as
-     * the per-pixel pass (line intersections repaint the same color).
-     */
-    private static void drawGridOverlay(NativeImage image, TerrainExportSpec spec, int width, int height) {
+    /** Composite each grid pixel once, including line intersections, onto opaque terrain. */
+    private static void drawGridOverlay(int[] colors, TerrainExportSpec spec, int width, int height,
+                                        BooleanSupplier cancelled) {
         int bpp = spec.blocksPerPixel();
         int interval = spec.gridIntervalBlocks();
-        int minBlockX = spec.minBlockX();
-        int minBlockZ = spec.minBlockZ();
-
-        for (int py = 0; py < height; py++) {
-            int blockZ = minBlockZ + py * bpp;
-            if (Math.floorMod(blockZ, interval) < bpp) {
-                image.fillRect(0, py, width, 1, GRID_COLOR);
-            }
-        }
-        for (int px = 0; px < width; px++) {
-            int blockX = minBlockX + px * bpp;
-            if (Math.floorMod(blockX, interval) < bpp) {
-                image.fillRect(px, 0, 1, height, GRID_COLOR);
+        int inverseAlpha = 255 - (GRID_COLOR >>> 24);
+        for (int y = 0; y < height; y++) {
+            checkCancelled(cancelled);
+            boolean horizontal = Math.floorMod(spec.minBlockZ() + y * bpp, interval) < bpp;
+            for (int x = 0; x < width; x++) {
+                if (horizontal || Math.floorMod(spec.minBlockX() + x * bpp, interval) < bpp) {
+                    int color = colors[y * width + x];
+                    int r = ((color >>> 16) & 255) * inverseAlpha / 255;
+                    int g = ((color >>> 8) & 255) * inverseAlpha / 255;
+                    int b = (color & 255) * inverseAlpha / 255;
+                    colors[y * width + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
             }
         }
     }
@@ -516,9 +784,43 @@ public final class TerrainMapExporter {
         }
     }
 
+    /**
+     * Appends one line to the output directory's history.jsonl so exports can
+     * be traced back by seed and dimension. Best-effort: a failed append never
+     * fails the export itself.
+     */
+    private static void appendHistory(Path outputDir, TerrainExportSpec spec, String filename,
+                                      @Nullable String heightmapFile, @Nullable ExportContext exportContext,
+                                      String timestamp) {
+        try {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("timestamp", timestamp);
+            if (exportContext != null) {
+                entry.addProperty("seed", exportContext.seed());
+                entry.addProperty("dimension", exportContext.dimension());
+            }
+            entry.addProperty("file", filename);
+            if (heightmapFile != null) {
+                entry.addProperty("heightmapFile", heightmapFile);
+            }
+            entry.addProperty("centerX", spec.centerX());
+            entry.addProperty("centerZ", spec.centerZ());
+            entry.addProperty("coverageRadius", spec.coverageRadius());
+            entry.addProperty("blocksPerPixel", spec.blocksPerPixel());
+            Files.writeString(outputDir.resolve("history.jsonl"), new GsonBuilder().create().toJson(entry) + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to append terrain export history", e);
+        }
+    }
+
+
+
     private static String buildMetadata(TerrainExportSpec spec, int width, int height, String timestamp,
                                         boolean heightProbeSupplied, int realHeightPixels,
-                                        @Nullable ExportContext exportContext) {
+                                        @Nullable ExportContext exportContext, int yMin, int ySpan,
+                                        @Nullable String heightmapFile, TerrainColorSource colorSource,
+                                        long[] statCounts) {
         String heightSource;
         if (!heightProbeSupplied) {
             heightSource = "estimated";
@@ -529,40 +831,43 @@ public final class TerrainMapExporter {
         } else {
             heightSource = "mixed";
         }
-        StringBuilder sb = new StringBuilder(256);
-        sb.append("{\n");
-        sb.append("  \"timestamp\": \"").append(timestamp).append("\",\n");
+        JsonObject metadata = new JsonObject();
+        metadata.addProperty("timestamp", timestamp);
         if (exportContext != null) {
-            sb.append("  \"seed\": \"").append(exportContext.seed()).append("\",\n");
-            sb.append("  \"dimension\": \"").append(exportContext.dimension()).append("\",\n");
+            metadata.addProperty("seed", exportContext.seed());
+            metadata.addProperty("dimension", exportContext.dimension());
         }
-        sb.append("  \"heightSource\": \"").append(heightSource).append("\",\n");
-        sb.append("  \"realHeightPixels\": ").append(realHeightPixels).append(",\n");
-        sb.append("  \"centerX\": ").append(spec.centerX()).append(",\n");
-        sb.append("  \"centerZ\": ").append(spec.centerZ()).append(",\n");
-        sb.append("  \"coverageRadius\": ").append(spec.coverageRadius()).append(",\n");
-        sb.append("  \"blocksPerPixel\": ").append(spec.blocksPerPixel()).append(",\n");
-        sb.append("  \"gridIntervalBlocks\": ").append(spec.gridIntervalBlocks()).append(",\n");
-        sb.append("  \"imageWidth\": ").append(width).append(",\n");
-        sb.append("  \"imageHeight\": ").append(height).append(",\n");
-        sb.append("  \"bounds\": {\n");
-        sb.append("    \"minX\": ").append(spec.minBlockX()).append(",\n");
-        sb.append("    \"maxX\": ").append(spec.maxBlockX()).append(",\n");
-        sb.append("    \"minZ\": ").append(spec.minBlockZ()).append(",\n");
-        sb.append("    \"maxZ\": ").append(spec.maxBlockZ()).append("\n");
-        sb.append("  },\n");
-        sb.append("  \"classificationMode\": \"vanilla_biome_tag_priority\",\n");
-        sb.append("  \"categories\": [\n");
-        TerrainCategory[] cats = TerrainCategory.values();
-        for (int i = 0; i < cats.length; i++) {
-            sb.append("    {\"name\": \"").append(cats[i].name())
-              .append("\", \"color\": \"").append(cats[i].hexColor()).append("\"}");
-            if (i < cats.length - 1) sb.append(",");
-            sb.append("\n");
+        metadata.addProperty("heightSource", heightSource);
+        metadata.addProperty("realHeightPixels", realHeightPixels);
+        metadata.addProperty("exportHeightmap", spec.exportHeightmap());
+        if (heightmapFile != null) {
+            JsonObject heightmap = new JsonObject();
+            heightmap.addProperty("file", heightmapFile);
+            heightmap.addProperty("encoding",
+                    "8-bit grayscale; surface height offset above minY scaled to 0-255 over ySpan");
+            heightmap.addProperty("minY", yMin);
+            heightmap.addProperty("ySpan", ySpan);
+            metadata.add("heightmap", heightmap);
         }
-        sb.append("  ]\n");
-        sb.append("}\n");
-        return sb.toString();
+        metadata.addProperty("centerX", spec.centerX());
+        metadata.addProperty("centerZ", spec.centerZ());
+        metadata.addProperty("exportY", spec.exportY());
+        metadata.addProperty("coverageRadius", spec.coverageRadius());
+        metadata.addProperty("blocksPerPixel", spec.blocksPerPixel());
+        metadata.addProperty("exportContours", spec.exportContours());
+        metadata.addProperty("contourInterval", spec.contourInterval());
+        metadata.addProperty("gridIntervalBlocks", spec.gridIntervalBlocks());
+        metadata.addProperty("imageWidth", width);
+        metadata.addProperty("imageHeight", height);
+        JsonObject bounds = new JsonObject();
+        bounds.addProperty("minX", spec.minBlockX());
+        bounds.addProperty("maxX", spec.maxBlockX());
+        bounds.addProperty("minZ", spec.minBlockZ());
+        bounds.addProperty("maxZ", spec.maxBlockZ());
+        metadata.add("bounds", bounds);
+        metadata.addProperty("classificationMode", colorSource.modeName());
+        colorSource.writeLegend(metadata, statCounts);
+        return new GsonBuilder().setPrettyPrinting().create().toJson(metadata) + "\n";
     }
 
     // ===== Internal types =====
@@ -581,7 +886,7 @@ public final class TerrainMapExporter {
 
     /** Tile sampling result. */
     private record TileResult(int startX, int startY, int tileWidth, int rowCount, int[] pixels, short[] heights,
-                              int realHeightCount) {}
+                              int realHeightCount, long[] statCounts) {}
 
     /** Export thread factory. */
     private static final class ExportThreadFactory implements ThreadFactory {

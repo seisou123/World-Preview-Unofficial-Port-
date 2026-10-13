@@ -10,6 +10,7 @@ import caeruleusTait.world.preview.backend.analysis.RegionMetrics;
 import caeruleusTait.world.preview.backend.analysis.SpawnAdvisor;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.PanelRenderer;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -87,11 +88,29 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
     // ===== Scrolling: content can exceed the panel on small windows =====
     private static final int SCROLL_STEP = 14;
     private static final int SCROLLBAR_WIDTH = 3;
+    /** Hit-strip width on the panel's right edge (vanilla AbstractScrollArea.SCROLLBAR_WIDTH). */
+    private static final int SCROLLBAR_HIT_WIDTH = 6;
+    /** Deadzone around the autoscroll anchor, in gui pixels, before scrolling starts. */
+    private static final double PAN_DEADZONE_PX = 3.0;
+    /** Autoscroll speed in pixels per second per gui pixel of anchor displacement. */
+    private static final double PAN_PX_PER_SEC_PER_PX = 12.0;
+    /** Upper autoscroll speed bound, in pixels per second. */
+    private static final double PAN_MAX_PX_PER_SEC = 480.0;
+    /** Time constant of the eased scroll animation, in milliseconds. */
+    private static final double SCROLL_EASE_MS = 60.0;
     private int scrollOffset;
     /** Total rendered content height in pixels (updated every frame). */
     private int contentHeight;
     private boolean scrollbarDragging;
     private int scrollbarGrabOffset;
+    /** True between a middle-press autoscroll start and its release (screen-routed). */
+    private boolean panActive;
+    /** Autoscroll anchor: the cursor Y at the middle press. */
+    private double panAnchorY;
+    /** Eased scroll position actually rendered; chases {@link #scrollOffset} for smooth motion. */
+    private double renderOffset;
+    /** Previous render timestamp, for frame-rate independent easing and autoscroll. */
+    private long lastFrameMs = -1;
 
     public AnalysisOverviewPanel(int x, int y, int width, int height) {
         super(x, y, width, height, Component.translatable("world_preview.analysis.metrics"));
@@ -176,7 +195,8 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         int topPad = getY() + PanelRenderer.PANEL_PAD;
         int bottom = getY() + height - PanelRenderer.PANEL_PAD;
         scrollOffset = clampScroll();
-        int y = topPad - scrollOffset;
+        tickScroll(mouseY);
+        int y = topPad - (int) Math.round(renderOffset);
         // Sections render in scrolled coordinates; the scissor clips anything
         // outside the panel. Every section runs each frame (they are a handful
         // of strings each) so contentHeight stays current even while the tail
@@ -186,7 +206,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
             y = section.render(graphics, font, x, y, Math.max(0, w), bottom);
         }
         graphics.disableScissor();
-        contentHeight = y + scrollOffset - topPad;
+        contentHeight = y + (int) Math.round(renderOffset) - topPad;
         drawScrollbar(graphics);
     }
 
@@ -211,7 +231,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         int trackHeight = height - 6;
         int visible = Math.max(0, height - PanelRenderer.PANEL_PAD * 2);
         int thumbHeight = Math.max(10, (int) ((long) trackHeight * visible / contentHeight));
-        int thumbY = trackTop + (int) ((long) (trackHeight - thumbHeight) * scrollOffset / scrollMax);
+        int thumbY = trackTop + (int) Math.round((trackHeight - thumbHeight) * renderOffset / Math.max(1, scrollMax));
         return new int[]{getX() + width - 1 - SCROLLBAR_WIDTH, thumbY, getX() + width - 1, thumbY + thumbHeight};
     }
 
@@ -237,10 +257,77 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         }
         int raw = Math.min(travel, Math.max(0, (int) mouseY - scrollbarGrabOffset - trackTop));
         scrollOffset = raw * scrollMax() / travel;
+        renderOffset = scrollOffset;
     }
 
     private int clampScroll(int value) {
         return Math.min(scrollMax(), Math.max(0, value));
+    }
+
+    /** The 6px hit strip covering the rendered scrollbar on the panel's right edge. */
+    private boolean isOverScrollbar(double mouseX, double mouseY) {
+        return mouseX >= getX() + width - SCROLLBAR_HIT_WIDTH && mouseX <= getX() + width
+                && mouseY >= getY() && mouseY < getY() + height;
+    }
+
+    /**
+     * Per-render-frame scroll animation, ticked from the render pass so it
+     * keeps running while the mouse is still. Two jobs: ease the rendered
+     * offset toward the target (wheel steps glide instead of jumping), and
+     * while a middle-press autoscroll is active move the rendered position
+     * continuously at a speed proportional to the cursor's distance from
+     * the press point — browser autoscroll feel, same direction (cursor
+     * below the anchor scrolls down), pixel-smooth at any speed.
+     */
+    private void tickScroll(double mouseY) {
+        long now = System.currentTimeMillis();
+        long dt = lastFrameMs < 0 ? 16 : Math.min(100, now - lastFrameMs);
+        lastFrameMs = now;
+        if (panActive) {
+            double displacement = mouseY - panAnchorY;
+            double speed = 0.0;
+            if (Math.abs(displacement) > PAN_DEADZONE_PX) {
+                speed = Math.min(
+                        PAN_MAX_PX_PER_SEC,
+                        (displacement - Math.signum(displacement) * PAN_DEADZONE_PX) * PAN_PX_PER_SEC_PER_PX);
+            }
+            // Integrate the velocity straight into the rendered position, so
+            // slow autoscroll stays as smooth as fast; the integer target
+            // follows the rendered position.
+            renderOffset = Math.min(scrollMax(), Math.max(0, renderOffset + speed * dt / 1000.0));
+            scrollOffset = (int) Math.round(renderOffset);
+        } else if (scrollbarDragging) {
+            renderOffset = scrollOffset;
+        } else {
+            renderOffset += (scrollOffset - renderOffset) * (1.0 - Math.exp(-dt / SCROLL_EASE_MS));
+            if (Math.abs(scrollOffset - renderOffset) < 0.01) {
+                renderOffset = scrollOffset;
+            }
+            renderOffset = Math.min(scrollMax(), Math.max(0, renderOffset));
+        }
+    }
+
+    /**
+     * Starts a middle-button autoscroll anchored at the given mouse Y.
+     * Returns false when the panel cannot scroll (hidden or no overflow), so
+     * the caller can pass the press through. While the button is held, the
+     * render pass keeps scrolling at a speed proportional to the cursor's
+     * distance from the anchor — browser autoscroll feel. The screen routes
+     * the release: vanilla's container does not forward non-primary releases
+     * to the focused child.
+     */
+    public boolean beginScrollPan(double mouseY) {
+        if (!visible || scrollMax() <= 0) {
+            return false;
+        }
+        panActive = true;
+        panAnchorY = mouseY;
+        return true;
+    }
+
+    /** Ends a middle-button autoscroll. */
+    public void endScrollPan() {
+        panActive = false;
     }
 
     // ===== Sections =====
@@ -357,6 +444,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
     }
 
     private int renderStructuresSection(GuiGraphics g, Font font, int x, int y, int w, int bottom) {
+        structureRows.clear();
         y = line(g, font, x, y, WorldPreviewComponents.ANALYSIS_NEAREST_STRUCTURES, COLOR_HEADER);
         if (nearestStructures.isEmpty()) {
             return line(g, font, x, y, WorldPreviewComponents.ANALYSIS_NEAREST_STRUCTURES_NONE, COLOR_TEXT) + 4;
@@ -368,8 +456,11 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
             }
             int distance = Math.abs(entry.getValue().getX() - structureCenterX)
                     + Math.abs(entry.getValue().getZ() - structureCenterZ);
-            y = line(g, font, x, y, Component.translatable("world_preview.analysis.struct_distance",
-                    structureDisplayName(entry.getKey()), distance), COLOR_TEXT);
+            Component rowText = Component.translatable("world_preview.analysis.struct_distance",
+                    structureDisplayName(entry.getKey()), distance);
+            int rowTop = y;
+            y = line(g, font, x, y, rowText, COLOR_TEXT);
+            structureRows.add(new StructureRow(entry.getValue(), x, rowTop, font.width(rowText), y - rowTop));
             rows++;
         }
         return y + 4;
@@ -382,7 +473,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
     // ===== Helpers =====
 
     /** Structure label: {@code world_preview.structure.<path>} when translated, else the raw path. */
-    private static Component structureDisplayName(ResourceLocation id) {
+    public static Component structureDisplayName(ResourceLocation id) {
         String key = "world_preview.structure." + id.getPath();
         return Language.getInstance().has(key) ? Component.translatable(key) : Component.literal(id.getPath());
     }
@@ -419,17 +510,42 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         return y + font.lineHeight + 1;
     }
 
+    /** One clickable structure row: its position plus the drawn text rect. */
+    private record StructureRow(BlockPos pos, int x, int y, int w, int h) {}
+
+    private final java.util.List<StructureRow> structureRows = new java.util.ArrayList<>();
+
+    @Nullable
+    private java.util.function.Consumer<BlockPos> structureClickCallback = null;
+
+    /** Sets the callback fired when a structure row is clicked (locate on map). */
+    public void setStructureClickCallback(@Nullable java.util.function.Consumer<BlockPos> callback) {
+        this.structureClickCallback = callback;
+    }
+
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         final MouseButtonEvent event = new MouseButtonEvent(mouseX, mouseY, button);
-        // Grab the scrollbar thumb when clicked; everything else stays
-        // display-only so clicks reach buttons underneath/nearby.
-        int[] thumb = scrollbarThumbRect();
-        if (visible && thumb != null
-                && event.x() >= thumb[0] - 2 && event.x() <= getX() + width
-                && event.y() >= thumb[1] - 2 && event.y() <= thumb[3] + 2) {
+        // A structure row click locates the map on that structure.
+        if (visible && event.button() == InputConstants.MOUSE_BUTTON_LEFT && structureClickCallback != null) {
+            for (StructureRow row : structureRows) {
+                if (event.x() >= row.x() && event.x() <= row.x() + row.w()
+                        && event.y() >= row.y() && event.y() <= row.y() + row.h()) {
+                    structureClickCallback.accept(row.pos());
+                    return true;
+                }
+            }
+        }
+
+        // Pressing the scrollbar strip starts a thumb drag (vanilla
+        // AbstractScrollArea semantics): jump the thumb under the cursor,
+        // then keep dragging it 1:1. Everything else stays display-only so
+        // clicks reach buttons underneath/nearby.
+        if (visible && scrollMax() > 0 && isOverScrollbar(event.x(), event.y())) {
             scrollbarDragging = true;
-            scrollbarGrabOffset = (int) event.y() - thumb[1];
+            int[] thumb = scrollbarThumbRect();
+            scrollbarGrabOffset = thumb == null ? 0 : (thumb[3] - thumb[1]) / 2;
+            scrollFromScrollbar(event.y());
             return true;
         }
         return false;
@@ -463,7 +579,13 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         if (steps == 0 && delta != 0.0) {
             steps = delta > 0 ? 1 : -1;
         }
+        if (panActive) {
+            // The wheel takes over, like a browser: cancel the autoscroll
+            // and apply the step to the position it leaves behind.
+            panActive = false;
+        }
         scrollOffset = clampScroll(scrollOffset - steps * SCROLL_STEP);
+        renderOffset = Math.min(scrollMax(), Math.max(0, renderOffset));
         return true;
     }
 

@@ -263,6 +263,18 @@ public final class ProfileChart extends AbstractWidget implements caeruleusTait.
         return bottom - (int) ((long) (bottom - top) * (value - min) / Math.max(1, max - min));
     }
 
+    /**
+     * Display-only: never a hit target. The 1.21.11+ pipeline resolves a
+     * single click/scroll winner through {@code isMouseOver} with no
+     * fallthrough, so a covering chart must not claim hits or it starves
+     * the direction button and the map; the hover tooltip reads the
+     * render-pass mouse position, not hit testing.
+     */
+    @Override
+    public boolean isMouseOver(double mouseX, double mouseY) {
+        return false;
+    }
+
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         // Display-only: never consume clicks that should reach the back button.
         return false;

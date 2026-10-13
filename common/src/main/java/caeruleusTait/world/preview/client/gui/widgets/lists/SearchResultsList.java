@@ -2,6 +2,7 @@
 // See CHANGES.md for details.
 package caeruleusTait.world.preview.client.gui.widgets.lists;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import caeruleusTait.world.preview.client.gui.input.MouseButtonEvent;
 import net.minecraft.client.gui.GuiGraphics;
@@ -31,6 +32,9 @@ public class SearchResultsList extends BaseObjectSelectionList<SearchResultsList
 
         /** Right-click on a structure hit row: create a waypoint at the located position. */
         default void onCreateWaypoint(String seed) {}
+
+        /** Ctrl+right-click: store the seed in the config's saved-seeds library without applying it. */
+        default void onSaveToLibrary(String seed) {}
     }
 
     private final RowActions actions;
@@ -115,12 +119,14 @@ public class SearchResultsList extends BaseObjectSelectionList<SearchResultsList
         @Override
         public boolean mouseClicked(double mouseX, double mouseY, int button) {
             final MouseButtonEvent event = new MouseButtonEvent(mouseX, mouseY, button);
-            if (event.button() == 0) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_LEFT) {
                 actions.onApply(seed);
                 return true;
             }
-            if (event.button() == 1) {
-                if (event.hasShiftDown()) {
+            if (event.button() == InputConstants.MOUSE_BUTTON_RIGHT) {
+                if (event.hasControlDown()) {
+                    actions.onSaveToLibrary(seed);
+                } else if (event.hasShiftDown()) {
                     actions.onToggleFavorite(seed);
                 } else if (deletable) {
                     actions.onDelete(seed);

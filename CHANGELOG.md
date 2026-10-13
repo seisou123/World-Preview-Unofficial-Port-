@@ -1,3 +1,38 @@
+## 1.5.5
+
+### Fixes
+
+- Fixed the exported terrain map PNG showing red and blue swapped on Minecraft 1.21.11 and the 26.x versions, and the same swap on the export screen's legend swatches
+- Fixed the terrain map export failing with out-of-memory on extreme coverage radius and resolution combinations: such combinations are now rejected up front with an explanation on the export screen
+- Fixed the profile direction button on the analysis screen not switching on Minecraft 1.21.11 and the 26.x versions
+- Fixed mouse buttons acting as the wrong button on Minecraft 26.3: right-click actions such as copy coordinates and list context menus fired on left click, while left-click actions such as list selection, measure points, spawn pins and waypoints did not respond
+- Fixed the spawn point override: the pinned spawn only applies to the world being created, opening an existing world first no longer touches its spawn, and a failed apply is logged instead of silently counting as applied
+- Fixed resources leaking when the preview screen was closed while a settings reload was still running
+
+### Improvements
+
+- Reworked the terrain map export screen layout: settings, status and the category legend now sit in outlined panels matching the seed search and analysis screens, the export/settings tab pair is gone, the layout no longer overflows small gui heights such as GUI scale 4, and the progress bar keeps showing its percentage and coloring failures red
+- A refused export start now reports the reason instead of doing nothing
+- A batch export no longer aborts the remaining dimensions when one dimension fails, and batch runs now show elapsed and remaining time like single-dimension exports
+- Reworked the analysis screen's biome share table: holding the middle mouse button autoscrolls it at a speed set by the cursor's distance from the press point (it keeps scrolling while the mouse holds still), the wheel scrolls three rows per step with a short glide, and a scrollbar on the right edge tracks the visible range, jumps under the cursor on press and drags 1:1; on layouts too small for a single table row the stacked-bar header collapses to the title, diversity line and biome bar. The same middle-press autoscroll and short wheel glide now cover the analysis overview panel, the settings pages, the biome and structure lists, the seed search lists and the terrain export history, whose scrollbar strips also jump under the cursor and drag 1:1; the export history keeps every entry instead of the twelve most recent
+- The analysis screen's terrain export and structure waypoint actions joined the report and back buttons in one footer row beneath the panels
+- Terrain map exports can overlay a coordinate grid (16 to 4096 blocks, opt-in per export) and write an optional grayscale heightmap PNG next to the terrain PNG; the export metadata JSON now also carries per-category pixel counts
+- The analysis screen gained an Export This Region action that opens the terrain export screen prefilled with the analyzed area
+- The in-game preview now remembers the last map position between sessions; an opt-in Open preview at player setting anchors the initial view on the player instead
+- The hover panel can show the sampled temperature, humidity, continentalness, erosion, depth, weirdness and peaks-valleys values behind an opt-in setting, measured distances show the surface height difference between both endpoints, and viewport PNG exports write a JSON sidecar with the seed, dimension, world identity and view center
+- The analysis screen's structure rows are clickable to add a waypoint, and a footer button drops every structure in the analyzed region into the waypoint list at once
+- Terrain map exports append to a history file and the export screen browses its twelve most recent entries; clicking a row copies the exported file's absolute path
+- Holding Ctrl while right-clicking a seed search result saves it to the saved-seed library, and the history view gained a button that clears all non-favorite entries
+- Right-clicking a waypoint pin on the preview map copies a /tp command with the waypoint's coordinates
+- Terrain map exports can color the map per biome (opt-in): every pixel takes the biome's preview color — the same colors the preview's biome view uses, including user overrides — instead of the nine terrain categories, and the export metadata JSON carries a per-biome legend mapping every used color to its biome id and name
+- Terrain map exports sample biomes at the Y layer the preview is scrolled to instead of a fixed Y 64, so the exported map matches the layer being viewed and the storage fast path applies to it; every dimension of a batch export samples at that same layer and the metadata JSON records it
+- The Russian and Portuguese (Portugal) translations now cover every language key, with a language parity test guarding key coverage, key order and format placeholders; two pre-existing placeholder mistakes that could crash tooltip rendering in those locales were fixed
+
+### Internal
+
+- Added a shared pixel allocation limit for terrain exports, and tests covering the per-version pixel formats
+- Worker and icon-loading exceptions are now written to the game log instead of bare stack traces
+
 ## 1.5.4
 
 Minecraft 26.3 and Minecraft 1.20.1 are now supported: 26.3 on Fabric and NeoForge, 1.20.1 on Fabric and Forge.
@@ -97,7 +132,7 @@ Minecraft 26.3 and Minecraft 1.20.1 are now supported: 26.3 on Fabric and NeoFor
 - Added analysis report export: the analysis screen can export the biome share table as CSV plus a JSON summary into config/world_preview/reports/
 - Added multi-dimension terrain export: batch-export terrain maps for every dimension of the current seed with per-dimension progress and cancel support, optionally with a block-coordinate grid overlay
 - Added spawn analysis: the analysis panel shows a spawn quality score (0-100) with reasons and lists the region's top 5 biomes with their share and rarity stars
-- Added a seed comparison screen: compares the current seed with up to three saved seeds by biome diversity, water share, most common biome and spawn score
+- Added a seed comparison screen: compares the current seed with up to seven saved seeds by biome diversity, water share, most common biome and spawn score
 - Structure criteria support random-spread structures; concentric-ring structures such as strongholds are not supported yet
 
 ### Improvements

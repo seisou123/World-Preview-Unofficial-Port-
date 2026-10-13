@@ -351,4 +351,4 @@ class UIDomainTest {
             fireConfigChange(event);
         }
     }
-}
+}

@@ -1,24 +1,25 @@
 package caeruleusTait.world.preview.client.gui.screens;
 
 import caeruleusTait.world.preview.WorldPreview;
-import caeruleusTait.world.preview.client.gui.input.KeyEvent;
 import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import caeruleusTait.world.preview.backend.export.TerrainCategory;
+import caeruleusTait.world.preview.backend.export.TerrainExportColorMode;
 import caeruleusTait.world.preview.backend.export.TerrainExportController;
 import caeruleusTait.world.preview.backend.export.TerrainExportSpec;
 import caeruleusTait.world.preview.backend.export.TerrainMapExporter;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
-import caeruleusTait.world.preview.client.gui.screens.settings.SettingsTheme;
+import caeruleusTait.world.preview.client.gui.PanelRenderer;
+import caeruleusTait.world.preview.client.gui.widgets.WPCheckbox;
+import caeruleusTait.world.preview.client.gui.input.KeyEvent;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
-import caeruleusTait.world.preview.client.gui.widgets.WPCheckbox;
 import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.CycleButton;
-import net.minecraft.client.gui.components.StringWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.QuartPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
@@ -33,8 +34,10 @@ import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.RandomState;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -47,34 +50,70 @@ import java.util.function.LongConsumer;
 import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
 /**
- * Terrain map export screen (sub-screen switch mode).
+ * Terrain map export screen: settings panel on the left, export status and
+ * category legend stacked on the right — the same two-panel visual language
+ * as the seed search and world analysis screens. Every control stays visible
+ * at once (the former export/settings tab pair is gone), so nothing re-inits
+ * on a tab switch and the fixed rows can no longer overflow small gui
+ * heights such as GUI scale 4.
  * Adapted for the MC 1.21.11 GuiGraphics API.
  */
 public final class TerrainExportScreen extends Screen {
 
-    private enum Tab { EXPORT, SETTINGS }
-
     private final Screen parent;
     private final PreviewContainer previewContainer;
+    private boolean hasPrefill;
+    private int prefillCenterX;
+    private int prefillCenterZ;
+    private boolean historyOpen = false;
+    private long historyCopiedAtNanos = 0L;
+    private final List<HistoryRow> historyRows = new ArrayList<>();
+    private final List<int[]> historyRects = new ArrayList<>();
+
+    // History list scrolling (mirrors the analysis panels' interaction set):
+    // wheel steps glide, a middle press autoscrolls browser-style, and the
+    // thin scrollbar strip jumps under the cursor and drags 1:1. Button codes
+    // stay literal like the rest of this file (0 = left, 2 = middle).
+    private static final int HISTORY_HIT_WIDTH = 6;
+    private static final int HISTORY_WHEEL_ROWS = 3;
+    /** Rendered width of the history scrollbar track/thumb. */
+    private static final int SCROLLBAR_BAR_WIDTH = 3;
+    private static final double HISTORY_PAN_DEADZONE_PX = 3.0;
+    private static final double HISTORY_PAN_PX_PER_SEC_PER_PX = 12.0;
+    private static final double HISTORY_PAN_MAX_PX_PER_SEC = 480.0;
+    private static final double HISTORY_SCROLL_EASE_MS = 60.0;
+    private int historyScrollOffset;
+    private double historyRenderOffset;
+    private long historyLastFrameMs = -1;
+    private boolean historyScrollbarDragging;
+    private double historyScrollbarGrabOffset;
+    private boolean historyPanActive;
+    private double historyPanAnchorY;
+
+    /** One browsable export history entry (newest first). */
+    private record HistoryRow(String time, String seed, String dimension, int centerX, int centerZ, String file) {}
 
     private int coverageRadius = TerrainExportSpec.DEFAULT_COVERAGE_RADIUS;
     private int blocksPerPixel = TerrainExportSpec.DEFAULT_BLOCKS_PER_PIXEL;
     private boolean exportContours = true;
     private int contourInterval = 10;
     private boolean batchMode = false;
-
-    private Tab currentTab = Tab.EXPORT;
+    private boolean exportGrid = false;
+    private int gridInterval = 128;
+    private boolean exportHeightmap = false;
+    private boolean biomeColors = false;
 
     private AbstractSliderButton radiusSlider;
     private AbstractSliderButton resolutionSlider;
     private AbstractSliderButton contourSlider;
+    private AbstractSliderButton gridSlider;
     private Checkbox contourCheckbox;
+    private Checkbox gridCheckbox;
+    private Checkbox heightmapCheckbox;
+    private CycleButton<Boolean> colorCycle;
     private CycleButton<Boolean> batchCycle;
     private Button exportButton;
     private Button cancelButton;
-    private Button tabExportBtn;
-    private Button tabSettingsBtn;
-    private StringWidget imageSizeLabel;
 
     // Batch export runs on its own single-thread executor, bypassing the
     // per-dimension TerrainExportController state machine.
@@ -87,12 +126,46 @@ public final class TerrainExportScreen extends Screen {
     private volatile boolean batchRunning;
     private volatile double batchPct;
     private volatile Component batchStatus;
+    private volatile long batchStartNanos;
+    private volatile long batchFinishNanos;
+    private volatile Path batchOutputDir;
+    /** True once a batch run ends with a failure or partial success; paints the bar red. */
+    private volatile boolean batchFailed;
 
     private static final int MX = 8;
-    private static final int TY = 28;
+    /** Content top below the title; the fixed settings rows all hang off it. */
+    private static final int TOP = 26;
     private static final int SH = 20;
     private static final int LH = 12;
-    private static final int GAP = 4;
+    /** Slider step for the coverage radius, keeping round block values reachable. */
+    private static final int RADIUS_STEP = 256;
+    /** Progress fill: brand teal while running, green when done, red on failure. */
+    private static final int BAR_RUNNING = 0xFF2EC4B6;
+    private static final int BAR_DONE = 0xFF55FF55;
+    private static final int BAR_FAILED = 0xFFFF5555;
+
+    // Fixed settings-panel rows (independent of the screen size). The grid
+    // checkbox shares the contours row; the image size and center lines live
+    // in the status box where they read as export inputs.
+    private static final int CONTOURS_Y = TOP + 16 + 2 * (SH + 4);
+    private static final int CONTOUR_SLIDER_Y = CONTOURS_Y + SH + 4;
+    private static final int GRID_SLIDER_Y = CONTOUR_SLIDER_Y + SH + 4;
+    private static final int HEIGHTMAP_Y = GRID_SLIDER_Y + SH + 4;
+    // Status-box rows: progress bar, image size, center, status line.
+    private static final int SIZE_Y = TOP + PanelRenderer.PANEL_PAD + 12 + 6;
+    private static final int CENTER_Y = SIZE_Y + LH + 2;
+    private static final int STATUS_LINE_Y = CENTER_Y + LH + 4;
+
+    // Panel geometry, computed in init().
+    private int actionRowY;
+    private int panelsBottom;
+    private int settingsW;
+    private int statusX;
+    private int statusW;
+    private int statusH;
+    private int legendY;
+    private int legendH;
+    private int legendRows;
 
     public TerrainExportScreen(Screen parent, PreviewContainer previewContainer) {
         super(WorldPreviewComponents.TERRAIN_EXPORT_TITLE);
@@ -100,119 +173,150 @@ public final class TerrainExportScreen extends Screen {
         this.previewContainer = previewContainer;
     }
 
+    /**
+     * Opening from the analysis screen: center and radius are prefilled from
+     * the analyzed region instead of the live preview center.
+     */
+    public TerrainExportScreen(Screen parent, PreviewContainer previewContainer,
+                               int centerX, int centerZ, int coverageRadius) {
+        this(parent, previewContainer);
+        this.prefillCenterX = centerX;
+        this.prefillCenterZ = centerZ;
+        this.coverageRadius = Math.max(TerrainExportSpec.MIN_COVERAGE_RADIUS,
+                Math.min(TerrainExportSpec.MAX_COVERAGE_RADIUS, coverageRadius));
+        this.hasPrefill = true;
+    }
+
     @Override
     protected void init() {
         clearWidgets();
 
-        int tabW = (width - MX * 2 - GAP) / 2;
-        tabExportBtn = Button.builder(
-                Component.translatable("world_preview.terrain_export.tab_export"),
-                b -> switchTab(Tab.EXPORT))
-                .bounds(MX, TY, tabW, SH).build();
-        tabSettingsBtn = Button.builder(
-                Component.translatable("world_preview.terrain_export.tab_settings"),
-                b -> switchTab(Tab.SETTINGS))
-                .bounds(MX + tabW + GAP, TY, tabW, SH).build();
-        addRenderableWidget(tabExportBtn);
-        addRenderableWidget(tabSettingsBtn);
+        actionRowY = height - 32;
+        panelsBottom = actionRowY - 8;
 
-        int contentY = TY + SH + GAP * 2;
-        int contentW = Math.min(340, width - MX * 2);
+        // Two-panel geometry as in the seed search screen: the settings panel
+        // takes 36% of the width (at least 240px), the status column the rest.
+        settingsW = Math.max(240, (int) (width * 0.36f));
+        statusX = MX + settingsW + 8;
+        statusW = Math.max(1, width - statusX - MX);
 
-        if (currentTab == Tab.EXPORT) {
-            initExportTab(contentY, contentW);
-        } else {
-            initSettingsTab(contentY, contentW);
-        }
+        // The legend panel hugs the panels' bottom edge and keeps exactly the
+        // height its wrapped rows need; the status box absorbs the spare.
+        legendRows = computeLegendRows(statusW - 2 * PanelRenderer.PANEL_PAD);
+        legendH = PanelRenderer.PANEL_PAD + LH + 4 + legendRows * LH + 4;
+        legendY = panelsBottom - legendH;
+        statusH = Math.max(48, legendY - 8 - TOP);
 
-        addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, b -> onClose())
-                .bounds(width - 90, height - 28, 80, SH).build());
-
-        updateTabStyles();
-        updateButtonStates();
-    }
-
-    private void switchTab(Tab tab) {
-        currentTab = tab;
-        init();
-    }
-
-    private void updateTabStyles() {
-        tabExportBtn.active = currentTab != Tab.EXPORT;
-        tabSettingsBtn.active = currentTab != Tab.SETTINGS;
-    }
-
-    private void initExportTab(int y, int w) {
-        int x = MX;
-        exportButton = Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_START,
-                b -> doExport()).bounds(x, y, w / 2 - 2, SH).build();
-        cancelButton = Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_CANCEL,
-                b -> cancelExport()).bounds(x + w / 2 + 2, y, w / 2 - 2, SH).build();
-        addRenderableWidget(exportButton);
-        addRenderableWidget(cancelButton);
-    }
-
-    private void initSettingsTab(int y, int w) {
-        int x = MX;
-
-        addRenderableWidget(new StringWidget(x, y, w, LH,
-                WorldPreviewComponents.TERRAIN_EXPORT_RADIUS, Minecraft.getInstance().font).alignLeft());
-        y += LH + 2;
-        radiusSlider = createRadiusSlider(x, y, w);
+        // Settings stack, top-anchored under the panel header. The sliders
+        // carry their own names in their messages, so no extra label rows.
+        int x = MX + PanelRenderer.PANEL_PAD;
+        int innerW = settingsW - 2 * PanelRenderer.PANEL_PAD;
+        radiusSlider = createRadiusSlider(x, TOP + 16, innerW);
         addRenderableWidget(radiusSlider);
-        y += SH + GAP + 4;
-
-        addRenderableWidget(new StringWidget(x, y, w, LH,
-                WorldPreviewComponents.TERRAIN_EXPORT_RESOLUTION, Minecraft.getInstance().font).alignLeft());
-        y += LH + 2;
-        resolutionSlider = createResolutionSlider(x, y, w);
+        resolutionSlider = createResolutionSlider(x, TOP + 16 + SH + 4, innerW);
         addRenderableWidget(resolutionSlider);
-        y += SH + GAP + 4;
-
-        int imgW = computeImageSize();
-        imageSizeLabel = new StringWidget(x, y, w, LH,
-                Component.translatable("world_preview.terrain_export.image_size", imgW, imgW),
-                Minecraft.getInstance().font).alignLeft();
-        addRenderableWidget(imageSizeLabel);
-        y += LH + GAP + 4;
-
-        var center = previewContainer.previewDisplay().center();
-        addRenderableWidget(new StringWidget(x, y, w, LH,
-                Component.translatable("world_preview.terrain_export.center",
-                        center.getX(), center.getZ()), Minecraft.getInstance().font).alignLeft());
-        y += LH + GAP + 8;
-
-        contourCheckbox = new WPCheckbox(x, y,
-                Component.translatable("world_preview.terrain_export.contours"),
+        contourCheckbox = new WPCheckbox(x, CONTOURS_Y,
+                WorldPreviewComponents.TERRAIN_EXPORT_CONTOURS,
                 exportContours,
                 val -> {
                     exportContours = val;
                     if (contourSlider != null) contourSlider.active = val;
                 });
         addRenderableWidget(contourCheckbox);
-        y += SH + GAP;
-
-        contourSlider = createContourSlider(x, y, w);
+        gridCheckbox = new WPCheckbox(x + contourCheckbox.getWidth() + 6, CONTOURS_Y,
+                WorldPreviewComponents.TERRAIN_EXPORT_GRID,
+                exportGrid,
+                val -> {
+                    exportGrid = val;
+                    if (gridSlider != null) gridSlider.active = val;
+                });
+        addRenderableWidget(gridCheckbox);
+        contourSlider = createContourSlider(x, CONTOUR_SLIDER_Y, innerW);
         contourSlider.active = exportContours;
         addRenderableWidget(contourSlider);
-        y += SH + GAP;
+        gridSlider = createGridSlider(x, GRID_SLIDER_Y, innerW);
+        gridSlider.active = exportGrid;
+        addRenderableWidget(gridSlider);
+        heightmapCheckbox = new WPCheckbox(x, HEIGHTMAP_Y,
+                WorldPreviewComponents.TERRAIN_EXPORT_HEIGHTMAP,
+                exportHeightmap,
+                val -> exportHeightmap = val);
+        heightmapCheckbox.setPosition(x, HEIGHTMAP_Y);
+        addRenderableWidget(heightmapCheckbox);
+        // Color-mode toggle shares the heightmap row (the grid checkbox
+        // pattern); no new fixed row, so the smallest gui heights stay safe.
+        colorCycle = CycleButton.booleanBuilder(
+                        WorldPreviewComponents.TERRAIN_EXPORT_COLORS_BIOMES,
+                        WorldPreviewComponents.TERRAIN_EXPORT_COLORS_CATEGORIES)
+                .withInitialValue(biomeColors)
+                .create(x + heightmapCheckbox.getWidth() + 6, HEIGHTMAP_Y,
+                        Math.max(60, innerW - heightmapCheckbox.getWidth() - 6), SH,
+                        WorldPreviewComponents.TERRAIN_EXPORT_COLORS, (btn, val) -> biomeColors = val);
+        colorCycle.setTooltip(Tooltip.create(WorldPreviewComponents.TERRAIN_EXPORT_COLORS_TOOLTIP));
+        addRenderableWidget(colorCycle);
 
+        // Batch toggle hugs the panel bottom (the seed screen's options-row
+        // pattern) so it stays inside the panel at every gui height.
+        // The history button derives its width from the measured label ("Export
+        // History" exceeds a bare 70px button); the batch toggle keeps a 4px gap.
+        int historyW = Minecraft.getInstance().font.width(WorldPreviewComponents.TERRAIN_EXPORT_HISTORY) + 12;
         batchCycle = CycleButton.booleanBuilder(CommonComponents.OPTION_ON, CommonComponents.OPTION_OFF)
                 .withInitialValue(batchMode)
-                .create(x, y, w, SH, WorldPreviewComponents.TERRAIN_EXPORT_BATCH, (btn, val) -> batchMode = val);
+                .create(x, panelsBottom - PanelRenderer.PANEL_PAD - SH, innerW - historyW - 4, SH,
+                        WorldPreviewComponents.TERRAIN_EXPORT_BATCH, (btn, val) -> batchMode = val);
         batchCycle.setTooltip(Tooltip.create(WorldPreviewComponents.TERRAIN_EXPORT_BATCH_TOOLTIP));
         addRenderableWidget(batchCycle);
+        addRenderableWidget(Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_HISTORY, b -> toggleHistory())
+                .bounds(x + innerW - historyW, panelsBottom - PanelRenderer.PANEL_PAD - SH, historyW, SH).build());
+
+        // Action row: start/cancel bottom-left, back bottom-right.
+        exportButton = Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_START, b -> doExport())
+                .bounds(MX, actionRowY, 90, SH).build();
+        cancelButton = Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_CANCEL, b -> cancelExport())
+                .bounds(MX + 94, actionRowY, 90, SH).build();
+        addRenderableWidget(exportButton);
+        addRenderableWidget(cancelButton);
+        addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, b -> onClose())
+                .bounds(width - 88, actionRowY, 80, SH).build());
+
+        updateButtonStates();
+    }
+
+    /** Wrapped legend row count for the given inner width (mirrors renderLegendColors). */
+    private int computeLegendRows(int innerW) {
+        int rows = 1;
+        int curX = 0;
+        int colorSize = 10;
+        int colorTextGap = 3;
+        int itemGap = 8;
+        for (TerrainCategory cat : TerrainCategory.values()) {
+            Component catLabel = Component.translatable(
+                    "world_preview.terrain_export.category." + cat.name().toLowerCase());
+            int itemW = colorSize + colorTextGap + font.width(catLabel);
+            if (curX + itemW > innerW && curX > 0) {
+                rows++;
+                curX = 0;
+            }
+            curX += itemW + itemGap;
+        }
+        return rows;
     }
 
     private int computeImageSize() {
         return (coverageRadius * 2) / blocksPerPixel;
     }
 
-    private void refreshImageSizeLabel() {
-        if (imageSizeLabel != null) {
-            int imgW = computeImageSize();
-            imageSizeLabel.setMessage(Component.translatable("world_preview.terrain_export.image_size", imgW, imgW));
-        }
+    /** Whether the current slider combination fits the shared pixel allocation cap. */
+    private boolean settingsSupported() {
+        return TerrainExportSpec.isSupported(coverageRadius, blocksPerPixel);
+    }
+
+    private int snapRadius(double sliderValue) {
+        int min = TerrainExportSpec.MIN_COVERAGE_RADIUS;
+        int max = TerrainExportSpec.MAX_COVERAGE_RADIUS;
+        int raw = min + (int) Math.round(sliderValue * (max - min));
+        int snapped = min + Math.round((raw - min) / (float) RADIUS_STEP) * RADIUS_STEP;
+        return Math.max(min, Math.min(max, snapped));
     }
 
     private AbstractSliderButton createRadiusSlider(int x, int y, int w) {
@@ -223,13 +327,10 @@ public final class TerrainExportScreen extends Screen {
         return new AbstractSliderButton(x, y, w, SH,
                 Component.translatable("world_preview.terrain_export.radius_value", coverageRadius), initial) {
             @Override protected void updateMessage() {
-                int v = range == 0 ? min : (int) Math.round(this.value * range + min);
-                setMessage(Component.translatable("world_preview.terrain_export.radius_value", v));
+                setMessage(Component.translatable("world_preview.terrain_export.radius_value", snapRadius(this.value)));
             }
             @Override protected void applyValue() {
-                int v = range == 0 ? min : (int) Math.round(this.value * range + min);
-                coverageRadius = Math.max(min, Math.min(max, v));
-                refreshImageSizeLabel();
+                coverageRadius = snapRadius(this.value);
             }
         };
     }
@@ -248,9 +349,76 @@ public final class TerrainExportScreen extends Screen {
             @Override protected void applyValue() {
                 int v = range == 0 ? min : (int) Math.round(this.value * range + min);
                 blocksPerPixel = Math.max(min, Math.min(max, v));
-                refreshImageSizeLabel();
             }
         };
+    }
+
+    /** Flips the status box into the export-history list (newest first). */
+    private void toggleHistory() {
+        historyOpen = !historyOpen;
+        historyRows.clear();
+        historyScrollOffset = 0;
+        historyRenderOffset = 0.0;
+        if (!historyOpen) {
+            return;
+        }
+        Path historyFile = WorldPreview.get().configDir().resolve("terrain_exports").resolve("history.jsonl");
+        if (!Files.exists(historyFile)) {
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(historyFile);
+            // Newest first; the list scrolls, so every entry stays reachable.
+            for (int i = lines.size() - 1; i >= 0; i--) {
+                try {
+                    com.google.gson.JsonObject entry = com.google.gson.JsonParser.parseString(lines.get(i)).getAsJsonObject();
+                    String seed = entry.has("seed") ? entry.get("seed").getAsString() : "?";
+                    String time = entry.has("timestamp") ? entry.get("timestamp").getAsString() : "";
+                    historyRows.add(new HistoryRow(
+                            time.length() > 16 ? time.substring(5, 16).replace('_', ' ') : time,
+                            seed.length() > 10 ? seed.substring(0, 10) + "…" : seed,
+                            entry.has("dimension") ? entry.get("dimension").getAsString() : "?",
+                            entry.has("centerX") ? entry.get("centerX").getAsInt() : 0,
+                            entry.has("centerZ") ? entry.get("centerZ").getAsInt() : 0,
+                            entry.has("file") ? entry.get("file").getAsString() : ""));
+                } catch (Exception ignored) {
+                    // A malformed line must not kill the whole history view.
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to read terrain export history", e);
+        }
+    }
+
+    /** Prefilled center when opened from the analysis screen, else the live preview center. */
+    private BlockPos exportCenter() {
+        return hasPrefill
+                ? new BlockPos(prefillCenterX, previewContainer.previewDisplay().center().getY(), prefillCenterZ)
+                : previewContainer.previewDisplay().center();
+    }
+
+    private AbstractSliderButton createGridSlider(int x, int y, int w) {
+        int min = TerrainExportSpec.MIN_GRID_INTERVAL_BLOCKS;
+        int max = TerrainExportSpec.MAX_GRID_INTERVAL_BLOCKS;
+        int steps = Integer.numberOfTrailingZeros(max / min);
+        double initial = (double) Integer.numberOfTrailingZeros(gridInterval / min) / steps;
+        return new AbstractSliderButton(x, y, w, SH,
+                Component.translatable("world_preview.terrain_export.grid_value", gridInterval), initial) {
+            @Override protected void updateMessage() {
+                setMessage(Component.translatable("world_preview.terrain_export.grid_value", snapGrid(this.value)));
+            }
+            @Override protected void applyValue() {
+                gridInterval = snapGrid(this.value);
+            }
+        };
+    }
+
+    /** Snaps the grid slider to power-of-two intervals between 16 and 4096 blocks. */
+    private int snapGrid(double sliderValue) {
+        int steps = Integer.numberOfTrailingZeros(TerrainExportSpec.MAX_GRID_INTERVAL_BLOCKS
+                / TerrainExportSpec.MIN_GRID_INTERVAL_BLOCKS);
+        int exp = (int) Math.round(sliderValue * steps);
+        return TerrainExportSpec.MIN_GRID_INTERVAL_BLOCKS << exp;
     }
 
     private AbstractSliderButton createContourSlider(int x, int y, int w) {
@@ -270,17 +438,43 @@ public final class TerrainExportScreen extends Screen {
     }
 
     private void doExport() {
-        var center = previewContainer.previewDisplay().center();
+        // Belt-and-braces against stale button state: raise blocks/pixel until
+        // the shared pixel cap holds so the spec constructor can never throw
+        // inside the click handler.
+        while (!TerrainExportSpec.isSupported(coverageRadius, blocksPerPixel)
+                && blocksPerPixel < TerrainExportSpec.MAX_BLOCKS_PER_PIXEL) {
+            blocksPerPixel++;
+        }
+        var center = exportCenter();
         var spec = new TerrainExportSpec(coverageRadius, blocksPerPixel, center.getX(), center.getZ(),
-                exportContours, contourInterval);
+                exportContours, contourInterval, exportGrid ? gridInterval : 0, exportHeightmap,
+                biomeColors ? TerrainExportColorMode.BIOMES : TerrainExportColorMode.CATEGORY,
+                center.getY());
         if (batchMode && batchAvailable()) {
             startBatchExport(spec);
         } else {
             // Single-dimension path stays owned by the PreviewContainer controller.
             batchStatus = null;
-            previewContainer.startTerrainExport(spec);
+            if (!previewContainer.startTerrainExport(spec)) {
+                showStartRejected();
+            }
         }
-        if (currentTab != Tab.EXPORT) switchTab(Tab.EXPORT);
+    }
+
+    /**
+     * Surfaces a refused single-dimension start. Zeroing the batch clock keeps
+     * the timing row honest (elapsed 0) instead of showing JVM uptime or the
+     * previous batch's duration.
+     */
+    private void showStartRejected() {
+        if (batchRunning
+                || previewContainer.terrainExportStatus().state() == TerrainExportController.State.RUNNING) {
+            return;
+        }
+        batchPct = 0.0;
+        batchStartNanos = System.nanoTime();
+        batchFinishNanos = batchStartNanos;
+        batchStatus = WorldPreviewComponents.TERRAIN_EXPORT_REJECTED;
     }
 
     private void cancelExport() {
@@ -309,7 +503,9 @@ public final class TerrainExportScreen extends Screen {
                 || previewContainer.levelStemRegistry() == null) {
             // Cannot resolve worldgen state: fall back to the current dimension.
             batchStatus = null;
-            previewContainer.startTerrainExport(spec);
+            if (!previewContainer.startTerrainExport(spec)) {
+                showStartRejected();
+            }
             return;
         }
 
@@ -322,6 +518,10 @@ public final class TerrainExportScreen extends Screen {
         batchCancelled.set(false);
         batchRunning = true;
         batchPct = 0.0;
+        batchStartNanos = System.nanoTime();
+        batchFinishNanos = 0L;
+        batchOutputDir = outputDir;
+        batchFailed = false;
         batchStatus = Component.translatable("world_preview.terrain_export.batch.progress",
                 1, dimensions.size(), "", String.format("%.1f", 0.0));
 
@@ -339,9 +539,24 @@ public final class TerrainExportScreen extends Screen {
             long totalWork,
             AtomicLong completedPixels
     ) {
+        int exported = 0;
+        int failed = 0;
         try {
             long seed = context.seed();
             RegistryAccess.Frozen registryAccess = context.registryAccess().compositeAccess();
+            // Biome colors are registry-level data: one table serves every
+            // dimension in the batch. Missing table falls back to categories.
+            TerrainMapExporter.TerrainColorSource batchColors;
+            if (spec.colorMode() == TerrainExportColorMode.BIOMES) {
+                TerrainMapExporter.BiomeColorTable colorTable = previewContainer.buildTerrainExportBiomeColors();
+                batchColors = colorTable != null
+                        ? TerrainMapExporter.biomes(colorTable)
+                        : TerrainMapExporter.categories(null);
+            } else {
+                batchColors = TerrainMapExporter.categories(null);
+            }
+            // Same layer for every dimension: the one the preview shows.
+            final int exportQuartY = QuartPos.fromBlock(spec.exportY());
             for (int i = 0; i < dimensions.size(); i++) {
                 if (batchCancelled.get()) {
                     throw new CancellationException("Batch terrain export cancelled");
@@ -351,23 +566,47 @@ public final class TerrainExportScreen extends Screen {
                 if (stem == null) {
                     continue;
                 }
-                TerrainMapExporter.BiomeSampler sampler = createDimensionSampler(stem, seed, registryAccess);
-                LongConsumer progress = trackDimensionProgress(
-                        dimensionId, i + 1, dimensions.size(), totalWork, completedPixels);
-                progress.accept(0L);
-                int yMin = stem.type().value().minY();
-                exporter.export(spec, sampler, yMin, yMin + stem.type().value().height(), outputDir,
-                        sanitizeFileToken(dimensionId.getPath()) + "_", batchCancelled::get, progress);
+                try {
+                    TerrainMapExporter.BiomeSampler sampler = createDimensionSampler(stem, seed, registryAccess, exportQuartY);
+                    LongConsumer progress = trackDimensionProgress(
+                            dimensionId, i + 1, dimensions.size(), totalWork, completedPixels);
+                    progress.accept(0L);
+                    int yMin = stem.type().value().minY();
+                    exporter.export(spec, sampler, batchColors, null,
+                            new TerrainMapExporter.ExportContext(Long.toString(seed), dimensionId.toString()),
+                            null, yMin, yMin + stem.type().value().height(), outputDir,
+                            sanitizeFileToken(dimensionId.getPath()) + "_", batchCancelled::get, progress);
+                    exported++;
+                } catch (CancellationException e) {
+                    throw e;
+                } catch (Exception e) {
+                    // One broken dimension must not sink the rest of the batch.
+                    failed++;
+                    LOGGER.error("Batch terrain export failed for dimension " + dimensionId, e);
+                }
             }
             batchPct = 100.0;
-            batchStatus = WorldPreviewComponents.TERRAIN_EXPORT_COMPLETE;
+            if (failed == 0) {
+                batchStatus = WorldPreviewComponents.TERRAIN_EXPORT_COMPLETE;
+            } else {
+                // Partial success still paints the bar red: the user must see
+                // that some dimensions did not produce a file.
+                batchFailed = true;
+                batchStatus = Component.translatable("world_preview.terrain_export.batch.partial",
+                        exported, dimensions.size(), failed);
+            }
         } catch (CancellationException e) {
             batchStatus = WorldPreviewComponents.TERRAIN_EXPORT_CANCELLED;
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Catch Throwable like the single-dimension controller: an Error
+            // (e.g. OOM on a huge allocation) escaping this thread would be
+            // swallowed by the unobserved future with no feedback at all.
             LOGGER.error("Batch terrain export failed", e);
+            batchFailed = true;
             batchStatus = Component.translatable("world_preview.terrain_export.failed",
                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
         } finally {
+            batchFinishNanos = System.nanoTime();
             batchRunning = false;
         }
     }
@@ -375,9 +614,12 @@ public final class TerrainExportScreen extends Screen {
     /**
      * Creates the per-dimension biome sampler. RandomState creation costs a few
      * milliseconds, so it must happen once per dimension here, never per pixel.
+     * Every dimension samples at the same quart Y — the preview center's layer
+     * captured by the spec — so the batch matches the single-dimension export.
      */
     private static TerrainMapExporter.BiomeSampler createDimensionSampler(LevelStem stem, long seed,
-                                                                          RegistryAccess.Frozen registryAccess) {
+                                                                          RegistryAccess.Frozen registryAccess,
+                                                                          int exportQuartY) {
         ChunkGenerator generator = stem.generator();
         RandomState randomState = generator instanceof NoiseBasedChunkGenerator noiseBased
                 ? RandomState.create(noiseBased.generatorSettings().value(),
@@ -386,9 +628,8 @@ public final class TerrainExportScreen extends Screen {
                         registryAccess.lookupOrThrow(Registries.NOISE), seed);
         BiomeSource biomeSource = generator.getBiomeSource();
         var noiseSampler = randomState.sampler();
-        int quartY = QuartPos.fromBlock(64);
         return (blockX, blockZ) -> biomeSource.getNoiseBiome(
-                QuartPos.fromBlock(blockX), quartY, QuartPos.fromBlock(blockZ), noiseSampler);
+                QuartPos.fromBlock(blockX), exportQuartY, QuartPos.fromBlock(blockZ), noiseSampler);
     }
 
     private LongConsumer trackDimensionProgress(
@@ -416,63 +657,86 @@ public final class TerrainExportScreen extends Screen {
         if (exportButton == null || cancelButton == null) return;
         TerrainExportController.Status status = previewContainer.terrainExportStatus();
         boolean running = status.state() == TerrainExportController.State.RUNNING || batchRunning;
-        exportButton.active = !running;
+        boolean supported = settingsSupported();
+        exportButton.active = !running && supported;
         cancelButton.active = running;
+        Path exportDir = WorldPreview.get().configDir().resolve("terrain_exports");
+        exportButton.setTooltip(Tooltip.create(supported
+                ? Component.translatable("world_preview.terrain_export.output", exportDir.toAbsolutePath().normalize())
+                : WorldPreviewComponents.TERRAIN_EXPORT_UNSUPPORTED));
         if (radiusSlider != null) radiusSlider.active = !running;
         if (resolutionSlider != null) resolutionSlider.active = !running;
         if (contourCheckbox != null) contourCheckbox.active = !running;
         if (contourSlider != null) contourSlider.active = !running && exportContours;
         if (batchCycle != null) batchCycle.active = !running && batchAvailable();
+        if (gridCheckbox != null) gridCheckbox.active = !running;
+        if (gridSlider != null) gridSlider.active = !running && exportGrid;
+        if (heightmapCheckbox != null) heightmapCheckbox.active = !running;
+        if (colorCycle != null) colorCycle.active = !running;
     }
 
     @Override
     public void tick() {
         super.tick();
         updateButtonStates();
-        updateTabStyles();
     }
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        graphics.fill(0, 0, width, height, SettingsTheme.BACKGROUND);
-        graphics.drawCenteredString(font, WorldPreviewComponents.TERRAIN_EXPORT_TITLE, width / 2, 8, SettingsTheme.TEXT);
+        graphics.fill(0, 0, width, height, 0xFF101018);
+        graphics.drawCenteredString(font, WorldPreviewComponents.TERRAIN_EXPORT_TITLE, width / 2, 8, 0xFFFFFFFF);
+
+        PanelRenderer.panelBackground(graphics, MX, TOP, settingsW, panelsBottom - TOP);
+        PanelRenderer.panelHeader(graphics, font, MX, TOP, settingsW,
+                Component.translatable("world_preview.terrain_export.settings"), null);
+
+        PanelRenderer.panelBackground(graphics, statusX, TOP, statusW, statusH);
+        PanelRenderer.panelBackground(graphics, statusX, legendY, statusW, legendH);
+        PanelRenderer.panelHeader(graphics, font, statusX, legendY, statusW,
+                WorldPreviewComponents.TERRAIN_EXPORT_LEGEND, null);
+
         super.render(graphics, mouseX, mouseY, partialTick);
 
-        if (currentTab == Tab.EXPORT) {
-            renderProgressBar(graphics);
-            renderStatus(graphics);
-            renderLegendColors(graphics);
+        if (historyOpen) {
+            renderHistoryList(graphics, mouseX, mouseY);
+        } else {
+            renderStatusBox(graphics);
         }
+        renderLegendColors(graphics);
     }
 
-    private int exportContentStartY() {
-        return TY + SH + GAP * 2;
-    }
-
-    private void renderProgressBar(GuiGraphics graphics) {
-        int x = MX;
-        int y = exportContentStartY() + SH + GAP + 4;
-        int w = Math.min(340, width - MX * 2);
-
+    private void renderStatusBox(GuiGraphics graphics) {
         TerrainExportController.Status status = previewContainer.terrainExportStatus();
         boolean batchActive = batchStatus != null;
         double pct = batchActive ? batchPct : status.percentage();
 
-        graphics.fill(x, y, x + w, y + 12, 0xFF333344);
-        int fillW = (int) (w * pct / 100.0);
-        if (fillW > 0) {
-            boolean inProgress = batchActive ? batchRunning
-                    : status.state() == TerrainExportController.State.RUNNING;
-            int color = inProgress ? SettingsTheme.PRIMARY : SettingsTheme.SUCCESS;
-            graphics.fill(x, y, x + fillW, y + 12, color);
+        int x = statusX + PanelRenderer.PANEL_PAD;
+        int w = statusW - 2 * PanelRenderer.PANEL_PAD;
+        int y = TOP + PanelRenderer.PANEL_PAD;
+
+        boolean failed = batchActive ? batchFailed
+                : status.state() == TerrainExportController.State.FAILED;
+        boolean inProgress = batchActive ? batchRunning
+                : status.state() == TerrainExportController.State.RUNNING;
+        PanelRenderer.progressBar(graphics, x, y, w, pct,
+                failed ? BAR_FAILED : inProgress ? BAR_RUNNING : BAR_DONE);
+        String pctText = String.format("%.1f%%", pct);
+        if (w >= 40 && font.width(pctText) <= w - 4) {
+            graphics.drawString(font, Component.literal(pctText),
+                    x + w - 2 - font.width(pctText), y + 2, 0xFFFFFFFF);
         }
-    }
+        y += 12 + 6;
 
-    private void renderStatus(GuiGraphics graphics) {
-        int x = MX;
-        int y = exportContentStartY() + SH + GAP + 4 + 16;
-
-        TerrainExportController.Status status = previewContainer.terrainExportStatus();
+        // Image size (red when the shared pixel cap rejects the combination)
+        // and the export center: export *inputs*, so they live at the top of
+        // the status box instead of crowding the settings panel.
+        int imgW = computeImageSize();
+        graphics.drawString(font, Component.translatable("world_preview.terrain_export.image_size", imgW, imgW),
+                x, y, settingsSupported() ? 0xFFFFFFFF : 0xFFFF5555);
+        var center = exportCenter();
+        graphics.drawString(font, Component.translatable("world_preview.terrain_export.center",
+                center.getX(), center.getZ()), x, CENTER_Y, 0xFF999999);
+        y = STATUS_LINE_Y;
 
         Component statusLine = switch (status.state()) {
             case IDLE -> WorldPreviewComponents.TERRAIN_EXPORT_IDLE;
@@ -487,87 +751,239 @@ public final class TerrainExportScreen extends Screen {
         if (batchStatus != null) {
             statusLine = batchStatus;
         }
-        graphics.drawString(font, statusLine, x, y, SettingsTheme.TEXT);
-        y += 14;
+        graphics.drawString(font, statusLine, x, y, 0xFFFFFFFF);
+        y += LH + 4;
 
-        if (status.state() != TerrainExportController.State.IDLE) {
-            String elapsed = formatDuration(status.elapsedNanos());
-            String eta = status.estimatedRemainingNanos() < 0L
-                    ? "--:--" : formatDuration(status.estimatedRemainingNanos());
+        long elapsedNanos;
+        long etaNanos;
+        boolean showTiming;
+        if (batchStatus != null) {
+            long now = batchFinishNanos != 0L ? batchFinishNanos : System.nanoTime();
+            elapsedNanos = Math.max(0L, now - batchStartNanos);
+            etaNanos = batchRunning && batchPct > 0.5
+                    ? (long) (elapsedNanos * (100.0 - batchPct) / batchPct) : -1L;
+            showTiming = true;
+        } else {
+            showTiming = status.state() != TerrainExportController.State.IDLE;
+            elapsedNanos = status.elapsedNanos();
+            etaNanos = status.estimatedRemainingNanos();
+        }
+        if (showTiming) {
+            String elapsed = formatDuration(elapsedNanos);
+            String eta = etaNanos < 0L ? "--:--" : formatDuration(etaNanos);
             graphics.drawString(font,
                     Component.translatable("world_preview.terrain_export.timing", elapsed, eta),
-                    x, y, SettingsTheme.TEXT_DIM);
-            y += 14;
+                    x, y, 0xFF999999);
+            y += LH + 4;
         }
 
-        if (status.outputPath() != null) {
-            String path = status.outputPath().toAbsolutePath().normalize().toString();
-            int screenMaxW = (width * 3) / 4;
-            int drawX = x;
-            int drawY = y;
+        // While a batch runs, the controller's single-export path would be stale;
+        // the shared output directory is the accurate location to show.
+        Path outputPath = batchStatus != null ? batchOutputDir : status.outputPath();
+        if (outputPath != null) {
+            String path = outputPath.toAbsolutePath().normalize().toString();
+            int maxLines = Math.max(1, (TOP + statusH - PanelRenderer.PANEL_PAD - y) / LH);
+            int lineCount = 0;
             StringBuilder line = new StringBuilder();
             int lineW = 0;
-
             for (int i = 0; i < path.length(); i++) {
                 char ch = path.charAt(i);
                 int charW = font.width(String.valueOf(ch));
-                if (drawX + lineW + charW > x + screenMaxW && line.length() > 0) {
-                    graphics.drawString(font, Component.literal(line.toString()), drawX, drawY, SettingsTheme.TEXT_DIM);
-                    drawY += 12;
+                if (x + lineW + charW > x + w && line.length() > 0) {
+                    graphics.drawString(font, Component.literal(line.toString()), x, y, 0xFF999999);
+                    y += LH;
+                    if (++lineCount >= maxLines) {
+                        line.setLength(0);
+                        break;
+                    }
                     line.setLength(0);
                     lineW = 0;
                 }
                 line.append(ch);
                 lineW += charW;
             }
-            if (line.length() > 0) {
-                graphics.drawString(font, Component.literal(line.toString()), drawX, drawY, SettingsTheme.TEXT_DIM);
+            if (line.length() > 0 && lineCount < maxLines) {
+                graphics.drawString(font, Component.literal(line.toString()), x, y, 0xFF999999);
             }
         }
     }
 
+    /** Draws the export-history list inside the status panel; clicking a row copies its file path. */
+    private void renderHistoryList(GuiGraphics graphics, double mouseX, double mouseY) {
+        int x = statusX + PanelRenderer.PANEL_PAD;
+        int w = statusW - 2 * PanelRenderer.PANEL_PAD;
+        int y = TOP + PanelRenderer.PANEL_PAD;
+        graphics.drawString(font, WorldPreviewComponents.TERRAIN_EXPORT_HISTORY, x, y, 0xFFFFFFFF);
+        if (System.nanoTime() - historyCopiedAtNanos < 2_000_000_000L) {
+            String copied = WorldPreviewComponents.TERRAIN_EXPORT_HISTORY_COPIED.getString();
+            graphics.drawString(font, copied, x + w - font.width(copied), y, 0xFF55FF55);
+        }
+        historyRects.clear();
+        if (historyRows.isEmpty()) {
+            graphics.drawString(font, WorldPreviewComponents.TERRAIN_EXPORT_HISTORY_EMPTY, x,
+                    historyListTop(), 0xFF999999);
+            return;
+        }
+        tickHistoryScroll(mouseY);
+        historyScrollOffset = historyClamp(historyScrollOffset);
+        int rowHeight = historyRowHeight();
+        graphics.enableScissor(statusX + 1, TOP + 1, statusX + statusW - 1, TOP + statusH - 1);
+        for (int i = Math.max(0, (int) Math.floor(historyRenderOffset / rowHeight));
+                i < historyRows.size(); i++) {
+            int rowY = historyListTop() + (int) Math.round(i * rowHeight - historyRenderOffset);
+            if (rowY >= historyListBottom()) {
+                break;
+            }
+            HistoryRow row = historyRows.get(i);
+            String dimShort = row.dimension().contains(":")
+                    ? row.dimension().substring(row.dimension().indexOf(':') + 1) : row.dimension();
+            Component line = Component.literal(String.format("%s  %s  %s  %d,%d",
+                    row.time(), dimShort, row.seed(), row.centerX(), row.centerZ()));
+            graphics.drawString(font, line, x, rowY, 0xFFE0E0E0);
+            historyRects.add(new int[]{x, rowY, Math.min(w, font.width(line)), font.lineHeight});
+        }
+        graphics.disableScissor();
+        drawHistoryScrollbar(graphics);
+    }
+
+    // ===== History list scrolling helpers =====
+
+    /** Top Y of the history rows area (below the header row). */
+    private int historyListTop() {
+        return TOP + PanelRenderer.PANEL_PAD + 12 + 4;
+    }
+
+    private int historyListBottom() {
+        return TOP + statusH - PanelRenderer.PANEL_PAD;
+    }
+
+    private int historyRowHeight() {
+        return font.lineHeight + 2;
+    }
+
+    private int historyScrollMax() {
+        return Math.max(0, historyRows.size() * historyRowHeight()
+                - Math.max(0, historyListBottom() - historyListTop()));
+    }
+
+    private int historyClamp(int value) {
+        return Math.min(historyScrollMax(), Math.max(0, value));
+    }
+
+    private boolean inHistoryScrollbar(double mouseX, double mouseY) {
+        return historyScrollMax() > 0
+                && mouseX >= statusX + statusW - HISTORY_HIT_WIDTH && mouseX <= statusX + statusW
+                && mouseY >= historyListTop() && mouseY < historyListBottom();
+    }
+
+    /**
+     * Per-render-frame scroll animation, ticked from the render pass so it
+     * keeps running while the mouse is still: eased wheel steps and a
+     * middle-press autoscroll whose speed follows the cursor's distance from
+     * the anchor (browser autoscroll feel, same direction).
+     */
+    private void tickHistoryScroll(double mouseY) {
+        long now = System.currentTimeMillis();
+        long dt = historyLastFrameMs < 0 ? 16 : Math.min(100, now - historyLastFrameMs);
+        historyLastFrameMs = now;
+        int max = historyScrollMax();
+        if (historyPanActive) {
+            double displacement = mouseY - historyPanAnchorY;
+            double speed = 0.0;
+            if (Math.abs(displacement) > HISTORY_PAN_DEADZONE_PX) {
+                speed = Math.min(
+                        HISTORY_PAN_MAX_PX_PER_SEC,
+                        (displacement - Math.signum(displacement) * HISTORY_PAN_DEADZONE_PX)
+                                * HISTORY_PAN_PX_PER_SEC_PER_PX);
+            }
+            historyRenderOffset = Math.min(max, Math.max(0, historyRenderOffset + speed * dt / 1000.0));
+            historyScrollOffset = (int) Math.round(historyRenderOffset);
+        } else if (historyScrollbarDragging) {
+            historyRenderOffset = historyScrollOffset;
+        } else {
+            historyRenderOffset += (historyScrollOffset - historyRenderOffset)
+                    * (1.0 - Math.exp(-dt / HISTORY_SCROLL_EASE_MS));
+            if (Math.abs(historyScrollOffset - historyRenderOffset) < 0.01) {
+                historyRenderOffset = historyScrollOffset;
+            }
+            historyRenderOffset = Math.min(max, Math.max(0, historyRenderOffset));
+        }
+    }
+
+    private void scrollFromHistoryScrollbar(double mouseY) {
+        int max = historyScrollMax();
+        if (max <= 0) {
+            return;
+        }
+        int trackTop = historyListTop();
+        int trackLen = historyListBottom() - trackTop;
+        int thumbHeight = Math.max(10, trackLen * trackLen / (historyRows.size() * historyRowHeight()));
+        int travel = Math.max(1, trackLen - thumbHeight);
+        double raw = Math.min(travel, Math.max(0, mouseY - historyScrollbarGrabOffset - trackTop));
+        historyScrollOffset = (int) Math.round(raw * max / travel);
+        historyRenderOffset = historyScrollOffset;
+    }
+
+    /** 1.20.1 GuiGraphics has no cursor request, so the strip stays visual-only. */
+    private void drawHistoryScrollbar(GuiGraphics graphics) {
+        int max = historyScrollMax();
+        if (max <= 0) {
+            return;
+        }
+        int trackTop = historyListTop();
+        int trackBottom = historyListBottom();
+        int trackLen = trackBottom - trackTop;
+        int thumbHeight = Math.max(10, trackLen * trackLen / (historyRows.size() * historyRowHeight()));
+        int thumbY = trackTop + (int) Math.round((trackLen - thumbHeight) * historyRenderOffset / Math.max(1, max));
+        int trackX = statusX + statusW - 1 - SCROLLBAR_BAR_WIDTH;
+        graphics.fill(trackX, trackTop, trackX + SCROLLBAR_BAR_WIDTH, trackBottom, 0x33FFFFFF);
+        graphics.fill(trackX, thumbY, trackX + SCROLLBAR_BAR_WIDTH, thumbY + thumbHeight,
+                historyScrollbarDragging ? 0xB4FFFFFF : 0x8CFFFFFF);
+    }
+
     private void renderLegendColors(GuiGraphics graphics) {
-        int x = MX;
-        int y = exportContentStartY() + SH + GAP + 4 + 16 + 14 * 4 + 8;
-
-        Component legendTitle = WorldPreviewComponents.TERRAIN_EXPORT_LEGEND;
-        graphics.drawString(font, legendTitle, x, y, SettingsTheme.TEXT);
-        int titleW = font.width(legendTitle);
-
-        int itemStartX = x + titleW + 8;
+        int innerX = statusX + PanelRenderer.PANEL_PAD;
+        int maxRight = statusX + statusW - PanelRenderer.PANEL_PAD;
+        int itemY = legendY + PanelRenderer.PANEL_PAD + LH + 4;
+        int colorY = itemY - 1;
         int colorSize = 10;
         int colorTextGap = 3;
         int itemGap = 8;
-        int itemY = y;
-        int colorY = itemY - 1;
+        int curX = innerX;
 
-        TerrainCategory[] cats = TerrainCategory.values();
-        int curX = itemStartX;
-        int maxRight = width - MX;
-
-        for (int i = 0; i < cats.length; i++) {
+        graphics.enableScissor(statusX + 1, legendY + 1, statusX + statusW - 1, legendY + legendH - 1);
+        if (biomeColors) {
+            // Biome colors are data-driven; the fixed on-screen legend only
+            // documents the category mode. The export's JSON sidecar carries
+            // the actual per-biome color table.
+            graphics.drawString(font, WorldPreviewComponents.TERRAIN_EXPORT_BIOME_LEGEND, innerX, itemY, 0xFFE0E0E0);
+            graphics.disableScissor();
+            return;
+        }
+        for (TerrainCategory cat : TerrainCategory.values()) {
             Component catLabel = Component.translatable(
-                    "world_preview.terrain_export.category." + cats[i].name().toLowerCase());
+                    "world_preview.terrain_export.category." + cat.name().toLowerCase());
             int textW = font.width(catLabel);
             int itemW = colorSize + colorTextGap + textW;
 
             if (curX + itemW > maxRight) {
-                curX = itemStartX;
+                curX = innerX;
                 itemY += 14;
                 colorY = itemY - 1;
             }
 
-            int rgb = cats[i].pixelColor();
+            int rgb = cat.argbColor();
             graphics.fill(curX, colorY, curX + colorSize, colorY + colorSize, rgb);
             graphics.fill(curX, colorY, curX + colorSize, colorY + 1, 0xFF000000);
             graphics.fill(curX, colorY + colorSize - 1, curX + colorSize, colorY + colorSize, 0xFF000000);
             graphics.fill(curX, colorY, curX + 1, colorY + colorSize, 0xFF000000);
             graphics.fill(curX + colorSize - 1, colorY, curX + colorSize, colorY + colorSize, 0xFF000000);
 
-            graphics.drawString(font, catLabel, curX + colorSize + colorTextGap, itemY, SettingsTheme.TEXT);
+            graphics.drawString(font, catLabel, curX + colorSize + colorTextGap, itemY, 0xFFFFFFFF);
 
             curX += itemW + itemGap;
         }
+        graphics.disableScissor();
     }
 
     private static String formatDuration(long nanos) {
@@ -581,6 +997,100 @@ public final class TerrainExportScreen extends Screen {
     }
 
     @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (super.mouseClicked(mouseX, mouseY, button)) {
+            return true;
+        }
+        if (historyOpen) {
+            // A middle press in the list area starts a browser-style autoscroll
+            // (ticked from the render pass); the release is routed below.
+            if (button == 2
+                    && historyScrollMax() > 0
+                    && mouseX >= statusX && mouseX < statusX + statusW
+                    && mouseY >= historyListTop() && mouseY < historyListBottom()) {
+                historyPanActive = true;
+                historyPanAnchorY = mouseY;
+                return true;
+            }
+            // The scrollbar strip wins over row clicks: jumping the thumb is
+            // the point of pressing there.
+            if (button == 0 && inHistoryScrollbar(mouseX, mouseY)) {
+                historyScrollbarDragging = true;
+                int trackLen = historyListBottom() - historyListTop();
+                int thumbHeight = Math.max(10, trackLen * trackLen
+                        / (historyRows.size() * historyRowHeight()));
+                historyScrollbarGrabOffset = thumbHeight / 2.0;
+                scrollFromHistoryScrollbar(mouseY);
+                return true;
+            }
+            if (button == 0) {
+                for (int i = 0; i < historyRects.size() && i < historyRows.size(); i++) {
+                    int[] rect = historyRects.get(i);
+                    if (mouseX >= rect[0] && mouseX <= rect[0] + rect[2] && mouseY >= rect[1] && mouseY <= rect[1] + rect[3]) {
+                        String path = WorldPreview.get().configDir().resolve("terrain_exports")
+                                .resolve(historyRows.get(i).file()).toAbsolutePath().normalize().toString();
+                        minecraft.keyboardHandler.setClipboard(path);
+                        historyCopiedAtNanos = System.nanoTime();
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (historyPanActive) {
+            historyPanActive = false;
+            if (button == 2) {
+                return true;
+            }
+        }
+        if (historyScrollbarDragging && button == 0) {
+            historyScrollbarDragging = false;
+            historyScrollbarGrabOffset = 0;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (historyScrollbarDragging && button == 0) {
+            scrollFromHistoryScrollbar(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        if (super.mouseScrolled(mouseX, mouseY, delta)) {
+            return true;
+        }
+        if (!historyOpen || historyRows.isEmpty() || historyScrollMax() <= 0) {
+            return false;
+        }
+        if (mouseX < statusX || mouseX >= statusX + statusW
+                || mouseY < historyListTop() || mouseY >= historyListBottom()) {
+            return false;
+        }
+        int steps = (int) delta;
+        if (steps == 0 && delta != 0.0) {
+            steps = delta > 0 ? 1 : -1;
+        }
+        if (historyPanActive) {
+            // The wheel takes over, like a browser: cancel the autoscroll
+            // and apply the step to the position it leaves behind.
+            historyPanActive = false;
+        }
+        historyScrollOffset = historyClamp(
+                historyScrollOffset - steps * HISTORY_WHEEL_ROWS * historyRowHeight());
+        return true;
+    }
+
+        @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         final KeyEvent event = new KeyEvent(keyCode, scanCode, modifiers);
         if (super.keyPressed(keyCode, scanCode, modifiers)) return true;

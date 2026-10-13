@@ -35,6 +35,10 @@ public class RenderSettings {
     public ResourceLocation dimension = null;
 
     public boolean hideAllStructures = false;
+    /** True once the center was deliberately placed (reset, player anchor or
+     *  a persisted position); guards the open-time reset so the map remembers
+     *  the last position between sessions. */
+    public boolean centerInitialized = false;
     public transient RenderMode mode = RenderMode.BIOMES;
     public transient RenderMode lastNoise = RenderMode.NOISE_TEMPERATURE;
 
@@ -67,6 +71,7 @@ public class RenderSettings {
         samplerType = source.samplerType == null ? SamplerType.AUTO : source.samplerType;
         dimension = source.dimension;
         hideAllStructures = source.hideAllStructures;
+        centerInitialized = source.centerInitialized;
         mode = source.mode == null ? RenderMode.BIOMES : source.mode;
         lastNoise = source.lastNoise == null ? RenderMode.NOISE_TEMPERATURE : source.lastNoise;
     }
@@ -110,6 +115,17 @@ public class RenderSettings {
         // Align to Y_BLOCK_STRIDE boundary (matches incrementY/decrementY)
         y = (y / Y_BLOCK_STRIDE) * Y_BLOCK_STRIDE;
         center = new BlockPos(0, y, 0);
+        centerInitialized = true;
+    }
+
+    /** Centers on the given block position (opt-in "open at player"), Y clamped to the dimension. */
+    public void centerOn(BlockPos pos) {
+        final int yMin = WorldPreview.get().workManager().yMin();
+        final int yMax = WorldPreview.get().workManager().yMax();
+        int y = Math.max(yMin, Math.min(yMax, pos.getY()));
+        y = (y / Y_BLOCK_STRIDE) * Y_BLOCK_STRIDE;
+        center = new BlockPos(pos.getX(), y, pos.getZ());
+        centerInitialized = true;
     }
 
     public void incrementY() {

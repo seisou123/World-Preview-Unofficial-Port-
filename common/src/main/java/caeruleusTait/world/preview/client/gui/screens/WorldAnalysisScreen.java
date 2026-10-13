@@ -1,8 +1,8 @@
 package caeruleusTait.world.preview.client.gui.screens;
 
 import caeruleusTait.world.preview.WorldPreview;
-import caeruleusTait.world.preview.client.gui.input.MouseButtonEvent;
 import caeruleusTait.world.preview.client.gui.input.KeyEvent;
+import caeruleusTait.world.preview.client.gui.input.MouseButtonEvent;
 import caeruleusTait.world.preview.backend.analysis.AnalysisDataState;
 import caeruleusTait.world.preview.backend.analysis.AnalysisProgress;
 import caeruleusTait.world.preview.backend.analysis.AnalysisRequest;
@@ -12,6 +12,8 @@ import caeruleusTait.world.preview.backend.analysis.BiomeRarity;
 import caeruleusTait.world.preview.backend.analysis.ProfileRequest;
 import caeruleusTait.world.preview.backend.analysis.ProfileResult;
 import caeruleusTait.world.preview.backend.analysis.Region;
+import caeruleusTait.world.preview.domain.waypoint.WaypointStore;
+import net.minecraft.client.gui.components.Tooltip;
 import caeruleusTait.world.preview.backend.analysis.RegionAnalyzer;
 import caeruleusTait.world.preview.backend.analysis.RegionInsights;
 import caeruleusTait.world.preview.backend.analysis.RegionMetrics;
@@ -30,6 +32,7 @@ import caeruleusTait.world.preview.client.gui.widgets.TranslucentButton;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -132,6 +135,8 @@ public final class WorldAnalysisScreen extends Screen {
     private final TranslucentButton locateButton;
     private final TranslucentButton directionButton;
     private final TranslucentButton exportReportButton;
+    private final TranslucentButton terrainExportButton;
+    private final TranslucentButton structureWaypointsButton;
     /** The single overlay trigger: Expand in the toolbar row, Collapse in the overlay band. */
     private final TranslucentButton overlayButton;
     private TranslucentButton closeButton;
@@ -147,6 +152,10 @@ public final class WorldAnalysisScreen extends Screen {
      * geometry whenever this is set.
      */
     private boolean overlayOpen;
+    /** True between a middle-press pan start on the share panel and its release. */
+    private boolean sharePanActive;
+    /** True between a middle-press pan start on the overview panel and its release. */
+    private boolean overviewPanActive;
     /** Terrain/biome-diversity insights for the share panel, at most 1s stale while its tab is visible. */
     @Nullable private RegionInsights shareInsights;
     private long lastInsightsMillis;
@@ -238,6 +247,11 @@ public final class WorldAnalysisScreen extends Screen {
         this.exportReportButton = new TranslucentButton(font, 0, 0, 90, 20,
                 WorldPreviewComponents.ANALYSIS_EXPORT_REPORT, ignored -> exportReport());
         this.exportReportButton.active = false;
+        this.terrainExportButton = new TranslucentButton(font, 0, 0, 90, 20,
+                WorldPreviewComponents.TERRAIN_EXPORT_FROM_ANALYSIS, ignored -> openTerrainExport());
+        this.structureWaypointsButton = new TranslucentButton(font, 0, 0, 90, 20,
+                WorldPreviewComponents.ANALYSIS_SAVE_STRUCTURE_WAYPOINTS, ignored -> saveStructureWaypoints());
+        this.structureWaypointsButton.setTooltip(Tooltip.create(WorldPreviewComponents.ANALYSIS_SAVE_STRUCTURE_WAYPOINTS_TOOLTIP));
         this.overlayButton = new TranslucentButton(font, 0, 0, 56, 20,
                 WorldPreviewComponents.ANALYSIS_ACTION_EXPAND, ignored -> toggleOverlay());
     }
@@ -406,6 +420,35 @@ public final class WorldAnalysisScreen extends Screen {
         return restarted.request().region();
     }
 
+    /** Wires the overview panel's structure-row clicks to the map locate. */
+    private void wireStructureRowClicks() {
+        overviewPanel.setStructureClickCallback(pos -> previewContainer.previewDisplay().locateTo(new BlockPos(
+                pos.getX(), session.request().y(), pos.getZ())));
+    }
+
+    /** Records every probed structure as a waypoint for the current seed+dimension. */
+    private void saveStructureWaypoints() {
+        if (nearestStructures == null || nearestStructures.isEmpty()) {
+            return;
+        }
+        int[] palette = WaypointStore.PALETTE;
+        int i = 0;
+        for (Map.Entry<ResourceLocation, BlockPos> entry : nearestStructures.entrySet()) {
+            previewContainer.addWaypoint(AnalysisOverviewPanel.structureDisplayName(entry.getKey()).getString(),
+                    entry.getValue(), palette[i % palette.length]);
+            i++;
+        }
+    }
+
+    /** Opens the terrain export screen prefilled with the analyzed region. */
+    private void openTerrainExport() {
+        Region target = regionSelector.currentRegion().orElse(regionSelector.lastValidRegion());
+        int radius = Math.max(target.maxX() - target.minX(), target.maxZ() - target.minZ()) / 2;
+        int centerX = (target.minX() + target.maxX()) / 2;
+        int centerZ = (target.minZ() + target.maxZ()) / 2;
+        minecraft.setScreen(new TerrainExportScreen(this, previewContainer, centerX, centerZ, radius));
+    }
+
     /**
      * Region cap for the restart path: {@code WorkManager.analysisRequest()}
      * clamps against {@code analysisMaxRegionBlocks}, but a restarted session
@@ -485,6 +528,7 @@ public final class WorldAnalysisScreen extends Screen {
         nearestStructures = found;
         structuresNearby = found == null ? 0 : found.size();
         overviewPanel.setStructures(found, cx, cz);
+        wireStructureRowClicks();
         structuresProbed = true;
     }
 
@@ -529,6 +573,7 @@ public final class WorldAnalysisScreen extends Screen {
         // rebuild (and, while running, re-sort) the full metrics snapshot
         // every tick on the client thread.
         exportReportButton.active = !stale && !running && session.hasExportableData();
+        structureWaypointsButton.active = !stale && nearestStructures != null && !nearestStructures.isEmpty();
     }
 
     private void exportReport() {
@@ -836,6 +881,8 @@ public final class WorldAnalysisScreen extends Screen {
     protected void init() {
         // Clear and rebuild so buttons are always at the end of the click order.
         clearWidgets();
+        sharePanActive = false;
+        overviewPanActive = false;
         addRenderableWidget(regionSelector);
         selectorFields.forEach(this::addRenderableWidget);
         addRenderableWidget(overviewPanel);
@@ -856,10 +903,25 @@ public final class WorldAnalysisScreen extends Screen {
         addRenderableWidget(tabHeightButton);
         addRenderableWidget(tabBiomesButton);
         addRenderableWidget(exportReportButton);
+        addRenderableWidget(terrainExportButton);
+        addRenderableWidget(structureWaypointsButton);
         addRenderableWidget(overlayButton);
         closeButton = new TranslucentButton(Minecraft.getInstance().font, 0, 0, 90, 20,
                 CommonComponents.GUI_BACK, ignored -> onClose());
         addRenderableWidget(closeButton);
+        // The display is shared: while this screen is open, its
+        // occluder-yield list must name this screen's widgets. The
+        // main screen's list is stale here, and a stale visible entry
+        // would make the map yield clicks into whatever widget follows
+        // it. Rebuilt on every init() (resize rebuilds the children);
+        // restored in onClose().
+        List<AbstractWidget> displayOccluders = new ArrayList<>();
+        for (var child : children()) {
+            if (child instanceof AbstractWidget widget && widget != previewContainer.previewDisplay()) {
+                displayOccluders.add(widget);
+            }
+        }
+        previewContainer.previewDisplay().setOccludingWidgetsSupplier(() -> displayOccluders);
         layoutWidgets();
         applyTabVisibility();
         updateControlState();
@@ -895,24 +957,14 @@ public final class WorldAnalysisScreen extends Screen {
         BiomesList.BiomeEntry entry = biomeIdLookup().get((short) id);
         return entry != null ? entry.name() : null;
     }
-
-    private static void place(AbstractWidget widget, int x, int y, int width, int height) {
-        widget.setX(x);
-        widget.setY(y);
-        widget.setWidth(width);
-        // 1.20.1 AbstractWidget cannot resize height post-construction; our
-        // resizable widgets implement VerticalResizable, vanilla widgets keep
-        // their constructed height (callers always pass that same value).
-        if (widget instanceof caeruleusTait.world.preview.client.gui.widgets.VerticalResizable resizable) {
-            resizable.setHeight(height);
-        }
-    }
-
     private void layoutWidgets() {
         restoreBaseVisibility();
         int left = 8;
         int top = 24;
-        // Reserve a footer strip so the action row is never covered by panels.
+        // The footer row holds four buttons across the full width (report,
+        // terrain export, structure waypoints, back), and the
+        // shared display draws its zoom HUD at its own bottom edge — so every
+        // panel in both columns ends above the footer band instead of under it.
         int footerTop = height - 32;
         footerRowY = footerTop;
         int panelBottom = footerTop - 8;
@@ -947,14 +999,12 @@ public final class WorldAnalysisScreen extends Screen {
         place(boxSelectButton, left + 222, row2Y, 90, 20);
         place(locateButton, left + 316, row2Y, 90, 20);
 
-        // The left column has no footer buttons, so its panel extends down to
-        // the same 8px bottom margin as the screen instead of stopping at the
-        // right column's footer band (which read as dead whitespace) — this
-        // also gives the overview panel more content height before it scrolls.
+        // The overview panel stops above the report/back buttons, which now
+        // share the left column's bottom band with it.
         overviewPanel.setX(left);
         overviewPanel.setY(panelsTop);
         overviewPanel.setWidth(leftW);
-        overviewPanel.setHeight(Math.max(60, height - 8 - panelsTop));
+        overviewPanel.setHeight(Math.max(60, footerTop - 6 - panelsTop));
 
         // The tab row sits at the top of the right column; the map and the
         // three chart widgets take turns sharing one rectangle below it, so
@@ -992,9 +1042,11 @@ public final class WorldAnalysisScreen extends Screen {
         place(directionButton, rightX + rightW - dirW - 4, contentY + 2, dirW, 20);
         profileChart.setCompactTitle(rightW < 200);
 
-        place(exportReportButton, width - 190, footerTop, 90, 20);
+        place(exportReportButton, left, footerTop, 90, 20);
+        place(terrainExportButton, left + 94, footerTop, 90, 20);
+        place(structureWaypointsButton, left + 188, footerTop, 90, 20);
         if (closeButton != null) {
-            place(closeButton, width - 96, footerTop, 90, 20);
+            place(closeButton, width - 98, footerTop, 90, 20);
         }
 
         // Single layout exit: with the overlay open the geometry above is
@@ -1005,6 +1057,19 @@ public final class WorldAnalysisScreen extends Screen {
             layoutOverlay();
         }
         applyTabVisibility();
+    }
+
+
+    private static void place(AbstractWidget widget, int x, int y, int width, int height) {
+        widget.setX(x);
+        widget.setY(y);
+        widget.setWidth(width);
+        // 1.20.1 AbstractWidget cannot resize height post-construction; our
+        // resizable widgets implement VerticalResizable, vanilla widgets keep
+        // their constructed height (callers always pass that same value).
+        if (widget instanceof caeruleusTait.world.preview.client.gui.widgets.VerticalResizable resizable) {
+            resizable.setHeight(height);
+        }
     }
 
     /**
@@ -1029,10 +1094,13 @@ public final class WorldAnalysisScreen extends Screen {
         boxSelectButton.visible = true;
         locateButton.visible = true;
         exportReportButton.visible = true;
+        terrainExportButton.visible = true;
+        structureWaypointsButton.visible = true;
         if (closeButton != null) {
             closeButton.visible = true;
         }
     }
+
 
     /**
      * Overlay geometry: a near-fullscreen rectangle whose top band holds the
@@ -1067,6 +1135,8 @@ public final class WorldAnalysisScreen extends Screen {
         boxSelectButton.visible = false;
         locateButton.visible = false;
         exportReportButton.visible = false;
+        terrainExportButton.visible = false;
+        structureWaypointsButton.visible = false;
         if (closeButton != null) {
             closeButton.visible = false;
         }
@@ -1105,10 +1175,12 @@ public final class WorldAnalysisScreen extends Screen {
         profileChart.setCompactTitle(ow < 200);
     }
 
+
     /** Tab button width inside the overlay band (same recipe as the panel tab row). */
     static int overlayTabWidth(int bandWidth) {
         return Math.max(24, Math.min(48, (bandWidth - 3 * TAB_GAP) / 4));
     }
+
 
     /** Collapse trigger X inside the overlay band: right-aligned with a 4px margin. */
     static int overlayCollapseX(int bandWidth) {
@@ -1266,12 +1338,51 @@ public final class WorldAnalysisScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         final MouseButtonEvent event = new MouseButtonEvent(mouseX, mouseY, button);
+        // A middle press on the visible biome table starts a browser-style
+        // autoscroll (the panel ticks it from its render pass, so it keeps
+        // scrolling while the mouse holds still). The screen only routes the
+        // release: vanilla's container does not forward non-primary releases
+        // to the focused child.
+        if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE
+                && sharePanel.visible
+                && sharePanel.isMouseOver(event.x(), event.y())
+                && sharePanel.beginScrollPan(event.y())) {
+            sharePanActive = true;
+            return true;
+        }
+        if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE
+                && overviewPanel.visible
+                && overviewPanel.isMouseOver(event.x(), event.y())
+                && overviewPanel.beginScrollPan(event.y())) {
+            overviewPanActive = true;
+            return true;
+        }
         // Prefer the back button even if a large display widget still overlaps it.
         if (closeButton != null && closeButton.visible && closeButton.active
                 && closeButton.isMouseOver(event.x(), event.y())) {
             return closeButton.mouseClicked(mouseX, mouseY, button);
         }
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        final MouseButtonEvent event = new MouseButtonEvent(mouseX, mouseY, button);
+        if (sharePanActive) {
+            sharePanActive = false;
+            sharePanel.endScrollPan();
+            if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        if (overviewPanActive) {
+            overviewPanActive = false;
+            overviewPanel.endScrollPan();
+            if (event.button() == InputConstants.MOUSE_BUTTON_MIDDLE) {
+                return true;
+            }
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override
@@ -1314,11 +1425,14 @@ public final class WorldAnalysisScreen extends Screen {
         // The display widget is a single instance shared with the main
         // preview screen, which expects it visible.
         display.visible = true;
+        // init() re-armed the display's occluder-yield list for this
+        // screen; hand the main screen's list back before leaving.
+        previewContainer.rearmDisplayOccluders();
         // Always leave the screen first so a slow cleanup cannot freeze navigation.
         if (minecraft != null) {
             minecraft.setScreen(parent);
         }
-        // Detach only: the session is owned by the PreviewContainer so a
+        // Detach only: the session is owned by PreviewContainer so a
         // running analysis keeps going in the background and is re-attached
         // (or cancelled on a world change) by the container.
     }

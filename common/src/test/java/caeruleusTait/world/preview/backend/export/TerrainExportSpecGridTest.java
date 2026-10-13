@@ -10,36 +10,36 @@ class TerrainExportSpecGridTest {
 
     @Test
     void gridDisabledIsAccepted() {
-        TerrainExportSpec spec = new TerrainExportSpec(4096, 4, 0, 0, true, 10, 0);
+        TerrainExportSpec spec = new TerrainExportSpec(4096, 4, 0, 0, true, 10, 0, false);
         assertEquals(0, spec.gridIntervalBlocks());
     }
 
     @Test
     void minimumGridIntervalIsAccepted() {
         TerrainExportSpec spec = new TerrainExportSpec(4096, 4, 0, 0, true, 10,
-                TerrainExportSpec.MIN_GRID_INTERVAL_BLOCKS);
+                TerrainExportSpec.MIN_GRID_INTERVAL_BLOCKS, false);
         assertEquals(16, spec.gridIntervalBlocks());
     }
 
     @Test
     void maximumGridIntervalIsAccepted() {
         TerrainExportSpec spec = new TerrainExportSpec(4096, 4, 0, 0, true, 10,
-                TerrainExportSpec.MAX_GRID_INTERVAL_BLOCKS);
+                TerrainExportSpec.MAX_GRID_INTERVAL_BLOCKS, false);
         assertEquals(4096, spec.gridIntervalBlocks());
     }
 
     @Test
     void gridIntervalBelowMinimumIsRejected() {
         assertThrows(IllegalArgumentException.class,
-                () -> new TerrainExportSpec(4096, 4, 0, 0, true, 10, 8));
+                () -> new TerrainExportSpec(4096, 4, 0, 0, true, 10, 8, false));
         assertThrows(IllegalArgumentException.class,
-                () -> new TerrainExportSpec(4096, 4, 0, 0, true, 10, -16));
+                () -> new TerrainExportSpec(4096, 4, 0, 0, true, 10, -16, false));
     }
 
     @Test
     void gridIntervalAboveMaximumIsRejected() {
         assertThrows(IllegalArgumentException.class,
-                () -> new TerrainExportSpec(4096, 4, 0, 0, true, 10, 5000));
+                () -> new TerrainExportSpec(4096, 4, 0, 0, true, 10, 5000, false));
     }
 
     @Test
@@ -55,7 +55,7 @@ class TerrainExportSpecGridTest {
     @Test
     void imageWidthMathUnchangedByGridComponent() {
         TerrainExportSpec withoutGrid = new TerrainExportSpec(4096, 4, 0, 0);
-        TerrainExportSpec withGrid = new TerrainExportSpec(4096, 4, 0, 0, true, 10, 256);
+        TerrainExportSpec withGrid = new TerrainExportSpec(4096, 4, 0, 0, true, 10, 256, false);
         assertEquals(2048, withoutGrid.imageWidth());
         assertEquals(withoutGrid.imageWidth(), withGrid.imageWidth());
         assertEquals(withoutGrid.imageHeight(), withGrid.imageHeight());
@@ -63,4 +63,4 @@ class TerrainExportSpecGridTest {
         assertEquals(withoutGrid.minBlockX(), withGrid.minBlockX());
         assertEquals(withoutGrid.maxBlockZ(), withGrid.maxBlockZ());
     }
-}
+}
