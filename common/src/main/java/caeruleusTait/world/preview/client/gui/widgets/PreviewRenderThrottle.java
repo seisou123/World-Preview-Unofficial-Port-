@@ -29,6 +29,16 @@ final class PreviewRenderThrottle {
      * later batch would overwrite it within the same frame period.
      */
     private static final long WRITE_RENDER_COALESCE_NANOS = 33_333_333L; // ~30 fps ceiling
+    /**
+     * Minimum spacing between heavy renders triggered by zoom steps (wheel
+     * ticks / slider drags).  Each step applies its new zoom level
+     * immediately, but the full re-rasterize + GPU upload is coalesced to at
+     * most one per window, so a burst of steps does not pay N full renders.
+     * The window is fixed (first step arms it, later steps do not extend
+     * it): the latest state is re-rendered at most one window after the
+     * first step, so the visible map is never stale for longer than that.
+     */
+    private static final long ZOOM_RENDER_COALESCE_NANOS = 33_333_333L; // ~30 fps ceiling
 
     // --- Lightweight frame-time tracking (no boxing, no allocation) ---
     private long lastFrameNanos = 0;
@@ -47,6 +57,15 @@ final class PreviewRenderThrottle {
     private long lastWriteRenderNanos = 0;
     /** Test hook: 0 disables write-render coalescing entirely. */
     private long writeRenderCoalesceNanos = WRITE_RENDER_COALESCE_NANOS;
+
+    // --- Zoom re-render coalescing ---
+    // Opened by invalidateForZoom(); while the window is open, shouldRerender
+    // defers the heavy render and the previous frame stays on screen.  The
+    // window closes with exactly one forced heavy render of the latest
+    // state, so a zoom step is delayed by at most one window — never dropped.
+    private long zoomRenderCoalesceNanos = ZOOM_RENDER_COALESCE_NANOS;
+    private long zoomCoalesceUntilNanos = 0;
+    private boolean zoomCoalescePending = false;
 
     // --- Texture upload tracking ---
     // Set whenever a new GPU texture has been created but not yet had biome
@@ -142,6 +161,24 @@ final class PreviewRenderThrottle {
         // render thread must pick changes up immediately.
         final boolean writeCounterChanged = currentWriteCounter != lastWriteCounter;
 
+        if (zoomCoalescePending) {
+            // A zoom step landed recently: keep the current texture for the
+            // rest of the window (the caller has already applied the new
+            // level), then force exactly one heavy render of the latest state
+            // when the window elapses.  Deferred, never dropped — the same
+            // contract as the write-counter coalescing below.
+            if (System.nanoTime() - zoomCoalesceUntilNanos < 0) {
+                return false;
+            }
+            zoomCoalescePending = false;
+            if (dragThrottleSkipHeavy || !hasStorage) {
+                // Drag throttle or a torn-down storage wins; the normal paths
+                // below re-detect the pending render on a later frame.
+                return false;
+            }
+            return true;
+        }
+
         if (textureNeedsUpload) {
             // A new texture was created (e.g. by resize) but has not yet had
             // biome data rendered into it. Force a full render cycle.
@@ -226,6 +263,7 @@ final class PreviewRenderThrottle {
     void invalidateAfterResize() {
         lastRenderedCenter = null;
         textureNeedsUpload = true;
+        zoomCoalescePending = false;
     }
 
     /**
@@ -241,6 +279,9 @@ final class PreviewRenderThrottle {
         needsInitialQueue = true;
         textureNeedsUpload = true;
         initialDataReceived = false;
+        // A full invalidation (new world config / reused display) overrides
+        // any pending zoom window: the forced render must not be deferred.
+        zoomCoalescePending = false;
     }
 
     /**
@@ -249,5 +290,25 @@ final class PreviewRenderThrottle {
      */
     void invalidateRenderedContent() {
         lastRenderedCenter = null;
+    }
+
+    /**
+     * Opens the zoom coalesce window for a just-applied zoom step: the next
+     * heavy render is deferred to the end of a short window instead of
+     * running on the very next frame.  The window is fixed — a step landing
+     * inside an already-open window does not extend it, so the map is
+     * re-rendered at most one window after the first step of a burst.
+     */
+    void invalidateForZoom() {
+        if (zoomCoalescePending) {
+            return;
+        }
+        zoomCoalescePending = true;
+        zoomCoalesceUntilNanos = System.nanoTime() + zoomRenderCoalesceNanos;
+    }
+
+    /** Test hook: override the zoom coalesce window (0 releases immediately). */
+    void setZoomRenderCoalesceNanos(long nanos) {
+        this.zoomRenderCoalesceNanos = nanos;
     }
 }
