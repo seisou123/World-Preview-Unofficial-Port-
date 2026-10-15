@@ -13,7 +13,9 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Round-trip tests for the safe non-Java-serialization binary cache format.
@@ -146,5 +148,43 @@ class PreviewStorageBinaryCacheTest {
                 PreviewStorage.readBinary(dis, -64, 320);
             }
         });
+    }
+
+    // === Dirty tracking (skip-unchanged-store optimization) ===
+
+    @Test
+    void freshStorageIsClean_becomesDirtyOnWrite_cleanAfterMarkSaved() {
+        PreviewStorage storage = new PreviewStorage(0, 64);
+        assertFalse(storage.isDirtySinceSaved());
+
+        storage.notifyWrite();
+        assertTrue(storage.isDirtySinceSaved());
+
+        storage.markSaved();
+        assertFalse(storage.isDirtySinceSaved());
+
+        storage.notifyWrite();
+        assertTrue(storage.isDirtySinceSaved());
+    }
+
+    @Test
+    void restoredStorageStartsClean() throws IOException {
+        PreviewStorage original = new PreviewStorage(0, 64);
+        original.section4(0, 0, 0, PreviewStorage.FLAG_BIOME).set(0, 0, (short) 1);
+        original.notifyWrite();
+
+        byte[] bytes;
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             DataOutputStream dos = new DataOutputStream(baos)) {
+            original.writeBinary(dos);
+            bytes = baos.toByteArray();
+        }
+
+        try (DataInputStream dis = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            PreviewStorage restored = PreviewStorage.readBinary(dis, 0, 64);
+            // The counter is not serialized: a freshly loaded storage is
+            // never dirty, so closing an untouched preview skips the store.
+            assertFalse(restored.isDirtySinceSaved());
+        }
     }
 }
