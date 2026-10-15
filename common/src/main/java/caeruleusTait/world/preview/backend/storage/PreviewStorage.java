@@ -57,6 +57,14 @@ public class PreviewStorage {
     // + updateTexture + upload cycle when nothing changed).
     private AtomicLong writeCounter;
 
+    // Snapshot of writeCounter taken when this storage was last persisted to
+    // disk.  A storage whose counter still matches would reproduce the same
+    // bytes on disk, so the close-time cache write can be skipped entirely.
+    // The counter itself is never serialized, so a freshly loaded storage
+    // starts clean (0 == 0); any real sampling bumps the counter and re-arms
+    // the write.  Only advanced by markSaved() after a successful store.
+    private volatile long savedWriteCounter;
+
     @SuppressWarnings("unchecked")
     public PreviewStorage(int yMin, int yMax) {
         blocks = new Long2ObjectMap[((yMax - yMin) >> Y_BLOCK_SHIFT) + 1];
@@ -365,6 +373,24 @@ public class PreviewStorage {
      */
     public void notifyWrite() {
         writeCounter.incrementAndGet();
+    }
+
+    /**
+     * True when new data has been written since this storage was last saved
+     * to disk.  Freshly created and freshly loaded storages start clean
+     * because the counter itself is not part of the serialized payload.
+     */
+    public boolean isDirtySinceSaved() {
+        return writeCounter.get() != savedWriteCounter;
+    }
+
+    /**
+     * Records that the current contents (up to {@link #writeCounter()}) have
+     * been persisted to disk.  Only call this after a successful store, so a
+     * failed write leaves the storage dirty and the next close retries.
+     */
+    public void markSaved() {
+        savedWriteCounter = writeCounter.get();
     }
 
     public List<Short> compressionStatistics() {

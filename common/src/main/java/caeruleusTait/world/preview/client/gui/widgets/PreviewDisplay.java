@@ -136,6 +136,11 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     public void applyIncrementalZoom() {
         applyZoomToVisualizer();
         invalidateRenderCache();
+        // Coalesce the heavy re-render into a short window: consecutive zoom
+        // steps (wheel bursts / slider drags) apply their level immediately,
+        // but pay at most one full re-rasterize + upload per window instead
+        // of one per step.  The sampling re-queue below stays immediate.
+        throttle.invalidateForZoom();
         resetQueuedRange();
         queueGeneration();
     }

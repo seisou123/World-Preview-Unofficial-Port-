@@ -152,6 +152,10 @@ public interface PreviewStorageCacheManager {
                 zos.closeEntry();
             }
             AtomicFiles.moveReplace(tmp, outFile);
+            // Only a successful store advances the dirty snapshot: a failed
+            // write (or a skipped one) must leave the storage dirty so the
+            // next close retries instead of silently losing the data.
+            storage.markSaved();
             WorldPreview.LOGGER.debug("Wrote preview disk cache {}", outFile);
         } catch (IOException e) {
             WorldPreview.LOGGER.error("Failed to write preview disk cache {}", outFile, e);

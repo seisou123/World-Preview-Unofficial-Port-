@@ -514,8 +514,15 @@ public class WorkManager {
             // After an exit the marks are already swept (synchronously, in
             // exitDragTier), so whatever the storage holds is self-healing on
             // the next viewport pass and safe to persist.
+            // Also skip the store entirely when nothing was written since the
+            // storage was loaded (or last saved): the on-disk file already
+            // holds exactly these bytes, and rewriting it costs a full zip
+            // pass plus a "Saving preview" screen flash.  The dirty snapshot
+            // is advanced by writeCacheFile() only after a successful store,
+            // so a skipped/failed write simply retries on the next close.
             if (previewStorageCacheManager != null && worldOptions != null
-                    && !isDragTierActive()) {
+                    && !isDragTierActive()
+                    && previewStorage != null && previewStorage.isDirtySinceSaved()) {
                 previewStorageCacheManager.storePreviewStorage(worldOptions.seed(), previewStorage);
             }
         } finally {
