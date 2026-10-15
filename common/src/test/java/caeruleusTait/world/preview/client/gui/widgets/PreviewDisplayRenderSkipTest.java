@@ -167,4 +167,63 @@ class PreviewDisplayRenderSkipTest {
         t.setWriteRenderCoalesceNanos(0);
         assertTrue(t.shouldRerender(false, true, 3, CENTER, true));
     }
+
+    // === Zoom-render coalescing (setZoomRenderCoalesceNanos hook) ===
+
+    @Test
+    void zoomCoalesce_defersRendersInsideWindow() {
+        PreviewRenderThrottle t = new PreviewRenderThrottle();
+        // textureNeedsUpload defaults to true (the real zoom path also runs
+        // invalidateAll() via invalidateRenderCache first), and the window
+        // must defer the heavy render even in that state.
+        t.markRendered(CENTER, 5);
+
+        // Arm an effectively infinite window; uptime-independent.
+        t.setZoomRenderCoalesceNanos(Long.MAX_VALUE);
+        t.invalidateForZoom();
+        // Deferred inside the window, even though a re-render would normally
+        // be forced (texture flag, changed center, changed write counter, or
+        // missing cached render data).
+        assertFalse(t.shouldRerender(false, true, 5, CENTER, true));
+        assertFalse(t.shouldRerender(false, true, 5, CENTER.offset(16, 0, 0), true));
+        assertFalse(t.shouldRerender(false, true, 6, CENTER.offset(16, 0, 0), false));
+        // A step landing inside an open window does not extend it (fixed
+        // window) and nothing is consumed while deferred.
+        t.invalidateForZoom();
+        assertFalse(t.shouldRerender(false, true, 6, CENTER.offset(16, 0, 0), false));
+    }
+
+    @Test
+    void zoomCoalesce_releaseForcesOneHeavyRender_thenReturnsToIdle() {
+        PreviewRenderThrottle t = new PreviewRenderThrottle();
+        t.markTextureUploaded();
+        t.markRendered(CENTER, 5);
+
+        // Zero-length window: the deadline has already passed when
+        // shouldRerender runs (nanoTime is monotonic, so the elapsed
+        // computation can never go negative here).
+        t.setZoomRenderCoalesceNanos(0);
+        t.invalidateForZoom();
+        // An otherwise idle state is still forced to re-render once, because
+        // the zoom window demands a fresh pass of the latest state.
+        assertTrue(t.shouldRerender(false, true, 5, CENTER, true));
+        // The window is consumed: the next frame falls back to idle skip.
+        assertFalse(t.shouldRerender(false, true, 5, CENTER, true));
+    }
+
+    @Test
+    void zoomCoalesce_fullInvalidationOverridesWindow() {
+        PreviewRenderThrottle t = new PreviewRenderThrottle();
+        t.markTextureUploaded();
+        t.markRendered(CENTER, 5);
+
+        t.setZoomRenderCoalesceNanos(Long.MAX_VALUE);
+        t.invalidateForZoom();
+        assertFalse(t.shouldRerender(false, true, 5, CENTER, true));
+
+        // A full invalidation (new world config / reused display) must not
+        // be deferred by a pending zoom window.
+        t.invalidateAll();
+        assertTrue(t.shouldRerender(false, true, 5, CENTER, true));
+    }
 }
