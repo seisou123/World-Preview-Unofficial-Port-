@@ -75,6 +75,36 @@ public final class TerrainMapExporter {
         @Nullable Integer heightAt(int blockX, int blockZ) throws Exception;
     }
 
+    /**
+     * A height probe that can fill a whole pixel grid at once.
+     * <p>
+     * Worldgen height sampling works on the noise chunk's cell lattice, not on
+     * isolated points: the expensive part is advancing the interpolator through
+     * the Y column, which serves every column of a cell at once. A per-pixel
+     * probe would therefore pay that cost once per pixel. Implementations of
+     * this interface receive the export tile as a grid and can batch the work
+     * by chunk, which is what makes live sampling viable for a full-size export.
+     * <p>
+     * Implementations must leave a cell untouched (never write to {@code out})
+     * when they cannot determine its height, so the caller can fall back to the
+     * estimate for exactly those pixels.
+     */
+    public interface BatchHeightProbe extends HeightProbe {
+        /**
+         * Fills the heights of a block-space grid.
+         *
+         * @param originX block X of the first grid cell
+         * @param originZ block Z of the first grid cell
+         * @param step    block distance between neighbouring grid cells
+         * @param width   grid width in cells
+         * @param height  grid height in cells
+         * @param out     {@code width * height} block-Y values, row-major, pre-filled with
+         *                {@link Integer#MIN_VALUE} for "unknown"
+         */
+        void fillGrid(int originX, int originZ, int step, int width, int height, int[] out,
+                      BooleanSupplier cancelled) throws Exception;
+    }
+
     /** Lineage info written into the export metadata (world identity). */
     public record ExportContext(String seed, String dimension) {}
 
@@ -573,6 +603,30 @@ public final class TerrainMapExporter {
         int minBlockZ = spec.minBlockZ();
         int bpp = spec.blocksPerPixel();
 
+        // Batch height pass: a cell-lattice sampler can answer the whole tile in
+        // one sweep, so ask it once per tile instead of once per pixel. Falls
+        // back to the per-pixel probe (and then to the estimate) when the batch
+        // sampler is absent or declines.
+        int[] batchHeights = null;
+        if (heightProbe instanceof BatchHeightProbe batch) {
+            int[] filled = new int[task.tileWidth * task.tileHeight];
+            java.util.Arrays.fill(filled, Integer.MIN_VALUE);
+            try {
+                batch.fillGrid(minBlockX + task.startX * bpp, minBlockZ + task.startY * bpp,
+                        bpp, task.tileWidth, task.tileHeight, filled, cancelled);
+                batchHeights = filled;
+            } catch (CancellationException e) {
+                throw e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new CancellationException("Terrain export interrupted");
+            } catch (Exception e) {
+                // A batch failure must not fail the export: drop to the
+                // per-pixel probe and let the estimate cover the rest.
+                batchHeights = null;
+            }
+        }
+
         for (int row = 0; row < task.tileHeight; row++) {
             checkCancelled(cancelled);
             int pixelZ = task.startY + row;
@@ -587,7 +641,12 @@ public final class TerrainMapExporter {
                 // Probed before the biome lookup so the storage fast path below
                 // can still honor real heights.
                 Integer realHeight = null;
-                if (heightProbe != null) {
+                if (batchHeights != null) {
+                    final int batched = batchHeights[rowOffset + col];
+                    if (batched != Integer.MIN_VALUE) {
+                        realHeight = batched;
+                    }
+                } else if (heightProbe != null) {
                     try {
                         realHeight = heightProbe.heightAt(blockX, blockZ);
                     } catch (InterruptedException e) {
