@@ -179,6 +179,14 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     }
 
     private volatile NoiseBiomeQuery terrainExportNoise;
+    /**
+     * Live worldgen height sampler for terrain export, or null when the
+     * dimension's generator is not noise-based. Replaces the storage-backed
+     * probe whenever it is available: the storage only covers the viewport, so
+     * a large export would otherwise be sampled from the biome-based estimate
+     * outside that rectangle.
+     */
+    private volatile TerrainMapExporter.HeightProbe terrainExportHeight;
     /** Worldgen epoch the current terrainExportNoise/seedSearchFactory were built for. */
     private volatile long samplerContextEpoch = -1;
     private volatile SeedSearchService.SeedContextFactory seedSearchFactory;
@@ -1073,6 +1081,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private void invalidateWorldScopedTasks() {
         // Drop the stale factories first so no new task can capture them.
         terrainExportNoise = null;
+        terrainExportHeight = null;
         seedSearchFactory = null;
         samplerContextEpoch = -1;
         closeStructureSampler();
@@ -1220,6 +1229,20 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 quartY,
                 quartZ,
                 terrainSampler);
+
+        // Live height sampler for the same seed. Only a noise-based generator
+        // exposes the settings and fluid picker the noise chunk needs; other
+        // generators keep the storage-backed probe (and the estimate beyond it).
+        if (chunkGenerator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noiseGenerator) {
+            terrainExportHeight = new caeruleusTait.world.preview.backend.export.NoiseHeightSampler(
+                    noiseGenerator.generatorSettings().value(),
+                    terrainRandomState,
+                    noiseGenerator,
+                    worldgenContext.dimensionType().minY(),
+                    worldgenContext.dimensionType().minY() + worldgenContext.dimensionType().height() - 1);
+        } else {
+            terrainExportHeight = null;
+        }
 
         // Remember which worldgen epoch these snapshots belong to; background
         // tasks started later verify this before they run or publish.
@@ -2776,7 +2799,15 @@ public void onScreenReentry() {
         } else {
             colorSource = TerrainMapExporter.categories(biomeFacts == null ? null : biomeFacts.resolver());
         }
-        return terrainExportController.start(spec, sampler, colorSource, heightProbe(), exportOrigin(),
+        // Live worldgen sampling gives every pixel a real height, so the export
+        // no longer depends on how much of the map the viewport happened to
+        // sample. The storage probe stays as the fallback for dimensions whose
+        // generator is not noise-based.
+        TerrainMapExporter.HeightProbe resolvedHeightProbe = terrainExportHeight;
+        if (resolvedHeightProbe == null) {
+            resolvedHeightProbe = heightProbe();
+        }
+        return terrainExportController.start(spec, sampler, colorSource, resolvedHeightProbe, exportOrigin(),
                 biomeFacts, workManager.yMin(), workManager.yMax(), outputDir);
     }
 
