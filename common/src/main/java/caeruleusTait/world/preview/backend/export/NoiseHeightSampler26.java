@@ -32,8 +32,14 @@ import java.util.function.Predicate;
  */
 public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeightProbe {
 
-    /** Chunks per sampling region. 4 keeps the density volume at 64x64 columns. */
-    private static final int CHUNK_SPAN = 4;
+    /**
+     * Chunks per sampling region.
+     * <p>
+     * Each region pays for a fresh sampler set and density volume, so a larger
+     * span amortises that over more columns. 8 keeps the region at 128x128
+     * blocks while cutting the number of regions fourfold versus 4.
+     */
+    private static final int CHUNK_SPAN = 8;
 
     /**
      * Blocks of headroom above the group's estimated surface before the scan
@@ -120,14 +126,19 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
         }
 
         // Collect every requested column inside this group.
-        int count = 0;
         final int fromX = Math.max(originX, groupMinX + Math.floorMod(originX - groupMinX, step));
         final int fromZ = Math.max(originZ, groupMinZ + Math.floorMod(originZ - groupMinZ, step));
+        final int columns = ((toX - fromX) / step + 1) * ((toZ - fromZ) / step + 1);
+        if (columns > s.xs.length) {
+            // Cannot happen with the buffer sized as it is, but dropping columns
+            // one by one would leave this group half real and half estimated --
+            // exactly the seam this sampler exists to remove. Skip it whole.
+            return;
+        }
+
+        int count = 0;
         for (int bx = fromX; bx <= toX; bx += step) {
             for (int bz = fromZ; bz <= toZ; bz += step) {
-                if (count == s.xs.length) {
-                    break;
-                }
                 s.xs[count] = bx;
                 s.zs[count] = bz;
                 s.outIdx[count] = ((bz - originZ) / step) * width + ((bx - originX) / step);
@@ -229,10 +240,18 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
         return count;
     }
 
-    /** Per-thread column buffers; a group holds at most (64/step)^2 columns. */
+    /**
+     * Per-thread column buffers.
+     * <p>
+     * Sized for the worst case, blocksPerPixel = 1, where a region holds one
+     * column per block: {@code (CHUNK_SPAN * 16)^2}. Undersizing would silently
+     * drop columns -- the collection loop stops at the array length and those
+     * heights would fall back to the estimate.
+     */
     private static final class Scratch {
-        final int[] xs = new int[64 * 64];
-        final int[] zs = new int[64 * 64];
-        final int[] outIdx = new int[64 * 64];
+        private static final int CAP = (CHUNK_SPAN * 16) * (CHUNK_SPAN * 16);
+        final int[] xs = new int[CAP];
+        final int[] zs = new int[CAP];
+        final int[] outIdx = new int[CAP];
     }
 }
