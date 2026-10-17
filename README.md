@@ -1,12 +1,11 @@
-# World Preview — Community Fork
-
 *World Preview* draws a map of a Minecraft world seed before the world is generated: biomes,
 structures, heightmap and Y-layer intersections.
 
 > **This is an unofficial community fork** of
 > [World Preview](https://modrinth.com/mod/world-preview) by Caeruleus Draconis & Taiterio.
-> The original stopped at Minecraft 1.21. This fork adds 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2 and
-> 26.3, on Fabric and NeoForge (1.20.1 on Fabric and Forge), plus a number of extra features.
+> The original stopped at Minecraft 1.21. This fork carries the project forward for 1.20.1 (on
+> Fabric and Forge) and for 1.21.1, 1.21.11, 26.1.2, 26.2 and 26.3 (on Fabric and
+> NeoForge), plus a number of extra features.
 > All credit for the mod itself belongs to its authors. Licensed under Apache-2.0.
 
 **Download** → [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) · [GitHub Releases](../../releases) · **Report a bug** → [Issues](../../issues)
@@ -16,16 +15,21 @@ structures, heightmap and Y-layer intersections.
 ## Supported versions
 
 | Minecraft | Fabric | NeoForge / Forge | Branch |
-|-----------|--------|----------|--------|
-| `1.20.1` | ✅ | ✅ (Forge) | `1.20.1` |
-| `1.21.1` | ✅ | ✅ | `1.21.1` |
-| `1.21.11` | ✅ | ✅ | `1.21.11` |
-| `26.1.2` | ✅ | ✅ | `26.1.2` |
-| `26.2` | ✅ | ✅ | `26.2` |
-| `26.3` | ✅ | ✅ | `26.3` |
+|-----------|--------|-----------------|--------|
+| `1.20.1`  | ✅ | Forge ✅ | `1.20.1` |
+| `1.21.1`  | ✅ | NeoForge ✅ | `1.21.1` |
+| `1.21.11` | ✅ | NeoForge ✅ | `1.21.11` |
+| `26.1.2`  | ✅ | NeoForge ✅ | `26.1.2` |
+| `26.2`    | ✅ | NeoForge ✅ | `26.2` |
+| `26.3`    | ✅ | NeoForge ✅ | `26.3` |
 
-Forge is available for 1.20.1 only; the other versions use NeoForge. Branches are named after their
-Minecraft version; the original per-loader branches remain under `legacy/<name>`.
+Every supported version has its own branch named after the Minecraft version; the default
+branch `main` only carries the README, the CHANGELOG and the issue templates. To work on a
+version, check out that version's branch, e.g.
+`git clone -b <minecraft version> https://github.com/seisou123/World-Preview-Unofficial-Port-.git`.
+
+Minecraft versions other than those listed above are not covered by this fork; for older 1.20.x
+and 1.21 releases outside this list, the original mod remains available.
 
 > The original project's pages ([Modrinth](https://modrinth.com/mod/world-preview),
 > [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview)) do not include this
@@ -33,18 +37,26 @@ Minecraft version; the original per-loader branches remain under `legacy/<name>`
 > [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) and
 > through [Releases](../../releases).
 
+## Status
+
+The released builds are the ones on [GitHub Releases](https://github.com/seisou123/World-Preview-Unofficial-Port-/releases)
+and [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port); the
+latest released version is **1.5.5**. Work towards 1.5.6 is under way and not announced yet, so
+this page describes 1.5.5: everything listed below ships in it, and nothing here describes
+unreleased work.
+
 ## Installation
 
 1. Download the jar for your **exact** Minecraft version **and** mod loader, from
    [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) or
    [Releases](../../releases).
    Asset names look like `world_preview-<mod version>-<minecraft version>-<loader>.jar`; the loader
-   segment is lowercase (`fabric`, `neoforge`) except on 1.20.1, where it is `Fabric` or `Forge`
-   (`world_preview-<mod version>-1.20.1-Fabric.jar`, `world_preview-<mod version>-1.20.1-Forge.jar`).
-   The `.dev` and `.sources` variants are for
-   developers and are not meant to be played.
+   segment is lowercase (`fabric`, `neoforge`) except on 1.20.1, where it is `Fabric` or `Forge`;
+   the `.dev` and `.sources` variants are for developers and are not meant to be played.
 2. Put the jar into the `mods` folder of your Minecraft instance.
-3. On Fabric you also need [Fabric API](https://modrinth.com/mod/fabric-api). NeoForge and Forge need nothing extra.
+3. On Fabric you also need [Fabric API](https://modrinth.com/mod/fabric-api); the build uses Fabric
+   Loader 0.19.3 with a 0.19.3 runtime floor and runs on Java 21. On NeoForge the jar declares
+   NeoForge 21.11.45 and nothing beyond NeoForge itself is required.
 
 ---
 
@@ -60,16 +72,15 @@ unchanged from upstream behaviour.
 | **Scroll wheel** | moves along the Y axis | zooms the map; `Ctrl`+scroll always zooms and `Alt`+scroll always moves along Y, and the bare wheel can be set back to moving along Y in `Settings → General → Scroll wheel zooms map` |
 | **Zoom** | set from the config menu | a 5-step ladder (16, 8, 4, 2 or 1 pixels per chunk; 4 by default), reachable from the mouse wheel, the settings screen and a scale-bar slider at the bottom-left of the map. The two most zoomed-out steps (2 and 1 pixels per chunk) resample the map, so they take a moment |
 | **Minecraft version** | 1.20.x, 1.21 | 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2, 26.3 |
-| **Mod loader** | Fabric, Forge, Quilt | Fabric, NeoForge; Forge on 1.20.1 |
+| **Mod loader** | Fabric, Forge, Quilt | Fabric, NeoForge (1.21.1 and later); Fabric, Forge (1.20.1) |
 | **Settings screen** | a single screen | sidebar with separate pages, plus a *Reset to defaults* button |
 | **Starting Y layer** | the build limit | about one third of the world height (≈ Y 64 in the Overworld) |
-
 ### Added in this fork
 
 Most of the following are opt-in: each has its own button or setting, and none of them change the
-preview until you turn them on; the exceptions — drag preloading, which is on by default, and the
-automatic backup and migration of the config files — only affect sampling work and files, never
-what the preview shows.
+preview until you turn them on; the exceptions — drag preloading, which is on by default, the
+automatic backup and migration of the config files, and the mod compatibility registry, which has
+no setting of its own yet — only affect sampling work and files, never what the preview shows.
 
 **Seed search** scans random seeds against a set of criteria: up to four biomes (any of them
 counts), a structure, a minimum biome area share, a maximum distance to the nearest matching biome
@@ -79,25 +90,41 @@ for; concentric-ring ones such as strongholds are not supported yet.
 
 The seed screen brings the seed box with Random and Save, the search criteria, and the results,
 history, favourites and saved-seed lists together in one place. Matching searches are stored; a row
-applies its seed on click, adds it to favourites on `Shift`+right-click and deletes it on
-right-click. A **seed
+applies its seed on click, adds it to favourites on `Shift`+right-click, saves it to the
+saved-seed list on `Ctrl`+right-click and deletes it on right-click; the history view also
+has a button that clears all non-favourite entries. A **seed
 comparison** screen puts the current seed next to up to seven others and reports biome diversity,
 water share, the dominant biome and a spawn score.
 
 The **world analysis engine** works on a region you select: biome distribution, height range,
 mean height, slope statistics and flat-area ratio, plus a terrain cross-section, a height
 histogram and a spawn quality score with reasons. The tables export as CSV and JSON into
-`config/world_preview/reports/`.
+`config/world_preview/reports/`. Structure rows in the overview are clickable to drop a
+waypoint at a structure; one button adds waypoints for every structure in the analyzed region.
 
 **Terrain map export** writes the current seed's terrain as a high-resolution PNG, with a
-configurable radius and blocks-per-pixel, nine terrain classes and an optional contour overlay.
-It can also walk every dimension of the seed in one batch. Output goes to
-`config/world_preview/terrain_exports/`. There is also a plain "save the preview as PNG" button
-in the settings.
+configurable radius and blocks-per-pixel, nine terrain classes or opt-in per-biome colors (the
+preview's own biome colors, with a JSON legend next to the PNG), an optional contour overlay and
+an optional coordinate grid. A grayscale heightmap PNG and per-category pixel counts in the
+sidecar JSON are opt-in, and biomes are sampled at the Y layer the preview is scrolled to. It can also walk every dimension of the seed in one batch, and the
+analysis screen's "Export This Region" action opens it prefilled with the analyzed area. Every
+completed export is appended to a history file, and the export screen browses the full history;
+clicking a row copies the exported file's absolute path. Output goes to
+`config/world_preview/terrain_exports/`. The plain "save the preview as PNG" button in
+the settings writes a JSON sidecar with the seed, dimension and view parameters next to the
+image.
+
+Two further opt-ins live in `Settings → General`: **Open preview at player** anchors the
+preview's initial view on the player's position instead of the last position or the world
+origin, and **Hover: noise values** appends the sampled temperature, humidity, continentalness,
+erosion, depth, weirdness and peaks-valleys values to the map hover panel. The map also
+remembers its last position between sessions.
 
 **Waypoints** are named, coloured pins stored per seed and dimension. Switch on `Waypoints` and
-left-click the map to place one; left-click a pin again to rename, recolour or delete it. The
-**measure tool** works with two clicks and reports the distance and the axis deltas; right-click
+left-click the map to place one; left-click a pin again to rename, recolour or delete it, and
+right-click it to copy a `/tp` command to its coordinates. The
+**measure tool** works with two clicks and reports the distance, the axis deltas and the surface height
+difference between both endpoints; right-click
 clears it. **Spawn point override** places a spawn pin during world creation and applies those
 coordinates as the world's spawn point, without cheats.
 
@@ -107,13 +134,14 @@ altitude, ambient and exaggeration) and **contour lines** at a configurable inte
 and peaks & valleys, each with its own colour gradient and drawn as a smooth gradient.
 
 Smaller things: a **minimap**, live statistics, coordinates, per-biome block counts,
-**preloading** of the area around the viewport (optionally only when worker threads are idle),
-automatic **backup and migration** of the config files and a **mod compatibility framework** that
-adapts to modded chunk generators — currently Terralith, Biomes O' Plenty, TerraFirmaCraft (off by
-default), Oh The Biomes You'll Go, Astral Sorcery, Nature's Spirit, Oh The Trees, Awaken, Wither
-Storm Mod and TofuCraft. Mods that are not on this list are left alone: biomes, structures and
-colour maps they add are picked up through the datapack mechanism. Sampling, export and analysis
-also cover **other dimensions**, including ones with non-standard height limits.
+**preloading** of the area around the viewport (optionally only when worker threads are idle) and
+automatic **backup and migration** of the config files. Sampling is mod-agnostic: biomes,
+structures and colour maps that world-gen mods add are picked up through the datapack mechanism.
+A built-in **mod compatibility registry** (Terralith, Biomes O' Plenty, TerraFirmaCraft, Oh The
+Biomes You'll Go, Astral Sorcery, Nature's Spirit, Oh The Trees, Awaken, Wither Storm Mod and
+TofuCraft are pre-registered) is groundwork for dedicated per-mod generator handling and does not
+change sampling yet. Sampling, export and analysis also cover **other dimensions**, including ones
+with non-standard height limits.
 
 **Performance** has had several passes over the render path, sampling and idle-frame cost. Ongoing
 rather than finished.
@@ -222,12 +250,11 @@ the biome preview, structures and heightmap as fast as it can, which is CPU-hung
 Lowering *The amount of samples per chunk* on the `Resolution` page reduces the work further, at
 the cost of a coarser preview.
 
-**Q: Will other Minecraft versions be supported?**
+**Q: Will older Minecraft versions be supported?**
 
-**A:** This fork targets exactly the versions in the table above — there are no builds for
-anything in between (1.21.2–1.21.10) or older. For 1.20.x and 1.21 you can use the original
-mod, which covers those versions on Fabric, Forge and Quilt.
-
+**A:** This fork ships for 1.20.1, 1.21.1, 1.21.11, 26.1.2, 26.2 and 26.3. Other Minecraft versions
+are not covered by this fork. For 1.20.x and 1.21 the original mod remains available, on Fabric,
+Forge and Quilt.
 **Q: Does this run on a server, or in multiplayer?**
 
 **A:** It is client-side and singleplayer-only. Install it on the client; a server does not
@@ -244,7 +271,7 @@ reports in `config/world_preview/reports/`.
 **A:** The same way as in the original mod: through the Minecraft datapack mechanism. The
 data format is unchanged by this fork.
 
-**Q: Fabric or NeoForge? Do I need anything else?**
+**Q: Fabric, NeoForge or Forge? Do I need anything else?**
 
 **A:** Pick the jar that matches both your Minecraft version and your loader. Fabric users
 also need Fabric API; NeoForge and Forge users do not need anything beyond the loader itself.
@@ -254,7 +281,7 @@ also need Fabric API; NeoForge and Forge users do not need anything beyond the l
 ## Mod compatibility and known issues
 
 This mod is compatible with most mods, including those that add biomes and dimensions.
-For a list of mods with dedicated compatibility handling, see *Added in this fork* above.
+For the state of the built-in mod compatibility registry, see *Added in this fork* above.
 
 ### TerraFirmaCraft (TFC)
 
@@ -272,6 +299,9 @@ That comes from the data TFC exposes, not from a bug in TFC.
 - The original mod, its design and the large majority of its code are by
   [Caeruleus Draconis](https://github.com/caeruleusDraconis) & [Taiterio](https://github.com/Taiterio).
   This fork only exists because of their work.
+- The original project's source repository:
+  [caeruleusDraconis/world-preview](https://github.com/caeruleusDraconis/world-preview).
+- This fork is maintained by a single person.
 - Anything the port adds, and anything it breaks, is this fork's own responsibility.
 - Licensed under **Apache-2.0**; see [LICENSE](LICENSE).
 - User-visible release history: [CHANGELOG.md](CHANGELOG.md).
