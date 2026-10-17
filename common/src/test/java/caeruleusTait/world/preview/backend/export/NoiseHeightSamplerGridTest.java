@@ -128,4 +128,43 @@ class NoiseHeightSamplerGridTest {
             }
         }
     }
+
+    // --- surface-level bound ------------------------------------------------
+
+    @Test
+    void surfaceBoundTakesTheMaximumOfTheRegion() {
+        // A single high column anywhere in the region must drive the bound, or
+        // the scan would start below it and miss that terrain.
+        int bound = NoiseHeightSampler.maxSurfaceLevel(
+                (x, z) -> (x == 40 && z == 24) ? 190 : 70, 0, 0, 63, 63);
+        assertEquals(190, bound);
+    }
+
+    @Test
+    void surfaceBoundSamplesOnAFourBlockLattice() {
+        // The bound is deliberately coarse: it only has to be conservative
+        // enough to save work, and anything it undershoots is caught by the
+        // upper-band rescan. So a spike off the lattice may be missed -- but one
+        // on the lattice must not be, or that terrain would be scanned twice.
+        assertEquals(10, NoiseHeightSampler.maxSurfaceLevel(
+                        (x, z) -> (x == 63 && z == 63) ? 200 : 10, 0, 0, 63, 63),
+                "off-lattice spike is expected to be missed; the rescan covers it");
+
+        assertEquals(200, NoiseHeightSampler.maxSurfaceLevel(
+                        (x, z) -> (x == 60 && z == 60) ? 200 : 10, 0, 0, 63, 63),
+                "on-lattice spike must raise the bound");
+    }
+
+    @Test
+    void surfaceBoundReportsUnknownWhenEmpty() {
+        // Nothing estimated: callers read MIN_VALUE and fall back to a full scan.
+        assertEquals(Integer.MIN_VALUE,
+                NoiseHeightSampler.maxSurfaceLevel((x, z) -> Integer.MIN_VALUE, 0, 0, 63, 63));
+    }
+
+    @Test
+    void surfaceBoundWorksOnNegativeRegions() {
+        int bound = NoiseHeightSampler.maxSurfaceLevel((x, z) -> 120, -512, -512, -449, -449);
+        assertEquals(120, bound);
+    }
 }
