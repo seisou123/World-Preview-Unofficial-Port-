@@ -37,14 +37,6 @@ and 1.21 releases outside this list, the original mod remains available.
 > [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port) and
 > through [Releases](../../releases).
 
-## Status
-
-The released builds are the ones on [GitHub Releases](https://github.com/seisou123/World-Preview-Unofficial-Port-/releases)
-and [CurseForge](https://www.curseforge.com/minecraft/mc-mods/world-preview-unofficial-port); the
-latest released version is **1.5.5**. Work towards 1.5.6 is under way and not announced yet, so
-this page describes 1.5.5: everything listed below ships in it, and nothing here describes
-unreleased work.
-
 ## Installation
 
 1. Download the jar for your **exact** Minecraft version **and** mod loader, from
