@@ -45,8 +45,17 @@ import java.util.function.Predicate;
  */
 public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightProbe {
 
-    /** Chunks per NoiseChunk. 4 keeps the interpolator scratch around 64 KB while amortising setup. */
-    private static final int CHUNK_SPAN = 4;
+    /**
+     * Chunks per NoiseChunk.
+     * <p>
+     * A NoiseChunk's setup cost (interpolator arrays, router wrapping, aquifer
+     * stub) is fixed per instance, so a larger span amortises it over more
+     * columns: 4 chunks meant one construction per 64x64 blocks, i.e. 16k
+     * constructions for a full-radius export. 8 halves that at the cost of a
+     * four-times-larger interpolator grid, which stays well inside a few MB per
+     * worker thread.
+     */
+    private static final int CHUNK_SPAN = 8;
 
     /**
      * Blocks of headroom above a group's highest preliminary surface level
@@ -61,6 +70,17 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
     private static final int UNSAMPLED = Integer.MIN_VALUE;
 
     private final NoiseGeneratorSettings generatorSettings;
+    /**
+     * Same settings with ore veins and aquifers switched off.
+     * <p>
+     * A NoiseChunk builds its block-state rule from these two flags: ore veins
+     * add three density functions to every sampled layer, and aquifers add a
+     * full fluid-picking aquifer to the constructor. Neither can affect whether
+     * a block is opaque, which is all a heightmap needs, so both are dead work
+     * here. Switching them off at the source means the chunk never builds the
+     * machinery in the first place.
+     */
+    private final NoiseGeneratorSettings samplingSettings;
     private final NoiseSettings noiseSettings;
     private final RandomState randomState;
     private final ChunkGenerator chunkGenerator;
@@ -83,11 +103,40 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
                               int scanMinY,
                               int scanMaxY) {
         this.generatorSettings = generatorSettings;
+        this.samplingSettings = samplingOnly(generatorSettings);
         this.noiseSettings = generatorSettings.noiseSettings();
         this.randomState = randomState;
         this.chunkGenerator = chunkGenerator;
         this.scanMinY = scanMinY;
         this.scanMaxY = scanMaxY;
+    }
+
+    /**
+     * The given settings with ore veins and aquifers disabled, or the same
+     * instance when both are already off.
+     * <p>
+     * Ore veins cost three density functions per sampled layer and aquifers a
+     * real {@code Aquifer} in the NoiseChunk constructor. Neither changes
+     * whether a block is opaque -- water and air are equally transparent, which
+     * is all the heightmap asks -- so both are skipped at the source. The
+     * default block and fluid are kept intact; only the two flags change.
+     */
+    private static NoiseGeneratorSettings samplingOnly(NoiseGeneratorSettings settings) {
+        if (!settings.oreVeinsEnabled() && !settings.aquifersEnabled()) {
+            return settings;
+        }
+        return new NoiseGeneratorSettings(
+                settings.noiseSettings(),
+                settings.defaultBlock(),
+                settings.defaultFluid(),
+                settings.noiseRouter(),
+                settings.surfaceRule(),
+                settings.spawnTarget(),
+                settings.seaLevel(),
+                settings.disableMobGeneration(),
+                false,  // aquifersEnabled
+                false,  // oreVeinsEnabled
+                settings.useLegacyRandomSource());
     }
 
     @Override
@@ -382,7 +431,7 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
                 minBlockZ,
                 noiseSettings,
                 DensityFunctions.BeardifierMarker.INSTANCE,
-                generatorSettings,
+                samplingSettings,
                 ((NoiseBasedChunkGeneratorAccessor) chunkGenerator).getGlobalFluidPicker().get(),
                 Blender.empty());
         // The heightmap only asks "is this block opaque", and water and air are
