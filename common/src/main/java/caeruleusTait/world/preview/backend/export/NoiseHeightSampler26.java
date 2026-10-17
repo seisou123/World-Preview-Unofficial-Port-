@@ -35,12 +35,22 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
     /** Chunks per sampling region. 4 keeps the density volume at 64x64 columns. */
     private static final int CHUNK_SPAN = 4;
 
+    /**
+     * Blocks of headroom above the group's estimated surface before the scan
+     * starts. The estimate is not an upper bound, so a little slack keeps most
+     * groups from needing the upper-band pass; anything that still overshoots is
+     * caught there and produces the same result as a full-range scan.
+     */
+    private static final int SURFACE_MARGIN = 32;
+
     private final SampleUtils sampleUtils;
     private final NoiseSettings noiseSettings;
     private final BlockState defaultBlock;
     private final int scanMinY;
     private final int scanMaxY;
     private final Predicate<BlockState> opaque = Heightmap.Types.OCEAN_FLOOR_WG.isOpaque();
+    /** Estimated surface level, or null when the router exposes none. */
+    private final DensitySampler.Bound surfaceLevel;
 
     private final ThreadLocal<Scratch> scratch = ThreadLocal.withInitial(Scratch::new);
 
@@ -50,6 +60,7 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
                 ? null : sampleUtils.noiseGeneratorSettings().noiseSettings();
         this.defaultBlock = sampleUtils.noiseGeneratorSettings() == null
                 ? null : sampleUtils.noiseGeneratorSettings().defaultBlock();
+        this.surfaceLevel = sampleUtils.preliminarySurfaceLevel();
         this.scanMinY = scanMinY;
         this.scanMaxY = scanMaxY;
     }
@@ -149,7 +160,52 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
         // Descend layer by layer: a column leaves the active set as soon as it
         // hits an opaque block, which is the same OCEAN_FLOOR_WG contract the
         // preview's heightmap layer uses.
-        for (int y = effMaxY; y >= effMinY && count > 0; --y) {
+        //
+        // Start below the group's estimated surface so the air column above the
+        // terrain is never sampled. The estimate is not guaranteed to be an upper
+        // bound, so every column it undershoots is caught by the upper-band pass
+        // below -- the result is identical to a full-range scan either way.
+        final int surfaceStartY = Math.min(effMaxY, estimatedStartY(s, count));
+
+        count = scanBand(s, count, finalDensity, aquifer, effMinY, surfaceStartY, out);
+        if (count > 0 && surfaceStartY < effMaxY) {
+            scanBand(s, count, finalDensity, aquifer, surfaceStartY + 1, effMaxY, out);
+        }
+    }
+
+    /**
+     * Highest estimated surface among this group's columns, plus
+     * {@link #SURFACE_MARGIN}. Samples every fourth column: the value only has
+     * to bound the group, so a coarse sweep is enough and the per-column cost
+     * stays negligible next to the scan it saves.
+     */
+    private int estimatedStartY(Scratch s, int count) {
+        if (surfaceLevel == null || count == 0) {
+            return Integer.MAX_VALUE;
+        }
+        float max = -Float.MAX_VALUE;
+        for (int i = 0; i < count; i += 4) {
+            final float v = surfaceLevel.sampleValue(s.xs[i], 0, s.zs[i]);
+            if (v > max) {
+                max = v;
+            }
+        }
+        if (max == -Float.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) Math.floor(max) + SURFACE_MARGIN;
+    }
+
+    /**
+     * Scans the Y band {@code [fromY, toY]} top-down, writing the first opaque
+     * block of every unresolved column and compacting the scratch arrays.
+     *
+     * @return how many columns are still unresolved after the band
+     */
+    private int scanBand(Scratch s, int count,
+                         DensitySampler.Bound finalDensity, Aquifer aquifer,
+                         int fromY, int toY, int[] out) {
+        for (int y = toY; y >= fromY && count > 0; --y) {
             for (int idx = 0; idx < count; ++idx) {
                 final float density = finalDensity.sampleValue(s.xs[idx], y, s.zs[idx]);
                 BlockState state = aquifer.computeSubstance(s.xs[idx], y, s.zs[idx], density);
@@ -170,6 +226,7 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
                 }
             }
         }
+        return count;
     }
 
     /** Per-thread column buffers; a group holds at most (64/step)^2 columns. */

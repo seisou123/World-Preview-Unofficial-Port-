@@ -624,6 +624,34 @@ public class SampleUtils implements AutoCloseable {
     /** Aquifer + final-density sampler pair bound to one preview region. */
     public record NoiseRegion(Aquifer aquifer, DensitySampler.Bound finalDensity) {}
 
+    /** Lazily built bound for {@link #preliminarySurfaceLevel()}. */
+    private DensitySampler.Bound preliminarySurfaceLevelBound;
+
+    /**
+     * Bound for the noise router's surface-level density function, built once
+     * and cached for the lifetime of this instance.
+     * <p>
+     * The terrain export uses it to skip the column of air above the terrain
+     * instead of scanning the whole world height per pixel. 26.3 renamed the
+     * router's {@code preliminarySurfaceLevel} to {@code chunkSurfaceLevel} and
+     * exposes it as a plain density function, so it is resolved to a bound here
+     * the same way {@code finalDensity} is.
+     * <p>
+     * Callers must treat the result as an upper bound only and keep a fallback
+     * scan above it: this is an estimate, not the real surface.
+     *
+     * @return the cached bound, or null when it cannot be resolved
+     */
+    public synchronized @Nullable DensitySampler.Bound preliminarySurfaceLevel() {
+        if (preliminarySurfaceLevelBound == null) {
+            final DensitySamplerSet samplers = randomState.samplersWithContext(
+                    SamplerContext.builder().enableCaches().build());
+            preliminarySurfaceLevelBound = samplers.get(
+                    noiseGeneratorSettings.noiseRouter().chunkSurfaceLevel());
+        }
+        return preliminarySurfaceLevelBound;
+    }
+
     /**
      * Builds the sampling region for a numChunks×numChunks chunk area at
      * {@code startChunk}. 26.3 replaced the manual NoiseChunk cell-interpolation
