@@ -9,6 +9,8 @@ import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.NoiseSettings;
 import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -186,16 +188,21 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
 
     /**
      * Highest estimated surface among this group's columns, plus
-     * {@link #SURFACE_MARGIN}. Samples every fourth column: the value only has
-     * to bound the group, so a coarse sweep is enough and the per-column cost
-     * stays negligible next to the scan it saves.
+     * {@link #SURFACE_MARGIN}.
+     * <p>
+     * Samples every column. A stride would be tempting, but the column list is
+     * x-major, so stepping by index only advances along Z and never reaches the
+     * rest of the group -- the maximum then comes out systematically low and
+     * every column needs the upper-band pass. Sampling all of them costs a few
+     * thousand 2D evaluations against the tens of thousands of layers the bound
+     * saves.
      */
     private int estimatedStartY(Scratch s, int count) {
         if (surfaceLevel == null || count == 0) {
             return Integer.MAX_VALUE;
         }
         float max = -Float.MAX_VALUE;
-        for (int i = 0; i < count; i += 4) {
+        for (int i = 0; i < count; ++i) {
             final float v = surfaceLevel.sampleValue(s.xs[i], 0, s.zs[i]);
             if (v > max) {
                 max = v;
@@ -204,40 +211,76 @@ public final class NoiseHeightSampler26 implements TerrainMapExporter.BatchHeigh
         if (max == -Float.MAX_VALUE) {
             return Integer.MAX_VALUE;
         }
+        // Some presets (noNewCaves is shared by the nether, the caves preset and
+        // floating islands) fill the surface slot with zero(), so a non-positive
+        // reading means "unknown", not "the surface is at y=0". Treating it as a
+        // real bound would start the scan at y=0 and push every column into the
+        // upper band -- scanning the world twice.
+        if (max <= 0.0f) {
+            return Integer.MAX_VALUE;
+        }
         return (int) Math.floor(max) + SURFACE_MARGIN;
     }
 
     /**
      * Scans the Y band {@code [fromY, toY]} top-down, writing the first opaque
-     * block of every unresolved column and compacting the scratch arrays.
+     * block of every unresolved column.
+     * <p>
+     * Each column is fetched as a one-block-wide {@link DensityVolume} rather
+     * than point by point: {@code sampleValue} rebuilds the 2x2x2 corner volume
+     * and re-evaluates eight corners per call, while {@code sampleVolume}
+     * evaluates the corners once and lerps the whole column incrementally. This
+     * is the same path vanilla's own {@code iterateNoiseColumn} takes.
+     * <p>
+     * Unresolved columns are compacted to the front in a single pass, so a
+     * column that was already found does not cost a copy for every later hit.
      *
      * @return how many columns are still unresolved after the band
      */
     private int scanBand(Scratch s, int count,
                          DensitySampler.Bound finalDensity, Aquifer aquifer,
                          int fromY, int toY, int[] out) {
-        for (int y = toY; y >= fromY && count > 0; --y) {
-            for (int idx = 0; idx < count; ++idx) {
-                final float density = finalDensity.sampleValue(s.xs[idx], y, s.zs[idx]);
-                BlockState state = aquifer.computeSubstance(s.xs[idx], y, s.zs[idx], density);
-                if (state == null) {
-                    state = defaultBlock;
-                }
+        final int sizeY = toY - fromY + 1;
+        if (sizeY <= 0) {
+            return count;
+        }
 
-                if (opaque.test(state)) {
-                    out[s.outIdx[idx]] = y + 1;
-                    final int tail = count - idx - 1;
-                    if (tail > 0) {
-                        System.arraycopy(s.xs, idx + 1, s.xs, idx, tail);
-                        System.arraycopy(s.zs, idx + 1, s.zs, idx, tail);
-                        System.arraycopy(s.outIdx, idx + 1, s.outIdx, idx, tail);
+        int write = 0;
+        for (int idx = 0; idx < count; ++idx) {
+            final int x = s.xs[idx];
+            final int z = s.zs[idx];
+            final int outIdx = s.outIdx[idx];
+            boolean resolved = false;
+
+            final DensityVolume volume = new DensityVolume(1, sizeY, 1, x, fromY, z);
+            try (ScopedDensityBuffer buffer = finalDensity.sampleVolume(volume)) {
+                for (int y = toY; y >= fromY; --y) {
+                    final float density = buffer.get(volume.indexUnchecked(0, y - fromY, 0));
+                    BlockState state = aquifer.computeSubstance(x, y, z, density);
+                    if (state == null) {
+                        state = defaultBlock;
                     }
-                    --count;
-                    --idx;
+                    if (opaque.test(state)) {
+                        out[outIdx] = y + 1;
+                        resolved = true;
+                        break;
+                    }
                 }
+            } catch (Exception e) {
+                // Leave the column unresolved: the caller tries the other band
+                // and finally the estimate.
+                resolved = false;
+            }
+
+            if (!resolved) {
+                // write <= idx always, so this forward compaction is safe.
+                s.xs[write] = x;
+                s.zs[write] = z;
+                s.outIdx[write] = outIdx;
+                ++write;
             }
         }
-        return count;
+        return write;
     }
 
     /**
