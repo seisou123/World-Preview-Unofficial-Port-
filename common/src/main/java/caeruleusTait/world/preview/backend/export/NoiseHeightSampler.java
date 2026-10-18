@@ -3,7 +3,6 @@
 package caeruleusTait.world.preview.backend.export;
 
 import caeruleusTait.world.preview.backend.stubs.EmptyAquifer;
-import caeruleusTait.world.preview.backend.stubs.EmptyAquifer;
 import caeruleusTait.world.preview.mixin.NoiseBasedChunkGeneratorAccessor;
 import caeruleusTait.world.preview.mixin.NoiseChunkAccessor;
 import net.minecraft.util.Mth;
@@ -19,6 +18,7 @@ import net.minecraft.world.level.levelgen.NoiseSettings;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.blending.Blender;
 
+import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 
@@ -65,6 +65,18 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
      * a full-range scan.
      */
     private static final int SURFACE_MARGIN = 32;
+
+    /**
+     * Whether to take {@code NoiseChunk}'s cell-wide interpolation cache out of
+     * the sampling path.
+     * <p>
+     * It is worth roughly 1.6-1.9x at the default four blocks per pixel, but it
+     * relies on three members of {@code NoiseChunk} being reachable and on the
+     * final density being a single interpolated node. Flip this to false if an
+     * export ever comes out wrong on an unfamiliar preset: everything else
+     * stays, only the cache is used again.
+     */
+    private static final boolean BYPASS_CELL_CACHE = true;
 
     /** Value written for a column that never hit an opaque block within the scanned range. */
     private static final int UNSAMPLED = Integer.MIN_VALUE;
@@ -148,20 +160,25 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
         // Process chunk-span groups so the NoiseChunk stays small enough to be
         // cheap to build, and so a long export keeps checking cancellation
         // between groups rather than only between tiles.
+        //
+        // Groups are anchored at the grid origin rather than at world chunk
+        // boundaries. World alignment looks tidier but costs: the export origin
+        // is centre minus radius, essentially never a multiple of the group
+        // size, so each tile would straddle 3x3 groups instead of 2x2 and pay a
+        // full NoiseChunk setup for every one of them -- a third of them for a
+        // sliver of columns.
         final int groupBlocks = CHUNK_SPAN * 16;
-        final int firstGroupX = Mth.floorDiv(originX, groupBlocks);
-        final int lastGroupX = Mth.floorDiv(maxX, groupBlocks);
-        final int firstGroupZ = Mth.floorDiv(originZ, groupBlocks);
-        final int lastGroupZ = Mth.floorDiv(maxZ, groupBlocks);
+        final int groupsX = (maxX - originX) / groupBlocks + 1;
+        final int groupsZ = (maxZ - originZ) / groupBlocks + 1;
 
         final Scratch s = scratch.get();
-        for (int gx = firstGroupX; gx <= lastGroupX; gx++) {
-            for (int gz = firstGroupZ; gz <= lastGroupZ; gz++) {
+        for (int gx = 0; gx < groupsX; gx++) {
+            for (int gz = 0; gz < groupsZ; gz++) {
                 if (cancelled.getAsBoolean()) {
                     throw new java.util.concurrent.CancellationException("Terrain export cancelled");
                 }
-                final int groupMinX = gx * groupBlocks;
-                final int groupMinZ = gz * groupBlocks;
+                final int groupMinX = originX + gx * groupBlocks;
+                final int groupMinZ = originZ + gz * groupBlocks;
                 scanGroup(s, groupMinX, groupMinZ, originX, originZ, step, width, height, maxX, maxZ, out);
             }
         }
@@ -209,11 +226,18 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
             return;
         }
 
-        final int cellCountXZ = (CHUNK_SPAN * 16) / cellWidth;
+        // Group extent, clipped to the requested grid. The last group of a tile
+        // is usually narrower than the full span, and constructing a NoiseChunk
+        // large enough for the whole span when only a sliver of it holds columns
+        // means paying the interpolator setup for blocks nobody reads.
+        final int spanX = Math.min(CHUNK_SPAN * 16, maxX - groupMinX + 1);
+        final int spanZ = Math.min(CHUNK_SPAN * 16, maxZ - groupMinZ + 1);
+        // The noise grid is square, so cover the larger axis.
+        final int cellCountXZ = (Math.max(spanX, spanZ) + cellWidth - 1) / cellWidth;
 
         // Block extent of this group, intersected with the requested grid.
-        final int groupMaxX = groupMinX + CHUNK_SPAN * 16 - 1;
-        final int groupMaxZ = groupMinZ + CHUNK_SPAN * 16 - 1;
+        final int groupMaxX = groupMinX + spanX - 1;
+        final int groupMaxZ = groupMinZ + spanZ - 1;
         final int fromX = Math.max(originX, groupMinX);
         final int toX = Math.min(maxX, groupMaxX);
         final int fromZ = Math.max(originZ, groupMinZ);
@@ -222,8 +246,25 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
             return;
         }
 
-        final NoiseChunk noiseChunk = createNoiseChunk(groupMinX, groupMinZ);
+        final NoiseChunk noiseChunk = createNoiseChunk(groupMinX, groupMinZ, cellCountXZ);
         final NoiseChunkAccessor accessor = (NoiseChunkAccessor) noiseChunk;
+
+        // The group's highest estimated surface bounds the downward scan for
+        // every column in it, and it depends only on the group rectangle -- not
+        // on which cell is being scanned. Compute it once here: inside the cell
+        // loop it would be recomputed once per cell, i.e. 32x32 times per group
+        // at the default span, each time walking the whole rectangle.
+        // Some presets (noNewCaves is shared by the nether, the caves preset and
+        // floating islands) fill the preliminary-surface slot with zero(), so the
+        // value carries no information there. Taken at face value it would put
+        // the main scan at y <= 0 and push every column into the upper-band pass,
+        // i.e. scan the world twice. Treat a zero bound as unknown and scan the
+        // full range instead -- slower than a good bound, but never wrong.
+        final int groupSurface = maxSurfaceLevel(
+                noiseChunk::preliminarySurfaceLevel, fromX, fromZ, toX, toZ);
+        final int surfaceStartY = groupSurface == Integer.MIN_VALUE || groupSurface == 0
+                ? effMaxY
+                : Math.min(effMaxY, groupSurface + SURFACE_MARGIN);
 
         try {
             noiseChunk.initializeForFirstCellX();
@@ -242,15 +283,6 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
                     if (count == 0) {
                         continue;
                     }
-
-                    // Start below the group's highest preliminary surface: the
-                    // column above it is air in every column of the group, so
-                    // scanning it can only ever find nothing.
-                    final int groupSurface = maxSurfaceLevel(
-                            noiseChunk::preliminarySurfaceLevel, fromX, fromZ, toX, toZ);
-                    final int surfaceStartY = groupSurface == Integer.MIN_VALUE
-                            ? effMaxY
-                            : Math.min(effMaxY, groupSurface + SURFACE_MARGIN);
 
                     int remaining = scanYRange(noiseChunk, accessor, s, count, cellZ,
                             cellHeight, cellStart, cellOffsetY, cellCountY,
@@ -423,9 +455,9 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
         return count;
     }
 
-    private NoiseChunk createNoiseChunk(int minBlockX, int minBlockZ) {
+    private NoiseChunk createNoiseChunk(int minBlockX, int minBlockZ, int cellCountXZ) {
         final NoiseChunk noiseChunk = new NoiseChunk(
-                (CHUNK_SPAN * 16) / noiseSettings.getCellWidth(),
+                cellCountXZ,
                 randomState,
                 minBlockX,
                 minBlockZ,
@@ -434,6 +466,8 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
                 samplingSettings,
                 ((NoiseBasedChunkGeneratorAccessor) chunkGenerator).getGlobalFluidPicker().get(),
                 Blender.empty());
+        final NoiseChunkAccessor accessor = (NoiseChunkAccessor) noiseChunk;
+
         // The heightmap only asks "is this block opaque", and water and air are
         // both transparent, so the real aquifer's fluid picking is pure waste --
         // it costs a global fluid lookup, a lava test, three grid divisions and a
@@ -441,7 +475,31 @@ public final class NoiseHeightSampler implements TerrainMapExporter.BatchHeightP
         // question with one density comparison, and is what the preview's own
         // heightmap layer has always used (SampleUtils.getNoiseChunk(...,
         // keepAquifer = false)).
-        ((NoiseChunkAccessor) noiseChunk).setAquifer(new EmptyAquifer());
+        accessor.setAquifer(new EmptyAquifer());
+
+        // Take the cell-wide cache out of the path.
+        //
+        // A noise cell is 4x4x8 blocks and, at the default 4 blocks per pixel,
+        // exactly one column of it is read. selectCellYZ nevertheless fills all
+        // 128 interpolated values of the cell on every Y step, of which we use
+        // eight. Dropping the cache and calling the interpolator directly yields
+        // the same number: with no cache installed `fillingCell` stays false, so
+        // the interpolator returns the value its updateForX/Y/Z just produced
+        // instead of re-deriving it from the eight corners.
+        //
+        // Only attempted when the chunk holds exactly one cache and one
+        // interpolator. Anything else means the final density is not a single
+        // interpolated node (a modded preset, say), and guessing which one feeds
+        // the block-state rule would silently sample the wrong field.
+        final List<?> cellCaches = accessor.getCellCaches();
+        final List<?> interpolators = accessor.getInterpolators();
+        if (BYPASS_CELL_CACHE
+                && cellCaches.size() == 1 && interpolators.size() == 1
+                && interpolators.get(0) instanceof NoiseChunk.NoiseInterpolator interpolator) {
+            final Aquifer aquifer = accessor.getAquifer();
+            cellCaches.clear();
+            accessor.setBlockStateRule(ctx -> aquifer.computeSubstance(ctx, interpolator.compute(ctx)));
+        }
         return noiseChunk;
     }
 
