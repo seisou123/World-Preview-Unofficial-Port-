@@ -62,15 +62,6 @@ public class WorldPreviewClient {
         }
     }
 
-    public static void renderTexture(AbstractTexture texture, double xMin, double yMin, double xMax, double yMax) {
-        // Legacy method - tries to get GuiGraphics from current screen
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.gui.screen() != null) {
-            // Can't easily get GuiGraphics here, so we skip rendering
-            // Callers should use the GuiGraphics version instead
-        }
-    }
-
     /**
      * Removes a dynamic texture from the local registry and TextureManager.
      * Call this before or instead of relying solely on {@link AbstractTexture#close()}

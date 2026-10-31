@@ -15,7 +15,11 @@ import java.util.Objects;
 public final class RegionAnalyzer {
     private RegionAnalyzer() {}
 
-    /** 纯函数：unique biome 数量级（几百），渲染线程可安全调用。零/负计数条目被忽略（0·ln 0 会产生 NaN）。 */
+    /**
+     * Pure function: the number of distinct biomes is in the hundreds, so this is
+     * cheap enough to call from the render thread. Zero and negative counts are
+     * ignored (0 * ln 0 would produce NaN).
+     */
     public static RegionInsights fromBiomeCounts(Map<Short, Long> counts,
                                                  java.util.function.IntFunction<Holder<Biome>> holderResolver) {
         Objects.requireNonNull(counts, "counts");
