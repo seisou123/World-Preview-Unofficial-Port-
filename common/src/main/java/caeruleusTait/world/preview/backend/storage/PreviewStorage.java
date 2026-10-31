@@ -47,6 +47,16 @@ public class PreviewStorage {
     public static final long FLAG_NOISE_WEIRDNESS = 0b1110;
     public static final long FLAG_STRUCT_REF = 0b0100;
 
+    /**
+     * Noise channel flags in {@link #getBatchRawData4} result order.  Hoisted to a
+     * constant because hover queries call that method once per frame, and the
+     * array was rebuilt on every call.
+     */
+    private static final long[] NOISE_CHANNEL_FLAGS = {
+        FLAG_NOISE_TEMPERATURE, FLAG_NOISE_HUMIDITY, FLAG_NOISE_CONTINENTALNESS,
+        FLAG_NOISE_EROSION, FLAG_NOISE_DEPTH, FLAG_NOISE_WEIRDNESS
+    };
+
     private Long2ObjectMap<PreviewBlock>[] blocks;
 
     private final int yMin;
@@ -270,6 +280,70 @@ public class PreviewStorage {
     }
 
     /**
+     * Bulk variant of the {@link #isChunkSampledFine} + {@link #getRawData4}
+     * pair the terrain export's biome probe uses: fills {@code out} (row-major
+     * quart cells, values left at {@link Short#MIN_VALUE} where the per-cell
+     * pair would answer "not sampled") with the stored value of every cell
+     * whose chunk is fully sampled at {@code completionQuartY}, reading the
+     * data layer at {@code dataQuartY}. One lock acquisition per Y layer for
+     * the whole band instead of two per cell; the two layers lock in turn,
+     * never nested.
+     */
+    public void getRawData4Band(int minQuartX, int minQuartZ, int stepQuart,
+                                int width, int height,
+                                int dataQuartY, int completionQuartY, long flags, short[] out) {
+        final int completionIndex = indexYOrNegative(QuartPos.toBlock(completionQuartY));
+        if (completionIndex < 0) {
+            return;
+        }
+        final boolean[] completed = new boolean[width * height];
+        synchronized (blocks[completionIndex]) {
+            for (int row = 0; row < height; row++) {
+                final int qz = minQuartZ + row * stepQuart;
+                for (int col = 0; col < width; col++) {
+                    final int qx = minQuartX + col * stepQuart;
+                    final PreviewBlock block =
+                            blocks[completionIndex].get(quartPosToSectionLong(qx, qz, flags));
+                    if (block == null) {
+                        continue;
+                    }
+                    final PreviewSection section = block.getIfExists(qx, qz);
+                    if (section == null) {
+                        continue;
+                    }
+                    completed[row * width + col] = section.isCompletedFine(new ChunkPos(
+                            qx >> PreviewSection.QUART_TO_SECTION_SHIFT,
+                            qz >> PreviewSection.QUART_TO_SECTION_SHIFT
+                    ));
+                }
+            }
+        }
+        final int dataIndex = indexYOrNegative(QuartPos.toBlock(dataQuartY));
+        if (dataIndex < 0) {
+            return;
+        }
+        synchronized (blocks[dataIndex]) {
+            for (int i = 0; i < completed.length; i++) {
+                if (!completed[i]) {
+                    continue;
+                }
+                final int qx = minQuartX + (i % width) * stepQuart;
+                final int qz = minQuartZ + (i / width) * stepQuart;
+                final PreviewBlock block =
+                        blocks[dataIndex].get(quartPosToSectionLong(qx, qz, flags));
+                if (block == null) {
+                    continue;
+                }
+                final PreviewSection section = block.getIfExists(qx, qz);
+                if (section == null) {
+                    continue;
+                }
+                out[i] = section.get(qx - section.quartX(), qz - section.quartZ());
+            }
+        }
+    }
+
+    /**
      * Batch query: fetch biome, height, and all 6 noise channels for a single
      * quart position in a single synchronized block, avoiding 8 separate
      * lock acquire/release cycles.
@@ -310,12 +384,8 @@ public class PreviewStorage {
         // Query noise channels (same y-layer as biome)
         if (blockIndexY >= 0) {
             synchronized (blocks[blockIndexY]) {
-                final long[] noiseFlags = {
-                    FLAG_NOISE_TEMPERATURE, FLAG_NOISE_HUMIDITY, FLAG_NOISE_CONTINENTALNESS,
-                    FLAG_NOISE_EROSION, FLAG_NOISE_DEPTH, FLAG_NOISE_WEIRDNESS
-                };
-                for (int i = 0; i < noiseFlags.length; i++) {
-                    final PreviewBlock noiseBlock = blocks[blockIndexY].get(quartPosToSectionLong(quartX, quartZ, noiseFlags[i]));
+                for (int i = 0; i < NOISE_CHANNEL_FLAGS.length; i++) {
+                    final PreviewBlock noiseBlock = blocks[blockIndexY].get(quartPosToSectionLong(quartX, quartZ, NOISE_CHANNEL_FLAGS[i]));
                     if (noiseBlock != null) {
                         final PreviewSection section = noiseBlock.get(quartX, quartZ);
                         result[2 + i] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
@@ -392,21 +462,6 @@ public class PreviewStorage {
      */
     public void markSaved() {
         savedWriteCounter = writeCounter.get();
-    }
-
-    public List<Short> compressionStatistics() {
-        List<Short> res = new ArrayList<>();
-        for (var x : blocks) {
-            for (PreviewBlock block : x.values()) {
-                for (PreviewSection section : block.sectionsRaw()) {
-                    if (!(section instanceof PreviewSectionCompressed cSection)) {
-                        continue;
-                    }
-                    res.add(cSection.mapSize());
-                }
-            }
-        }
-        return res;
     }
 
     /** Magic for the safe binary cache payload ('WPv2'). */

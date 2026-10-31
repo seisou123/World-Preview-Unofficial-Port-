@@ -181,6 +181,21 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
                 val -> cfg.usePerNoiseTypeGradients = val);
         y += rowH;
 
+        y = addCheckboxRow(x, y, SETTINGS_NOISE_TERRAIN_OVERLAY, cfg.noiseTerrainOverlay,
+                SETTINGS_NOISE_TERRAIN_OVERLAY_TOOLTIP,
+                val -> cfg.noiseTerrainOverlay = val);
+        y += rowH;
+
+        y = addCheckboxRow(x, y, SETTINGS_NOISE_ISOLINES, cfg.noiseIsolines,
+                SETTINGS_NOISE_ISOLINES_TOOLTIP,
+                val -> cfg.noiseIsolines = val);
+        y += rowH;
+        y = addSliderRow(x, y, area,
+                Component.translatable("world_preview.settings.general.noise_isoline_bands", cfg.noiseIsolineBands),
+                cfg.noiseIsolineBands, 2, 16, SETTINGS_NOISE_ISOLINE_BANDS_TOOLTIP,
+                val -> cfg.noiseIsolineBands = val);
+        y += rowH;
+
         y = addCheckboxRow(x, y, SETTINGS_HILLSHADE, cfg.enableHillshade,
                 SETTINGS_HILLSHADE_TOOLTIP,
                 val -> cfg.enableHillshade = val);
@@ -290,6 +305,9 @@ Minecraft.getInstance().player.displayClientMessage(resultMsg, false);
         cfg.hillshadeAltitude = defaults.hillshadeAltitude;
         cfg.hillshadeAmbient = defaults.hillshadeAmbient;
         cfg.hillshadeExaggeration = defaults.hillshadeExaggeration;
+        cfg.noiseTerrainOverlay = defaults.noiseTerrainOverlay;
+        cfg.noiseIsolines = defaults.noiseIsolines;
+        cfg.noiseIsolineBands = defaults.noiseIsolineBands;
         cfg.enableContours = defaults.enableContours;
         cfg.contourInterval = defaults.contourInterval;
         cfg.contourMinorLines = defaults.contourMinorLines;

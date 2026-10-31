@@ -331,7 +331,7 @@ public final class AnalysisSession extends Session {
     @Override
     public void pause() {
         TaskScheduler.TaskHandle handle = task.get();
-        if (handle == null) return; // 未 start：没有可暂停的任务，保持 QUEUED
+        if (handle == null) return; // never started: nothing to pause, stay QUEUED
         scheduler.pause(handle);
         setStateDirect(SessionState.PAUSED);
     }

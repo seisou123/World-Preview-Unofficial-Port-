@@ -137,31 +137,6 @@ public class HeightmapSettingsPage extends AbstractSettingsPage {
     }
 
     @Override
-    public boolean validate() {
-        if (minYBox == null || maxYBox == null) {
-            return cfg.heightmapMinY >= -64 && cfg.heightmapMaxY <= 512
-                    && cfg.heightmapMinY < cfg.heightmapMaxY;
-        }
-        String minText = minYBox.getValue();
-        String maxText = maxYBox.getValue();
-        if (!minText.matches("-?\\d+") || !maxText.matches("-?\\d+")) {
-            return false;
-        }
-        try {
-            int min = Integer.parseInt(minText);
-            int max = Integer.parseInt(maxText);
-            if (min < -64 || max > 512 || min >= max) {
-                return false;
-            }
-            cfg.heightmapMinY = min;
-            cfg.heightmapMaxY = max;
-            return true;
-        } catch (NumberFormatException e) {
-            return false;
-        }
-    }
-
-    @Override
     public void reset() {
         cfg.heightmapMinY = 32;
         cfg.heightmapMaxY = 255;

@@ -43,6 +43,21 @@ public class WorldPreviewConfig {
     public boolean sampleIntersections = false;
     public boolean storeNoiseSamples = false;
     public boolean usePerNoiseTypeGradients = true;
+    /**
+     * Opt-in: tint water and outline coastlines on the noise views, using the
+     * heightmap channel as a terrain reference. Has no effect unless the
+     * heightmap layer is sampled (it is sampled automatically while this is on).
+     */
+    public boolean noiseTerrainOverlay = false;
+    /**
+     * Opt-in: draw isolines on the noise views. The colour ramp stays smooth;
+     * thin lines mark where the displayed parameter crosses each band boundary,
+     * so the band structure is readable again. Purely a display option over the
+     * already-sampled noise data.
+     */
+    public boolean noiseIsolines = false;
+    /** Number of bands the isolines split each noise field into. */
+    public int noiseIsolineBands = 8;
     public int heightmapMinY = 32;
     public int heightmapMaxY = 255;
     public boolean onlySampleInVisualRange = true;
@@ -128,6 +143,9 @@ public class WorldPreviewConfig {
         sampleIntersections = source.sampleIntersections;
         storeNoiseSamples = source.storeNoiseSamples;
         usePerNoiseTypeGradients = source.usePerNoiseTypeGradients;
+        noiseTerrainOverlay = source.noiseTerrainOverlay;
+        noiseIsolines = source.noiseIsolines;
+        noiseIsolineBands = source.noiseIsolineBands;
         heightmapMinY = source.heightmapMinY;
         heightmapMaxY = source.heightmapMaxY;
         onlySampleInVisualRange = source.onlySampleInVisualRange;

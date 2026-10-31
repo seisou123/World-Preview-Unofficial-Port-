@@ -10,6 +10,7 @@ import caeruleusTait.world.preview.backend.export.TerrainMapExporter;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.PanelRenderer;
 import caeruleusTait.world.preview.client.gui.input.KeyEvent;
+import caeruleusTait.world.preview.util.FileNames;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
@@ -101,6 +102,8 @@ public final class TerrainExportScreen extends Screen {
     private int gridInterval = 128;
     private boolean exportHeightmap = false;
     private boolean biomeColors = false;
+    /** Height lattice stride: 1 exact, 2/4 sample every 2nd/4th column and interpolate. */
+    private int heightStride = 1;
 
     private AbstractSliderButton radiusSlider;
     private AbstractSliderButton resolutionSlider;
@@ -267,12 +270,27 @@ public final class TerrainExportScreen extends Screen {
         // The history button derives its width from the measured label ("Export
         // History" exceeds a bare 70px button); the batch toggle keeps a 4px gap.
         int historyW = Minecraft.getInstance().font.width(WorldPreviewComponents.TERRAIN_EXPORT_HISTORY) + 12;
+        // The height stride cycle squeezes in next to the batch toggle; the
+        // settings panel cannot gain a fixed row without overflowing the
+        // smallest gui heights.
+        int strideW = 54;
         batchCycle = CycleButton.booleanBuilder(CommonComponents.OPTION_ON, CommonComponents.OPTION_OFF)
                 .withInitialValue(batchMode)
-                .create(x, panelsBottom - PanelRenderer.PANEL_PAD - SH, innerW - historyW - 4, SH,
+                .create(x, panelsBottom - PanelRenderer.PANEL_PAD - SH,
+                        Math.max(40, innerW - historyW - 4 - strideW - 4), SH,
                         WorldPreviewComponents.TERRAIN_EXPORT_BATCH, (btn, val) -> batchMode = val);
         batchCycle.setTooltip(Tooltip.create(WorldPreviewComponents.TERRAIN_EXPORT_BATCH_TOOLTIP));
         addRenderableWidget(batchCycle);
+        CycleButton<Integer> strideCycle = CycleButton.<Integer>builder(
+                        v -> Component.literal(v + "\u00d7"))
+                .withValues(List.of(1, 2, 4))
+                .withInitialValue(heightStride)
+                .create(x + innerW - historyW - 4 - strideW, panelsBottom - PanelRenderer.PANEL_PAD - SH,
+                        strideW, SH, Component.translatable("world_preview.terrain_export.height_stride"),
+                        (btn, val) -> heightStride = val);
+        strideCycle.setTooltip(Tooltip.create(
+                Component.translatable("world_preview.terrain_export.height_stride_tooltip")));
+        addRenderableWidget(strideCycle);
         addRenderableWidget(Button.builder(WorldPreviewComponents.TERRAIN_EXPORT_HISTORY, b -> toggleHistory())
                 .bounds(x + innerW - historyW, panelsBottom - PanelRenderer.PANEL_PAD - SH, historyW, SH).build());
 
@@ -283,6 +301,14 @@ public final class TerrainExportScreen extends Screen {
                 .bounds(MX + 94, actionRowY, 90, SH).build();
         addRenderableWidget(exportButton);
         addRenderableWidget(cancelButton);
+        // "Use current view" pins the export to what the preview shows right
+        // now; skipped only when the action row is too narrow to hold it.
+        Component useView = Component.translatable("world_preview.terrain_export.use_view");
+        int useViewW = Math.min(font.width(useView) + 12, width - 96 - (MX + 188) - 4);
+        if (useViewW >= 36) {
+            addRenderableWidget(Button.builder(useView, b -> applyCurrentView())
+                    .bounds(MX + 188, actionRowY, useViewW, SH).build());
+        }
         addRenderableWidget(Button.builder(CommonComponents.GUI_BACK, b -> onClose())
                 .bounds(width - 88, actionRowY, 80, SH).build());
 
@@ -404,6 +430,37 @@ public final class TerrainExportScreen extends Screen {
                 : previewContainer.previewDisplay().center();
     }
 
+    /**
+     * Pins the export to what the preview is showing right now: the live
+     * center (as a prefill, so later panning does not move the export), the
+     * preview's blocks-per-pixel as the export resolution, and a coverage
+     * radius spanning the visible area. Chunks the preview already sampled
+     * then serve the export's storage fast path instead of being re-sampled.
+     */
+    private void applyCurrentView() {
+        BlockPos center = previewContainer.previewDisplay().center();
+        int scale = Math.max(1, (int) previewContainer.worldPreview()
+                .renderSettings().toScaleSpec().blockScale());
+        long spanBlocks = Math.max(
+                previewContainer.previewDisplay().getTexWidth() * (long) scale,
+                previewContainer.previewDisplay().getTexHeight() * (long) scale);
+        int radius = Math.round(spanBlocks / 2.0f);
+        radius = TerrainExportSpec.MIN_COVERAGE_RADIUS
+                + Math.round((radius - TerrainExportSpec.MIN_COVERAGE_RADIUS) / (float) RADIUS_STEP) * RADIUS_STEP;
+        coverageRadius = Math.max(TerrainExportSpec.MIN_COVERAGE_RADIUS,
+                Math.min(TerrainExportSpec.MAX_COVERAGE_RADIUS, radius));
+        blocksPerPixel = Math.max(TerrainExportSpec.MIN_BLOCKS_PER_PIXEL,
+                Math.min(TerrainExportSpec.MAX_BLOCKS_PER_PIXEL, scale));
+        prefillCenterX = center.getX();
+        prefillCenterZ = center.getZ();
+        hasPrefill = true;
+        while (!TerrainExportSpec.isSupported(coverageRadius, blocksPerPixel)
+                && blocksPerPixel < TerrainExportSpec.MAX_BLOCKS_PER_PIXEL) {
+            blocksPerPixel++;
+        }
+        rebuildWidgets();
+    }
+
     private AbstractSliderButton createGridSlider(int x, int y, int w) {
         int min = TerrainExportSpec.MIN_GRID_INTERVAL_BLOCKS;
         int max = TerrainExportSpec.MAX_GRID_INTERVAL_BLOCKS;
@@ -456,7 +513,7 @@ public final class TerrainExportScreen extends Screen {
         var spec = new TerrainExportSpec(coverageRadius, blocksPerPixel, center.getX(), center.getZ(),
                 exportContours, contourInterval, exportGrid ? gridInterval : 0, exportHeightmap,
                 biomeColors ? TerrainExportColorMode.BIOMES : TerrainExportColorMode.CATEGORY,
-                center.getY());
+                center.getY(), heightStride);
         if (batchMode && batchAvailable()) {
             startBatchExport(spec);
         } else {
@@ -574,15 +631,18 @@ public final class TerrainExportScreen extends Screen {
                     continue;
                 }
                 try {
-                    TerrainMapExporter.BiomeSampler sampler = createDimensionSampler(stem, seed, registryAccess, exportQuartY);
+                    TerrainMapExporter.QuartBiomeSampler sampler = createDimensionSampler(stem, seed, registryAccess, exportQuartY);
                     LongConsumer progress = trackDimensionProgress(
                             dimensionId, i + 1, dimensions.size(), totalWork, completedPixels);
+                    // The dimension switch must show immediately; the throttled
+                    // consumer would otherwise hide it for up to 100 ms.
+                    publishBatchProgress(i + 1, dimensions.size(), dimensionId.getPath(), 0.0);
                     progress.accept(0L);
                     int yMin = stem.type().value().minY();
                     exporter.export(spec, sampler, batchColors, null,
                             new TerrainMapExporter.ExportContext(Long.toString(seed), dimensionId.toString()),
                             null, yMin, yMin + stem.type().value().height(), outputDir,
-                            sanitizeFileToken(dimensionId.getPath()) + "_", batchCancelled::get, progress);
+                            FileNames.sanitizeFileToken(dimensionId.getPath()) + "_", batchCancelled::get, progress);
                     exported++;
                 } catch (CancellationException e) {
                     throw e;
@@ -624,7 +684,7 @@ public final class TerrainExportScreen extends Screen {
      * Every dimension samples at the same quart Y — the preview center's layer
      * captured by the spec — so the batch matches the single-dimension export.
      */
-    private static TerrainMapExporter.BiomeSampler createDimensionSampler(LevelStem stem, long seed,
+    private static TerrainMapExporter.QuartBiomeSampler createDimensionSampler(LevelStem stem, long seed,
                                                                           RegistryAccess.Frozen registryAccess,
                                                                           int exportQuartY) {
         ChunkGenerator generator = stem.generator();
@@ -639,6 +699,22 @@ public final class TerrainExportScreen extends Screen {
                 QuartPos.fromBlock(blockX), exportQuartY, QuartPos.fromBlock(blockZ), noiseSampler);
     }
 
+    /** Minimum gap between two formatted batch status lines; the UI polls at ~20 Hz. */
+    private static final long PROGRESS_PUBLISH_INTERVAL_NANOS = 100_000_000L;
+
+    /**
+     * Publishes one formatted batch status line. Formatting (String.format +
+     * a translatable Component) is what costs -- per accepted tile it used to
+     * burn 0.2-0.4 s per 4096x4096 dimension -- so the consumer below only
+     * calls this at most ten times a second; the completed-pixel counter
+     * itself stays exact.
+     */
+    private void publishBatchProgress(int index, int totalDimensions, String dimension, double pct) {
+        batchPct = pct;
+        batchStatus = Component.translatable("world_preview.terrain_export.batch.progress",
+                index, totalDimensions, dimension, String.format("%.1f", pct));
+    }
+
     private LongConsumer trackDimensionProgress(
             ResourceLocation dimensionId,
             int index,
@@ -646,20 +722,23 @@ public final class TerrainExportScreen extends Screen {
             long totalWork,
             AtomicLong completedPixels
     ) {
+        AtomicLong lastPublish = new AtomicLong(System.nanoTime());
         return pixels -> {
             long completed = Math.min(totalWork, completedPixels.addAndGet(pixels));
-            batchPct = 100.0 * completed / totalWork;
-            batchStatus = Component.translatable("world_preview.terrain_export.batch.progress",
-                    index, totalDimensions, dimensionId.getPath(), String.format("%.1f", batchPct));
+            if (completed < totalWork) {
+                long now = System.nanoTime();
+                long last = lastPublish.get();
+                if (now - last < PROGRESS_PUBLISH_INTERVAL_NANOS
+                        || !lastPublish.compareAndSet(last, now)) {
+                    return;
+                }
+            }
+            publishBatchProgress(index, totalDimensions, dimensionId.getPath(),
+                    100.0 * completed / totalWork);
         };
     }
 
     /** Replaces ':' and other path-illegal characters so the token is safe as a filename prefix. */
-    private static String sanitizeFileToken(String raw) {
-        String cleaned = raw.replaceAll("[^A-Za-z0-9._-]", "_");
-        return cleaned.isBlank() ? "unknown" : cleaned;
-    }
-
     private void updateButtonStates() {
         if (exportButton == null || cancelButton == null) return;
         TerrainExportController.Status status = previewContainer.terrainExportStatus();

@@ -12,7 +12,7 @@ import java.util.Objects;
  * digest, world type, dimension, etc.).
  *
  * <p>This replaces the per-system fingerprint logic previously duplicated
- * in {@code ContextFingerprint} and {@code AnalysisCacheSignature}.
+ * in {@code ContextFingerprint} and the now-removed {@code AnalysisCacheSignature}.
  */
 public record SessionFingerprint(
         String minecraftVersion,

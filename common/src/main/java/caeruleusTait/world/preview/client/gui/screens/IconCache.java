@@ -5,10 +5,16 @@ package caeruleusTait.world.preview.client.gui.screens;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.PackResources;
+import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceManager;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static caeruleusTait.world.preview.WorldPreview.LOGGER;
 
 /**
  * Process-wide cache for decoded structure icons (PNG -&gt; {@link NativeImage}).
@@ -70,9 +76,39 @@ public final class IconCache {
             MASTERS.clear();   // defensive upper bound
         }
         NativeImage master = MASTERS.computeIfAbsent(new Key(fp, iconId),
-                key -> PreviewContainer.loadSingleIcon(key.id(), builtin, sample));
+                key -> loadSingleIcon(key.id(), builtin, sample));
         NativeImage copy = new NativeImage(master.getWidth(), master.getHeight(), true);
         copy.copyFrom(master);
         return copy;
+    }
+
+    /**
+     * Loads a single structure icon from the builtin or sample resource manager.
+     * Thread-safe: creates a new NativeImage and does not modify shared state.
+     */
+    private static NativeImage loadSingleIcon(ResourceLocation iconId,
+                                               ResourceManager builtinResourceManager,
+                                               ResourceManager sampleResourceManager) {
+        Optional<Resource> resource = builtinResourceManager.getResource(iconId);
+        if (resource.isEmpty()) {
+            resource = sampleResourceManager.getResource(iconId);
+        }
+        if (resource.isEmpty()) {
+            LOGGER.error("Failed to load structure icon: '{}'", iconId);
+            resource = builtinResourceManager.getResource(
+                    ResourceLocation.parse("world_preview:textures/structure/unknown.png"));
+        }
+        if (resource.isEmpty()) {
+            LOGGER.error("FATAL ERROR LOADING: '{}' -- unable to load fallback!", iconId);
+            return new NativeImage(16, 16, true);
+        }
+        try {
+            try (InputStream in = resource.get().open()) {
+                return NativeImage.read(in);
+            }
+        } catch (IOException e) {
+            LOGGER.error("Failed to decode structure icon '{}'; using a blank fallback", iconId, e);
+            return new NativeImage(16, 16, true);
+        }
     }
 }

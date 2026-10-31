@@ -2,9 +2,6 @@
 // See CHANGES.md for details.
 package caeruleusTait.world.preview.backend.storage;
 
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMaps;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.*;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.registries.Registries;
@@ -50,7 +47,6 @@ public class PreviewLevel implements WorldGenLevel {
     private final RegistryAccess registryAccess;
     private final LevelHeightAccessor levelHeightAccessor;
     private final Registry<Biome> biomeRegistry;
-    private final Long2ObjectMap<ProtoChunk> chunks = Long2ObjectMaps.synchronize(new Long2ObjectOpenHashMap<>());
 
     public PreviewLevel(RegistryAccess registryAccess, LevelHeightAccessor levelHeightAccessor) {
         this.registryAccess = registryAccess;
@@ -61,15 +57,9 @@ public class PreviewLevel implements WorldGenLevel {
     @Nullable
     @Override
     public ChunkAccess getChunk(int x, int z, ChunkStatus requiredStatus, boolean nonnull) {
+        // Storage would take up too much space, so every request builds a throwaway
+        // ProtoChunk instead of caching one per position.
         return new ProtoChunk(new ChunkPos(x, z), UpgradeData.EMPTY, levelHeightAccessor, biomeRegistry, null);
-
-        // Actually storing chunks would take up too much space
-        /*
-        return chunks.computeIfAbsent(
-                ChunkPos.asLong(x, z),
-                i -> new ProtoChunk(new ChunkPos(x, z), UpgradeData.EMPTY, levelHeightAccessor, biomeRegistry, null)
-        );
-         */
     }
 
     @Override
