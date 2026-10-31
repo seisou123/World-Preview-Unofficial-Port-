@@ -26,9 +26,8 @@ import java.util.function.IntConsumer;
  * Subclasses extend this class and call the helper methods from their
  * {@link #build(ScreenRectangle, PreviewContainer)} implementation.
  *
- * <p>Domain-level validation and reset are bridged automatically:
+ * <p>Domain-level reset is bridged automatically:
  * <ul>
- *   <li>{@link #validate()} delegates to {@link ConfigurablePage#validateBindings()}</li>
  *   <li>{@link #reset()} delegates to {@link ConfigurablePage#resetDefaults()}</li>
  * </ul>
  */
@@ -45,11 +44,6 @@ public abstract class AbstractSettingsPage extends ConfigurablePage implements S
     @Override
     public List<AbstractWidget> widgets() {
         return widgets;
-    }
-
-    @Override
-    public boolean validate() {
-        return validateBindings().isEmpty();
     }
 
     @Override

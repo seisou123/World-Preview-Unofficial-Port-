@@ -30,6 +30,7 @@ import caeruleusTait.world.preview.client.gui.widgets.ProfileChart;
 import caeruleusTait.world.preview.client.gui.widgets.RegionSelector;
 import caeruleusTait.world.preview.client.gui.widgets.TranslucentButton;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
+import caeruleusTait.world.preview.util.FileNames;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -502,7 +503,7 @@ public final class WorldAnalysisScreen extends Screen {
         };
     }
 
-    /** Cycles 对角 → 东西 → 南北 and rebuilds the profile along the new line. */
+    /** Cycles diagonal, east-west, north-south and rebuilds the profile along the new line. */
     private void cycleProfileDirection() {
         profileDirection = switch (profileDirection) {
             case DIAGONAL -> ProfileChart.Direction.EAST_WEST;
@@ -674,19 +675,14 @@ public final class WorldAnalysisScreen extends Screen {
 
     /** Report file name with seed/dimension and the analyzed region's corner tokens. */
     private String buildReportBaseName(Region region) {
-        return "analysis_" + sanitizeFileToken(Long.toString(session.request().seed()))
-                + "_" + sanitizeFileToken(session.request().dimension())
+        return "analysis_" + FileNames.sanitizeFileToken(Long.toString(session.request().seed()))
+                + "_" + FileNames.sanitizeFileToken(session.request().dimension())
                 + "_" + region.minX() + "_" + region.minZ()
                 + "_" + region.maxX() + "_" + region.maxZ()
                 + "_" + LocalDateTime.now().format(EXPORT_TIMESTAMP_FORMAT);
     }
 
     /** Replaces ':' and other path-illegal characters so the token is safe as a filename part. */
-    private static String sanitizeFileToken(String raw) {
-        String cleaned = raw.replaceAll("[^A-Za-z0-9._-]", "_");
-        return cleaned.isBlank() ? "unknown" : cleaned;
-    }
-
     private void showStatus(Component message, int color) {
         statusMessage = message;
         statusColor = color;

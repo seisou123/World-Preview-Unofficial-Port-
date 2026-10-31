@@ -17,6 +17,9 @@ package caeruleusTait.world.preview.backend.export;
  * @param colorMode          Pixel color source: nine terrain categories or per-biome colors
  * @param exportY            World Y the biome sampler evaluates (block coords); follows the
  *                           preview center so the exported layer matches the viewed layer
+ * @param heightSampleStride Height lattice stride: 1 samples every pixel's column (exact),
+ *                           2/4 sample every 2nd/4th column and interpolate bilinearly in
+ *                           between -- faster but approximate, an explicit quality/speed dial
  */
 public record TerrainExportSpec(
         int coverageRadius,
@@ -28,7 +31,8 @@ public record TerrainExportSpec(
         int gridIntervalBlocks,
         boolean exportHeightmap,
         TerrainExportColorMode colorMode,
-        int exportY
+        int exportY,
+        int heightSampleStride
 ) {
     /** Default coverage radius (blocks), yields ~2048x2048 pixel export at blocksPerPixel=4. */
     public static final int DEFAULT_COVERAGE_RADIUS = 4096;
@@ -53,6 +57,12 @@ public record TerrainExportSpec(
 
     /** Maximum grid interval. */
     public static final int MAX_GRID_INTERVAL_BLOCKS = 4096;
+
+    /** Minimum height lattice stride (every pixel, exact heights). */
+    public static final int MIN_HEIGHT_SAMPLE_STRIDE = 1;
+
+    /** Maximum height lattice stride (every 4th pixel, interpolated heights). */
+    public static final int MAX_HEIGHT_SAMPLE_STRIDE = 4;
 
     /** Hard allocation limit shared by the UI and exporter (4096 x 4096 pixels). */
     public static final long MAX_PIXELS = 16_777_216L;
@@ -104,6 +114,10 @@ public record TerrainExportSpec(
             throw new IllegalArgumentException("gridIntervalBlocks must be 0 or between "
                     + MIN_GRID_INTERVAL_BLOCKS + " and " + MAX_GRID_INTERVAL_BLOCKS);
         }
+        if (heightSampleStride < MIN_HEIGHT_SAMPLE_STRIDE || heightSampleStride > MAX_HEIGHT_SAMPLE_STRIDE) {
+            throw new IllegalArgumentException("heightSampleStride must be between "
+                    + MIN_HEIGHT_SAMPLE_STRIDE + " and " + MAX_HEIGHT_SAMPLE_STRIDE);
+        }
     }
 
     /** Compact constructor for backward compatibility */
@@ -126,6 +140,17 @@ public record TerrainExportSpec(
                              boolean exportHeightmap) {
         this(coverageRadius, blocksPerPixel, centerX, centerZ, exportContours, contourInterval,
                 gridIntervalBlocks, exportHeightmap, TerrainExportColorMode.CATEGORY, DEFAULT_EXPORT_Y);
+    }
+
+    /**
+     * Compact constructor for backward compatibility: exact heights (stride 1),
+     * matching the pre-stride export behavior exactly.
+     */
+    public TerrainExportSpec(int coverageRadius, int blocksPerPixel, int centerX, int centerZ,
+                             boolean exportContours, int contourInterval, int gridIntervalBlocks,
+                             boolean exportHeightmap, TerrainExportColorMode colorMode, int exportY) {
+        this(coverageRadius, blocksPerPixel, centerX, centerZ, exportContours, contourInterval,
+                gridIntervalBlocks, exportHeightmap, colorMode, exportY, 1);
     }
 
     /**

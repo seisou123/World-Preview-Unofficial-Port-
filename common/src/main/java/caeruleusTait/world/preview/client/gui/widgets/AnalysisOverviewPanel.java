@@ -10,6 +10,7 @@ import caeruleusTait.world.preview.backend.analysis.RegionMetrics;
 import caeruleusTait.world.preview.backend.analysis.SpawnAdvisor;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.PanelRenderer;
+import caeruleusTait.world.preview.client.gui.ScoreColors;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -51,9 +52,6 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
 
     private static final int COLOR_TEXT = 0xFFE0E4E8;
     private static final int COLOR_HEADER = 0xFFFFFFFF;
-    private static final int COLOR_SCORE_GOOD = 0xFF55FF55;
-    private static final int COLOR_SCORE_MEDIUM = 0xFFFFFF55;
-    private static final int COLOR_SCORE_BAD = 0xFFFF5555;
     private static final int COLOR_NEUTRAL = 0xFF888888;
     private static final int COLOR_BLUE = 0xFF5555FF;
     private static final int COLOR_BAR_SLOT = 0xFF2A2A38;
@@ -338,9 +336,9 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         }
         AnalysisStatus status = progress == null ? AnalysisStatus.QUEUED : progress.status();
         int dot = switch (status) {
-            case RUNNING, COMPLETED -> COLOR_SCORE_GOOD;
-            case PAUSED -> COLOR_SCORE_MEDIUM;
-            case FAILED -> COLOR_SCORE_BAD;
+            case RUNNING, COMPLETED -> ScoreColors.GOOD;
+            case PAUSED -> ScoreColors.MEDIUM;
+            case FAILED -> ScoreColors.BAD;
             case QUEUED, CANCELLED -> COLOR_NEUTRAL;
         };
         g.fill(x, y + 2, x + 5, y + 7, dot);
@@ -357,7 +355,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         }
         if (metrics.state() == AnalysisDataState.UNAVAILABLE && !metrics.unavailableReason().isBlank()) {
             y = line(g, font, x, y, Component.translatable("world_preview.analysis.unavailable.reason",
-                    metrics.unavailableReason()), COLOR_SCORE_BAD);
+                    metrics.unavailableReason()), ScoreColors.BAD);
         }
         return y + 4;
     }
@@ -394,7 +392,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
     private int renderSpawnSection(GuiGraphics g, Font font, int x, int y, int w, int bottom) {
         y = line(g, font, x, y, WorldPreviewComponents.ANALYSIS_SPAWN_SCORE, COLOR_HEADER);
         y = line(g, font, x, y, Component.translatable("world_preview.analysis.spawn_score.value", spawnScore),
-                scoreColor(spawnScore));
+                ScoreColors.scoreColor(spawnScore));
         if (spawnParts == null || spawnParts.length < 4) {
             return y + 4;
         }
@@ -403,7 +401,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
         int[] weights = {
                 SpawnAdvisor.FLAT_WEIGHT, SpawnAdvisor.SLOPE_WEIGHT,
                 SpawnAdvisor.WATER_WEIGHT, SpawnAdvisor.STRUCTURE_WEIGHT};
-        int[] colors = {COLOR_SCORE_GOOD, COLOR_SCORE_MEDIUM, COLOR_BLUE, COLOR_NEUTRAL};
+        int[] colors = {ScoreColors.GOOD, ScoreColors.MEDIUM, COLOR_BLUE, COLOR_NEUTRAL};
         int barW = w;
         int segY = y + 2;
         int segX = x;
@@ -467,7 +465,7 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
     }
 
     private int renderErrorSection(GuiGraphics g, Font font, int x, int y, int w, int bottom) {
-        return line(g, font, x, y, errorText, COLOR_SCORE_BAD);
+        return line(g, font, x, y, errorText, ScoreColors.BAD);
     }
 
     // ===== Helpers =====
@@ -476,17 +474,6 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
     public static Component structureDisplayName(ResourceLocation id) {
         String key = "world_preview.structure." + id.getPath();
         return Language.getInstance().has(key) ? Component.translatable(key) : Component.literal(id.getPath());
-    }
-
-    /** Score coloring: green >= 70, yellow >= 40, red below. */
-    private static int scoreColor(int score) {
-        if (score >= 70) {
-            return COLOR_SCORE_GOOD;
-        }
-        if (score >= 40) {
-            return COLOR_SCORE_MEDIUM;
-        }
-        return COLOR_SCORE_BAD;
     }
 
     private static String runStatusLabel(AnalysisStatus status) {

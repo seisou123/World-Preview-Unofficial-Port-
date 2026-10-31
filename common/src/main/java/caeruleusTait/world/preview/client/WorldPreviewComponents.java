@@ -213,6 +213,16 @@ public class WorldPreviewComponents {
     public static final Component SETTINGS_NOISE_GRADIENTS = Component.translatable("world_preview.settings.general.noise_gradients");
     public static final Component SETTINGS_NOISE_GRADIENTS_TOOLTIP = Component.translatable("world_preview.settings.general.noise_gradients.tooltip");
 
+    // === Noise-view terrain overlay ===
+    public static final Component SETTINGS_NOISE_TERRAIN_OVERLAY = Component.translatable("world_preview.settings.general.noise_terrain_overlay");
+    public static final Component SETTINGS_NOISE_TERRAIN_OVERLAY_TOOLTIP = Component.translatable("world_preview.settings.general.noise_terrain_overlay.tooltip");
+
+    // === Noise-view isolines ===
+    public static final Component SETTINGS_NOISE_ISOLINES = Component.translatable("world_preview.settings.general.noise_isolines");
+    public static final Component SETTINGS_NOISE_ISOLINES_TOOLTIP = Component.translatable("world_preview.settings.general.noise_isolines.tooltip");
+    public static final Component SETTINGS_NOISE_ISOLINE_BANDS = Component.translatable("world_preview.settings.general.noise_isoline_bands");
+    public static final Component SETTINGS_NOISE_ISOLINE_BANDS_TOOLTIP = Component.translatable("world_preview.settings.general.noise_isoline_bands.tooltip");
+
     // === Contour lines ===
     public static final Component SETTINGS_CONTOURS = Component.translatable("world_preview.settings.general.contours");
     public static final Component SETTINGS_CONTOURS_TOOLTIP = Component.translatable("world_preview.settings.general.contours.tooltip");

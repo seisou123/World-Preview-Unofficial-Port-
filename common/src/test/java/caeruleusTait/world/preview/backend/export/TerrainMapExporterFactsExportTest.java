@@ -80,8 +80,8 @@ class TerrainMapExporterFactsExportTest {
 
         assertTrue(Files.exists(result.pngPath()), "export must write the PNG");
         String metadata = Files.readString(result.metadataPath());
-        assertTrue(metadata.contains("\"heightSource\": \"estimated\""),
-                "fact hits count as estimated heights; expected estimated metadata");
+        assertTrue(metadata.contains("\"heightSource\": \"none\""),
+                "contours and heightmap are both off; no height field was requested");
 
         assertUniform(readPixels(result.pngPath()), storageColor(expectedColor));
     }
@@ -170,5 +170,72 @@ class TerrainMapExporterFactsExportTest {
                         new TerrainCategory[]{null, TerrainCategory.OCEAN},
                         new short[]{0, 50}));
         exportAndCheck(facts, TerrainCategory.PLAINS);
+    }
+
+    /**
+     * Both height probes stay untouched when neither contours nor the
+     * heightmap consume the height field, and run exactly once per tile when
+     * contours are on (32x32 pixels = one 64x64 tile).
+     */
+    @Test
+    void heightChannelIsSkippedWhenNothingConsumesIt() throws Exception {
+        final int[] batchCalls = {0};
+        final int[] pixelCalls = {0};
+        TerrainMapExporter.BatchHeightProbe probe = new TerrainMapExporter.BatchHeightProbe() {
+            @Override
+            public void fillGrid(int originX, int originZ, int step, int width, int height, int[] out,
+                                 java.util.function.BooleanSupplier cancelled) {
+                batchCalls[0]++;
+                java.util.Arrays.fill(out, 0);
+            }
+
+            @Override
+            public Integer heightAt(int blockX, int blockZ) {
+                pixelCalls[0]++;
+                return null;
+            }
+        };
+        TerrainMapExporter exporter = new TerrainMapExporter(2);
+
+        TerrainMapExporter.Result skipped = exporter.export(
+                tinySpec(), plainsSampler(), TerrainMapExporter.categories(null),
+                probe, null, null, Y_MIN, Y_MAX, tempDir, "skip_", () -> false, p -> { });
+        org.junit.jupiter.api.Assertions.assertEquals(0, batchCalls[0],
+                "batch height probe must not run without a height consumer");
+        org.junit.jupiter.api.Assertions.assertEquals(0, pixelCalls[0],
+                "per-pixel height probe must not run without a height consumer");
+        org.junit.jupiter.api.Assertions.assertTrue(
+                Files.readString(skipped.metadataPath()).contains("\"heightSource\": \"none\""),
+                "metadata must record that no height field was requested");
+
+        TerrainExportSpec contours = new TerrainExportSpec(256, 16, 0, 0, true, 10);
+        exporter.export(contours, plainsSampler(), TerrainMapExporter.categories(null),
+                probe, null, null, Y_MIN, Y_MAX, tempDir, "contours_", () -> false, p -> { });
+        org.junit.jupiter.api.Assertions.assertEquals(1, batchCalls[0],
+                "one fillGrid per tile: 32x32 pixels is a single tile");
+        org.junit.jupiter.api.Assertions.assertEquals(0, pixelCalls[0],
+                "the batch probe wins over the per-pixel probe");
+    }
+
+    /** Progress reports are one per tile now; the pixel total must stay exact. */
+    @Test
+    void progressTotalCoversEveryPixel() throws Exception {
+        // 384/8*2 = 96 -> 96x96 pixels = 4 tiles of 64x64.
+        TerrainExportSpec spec = new TerrainExportSpec(384, 8, 0, 0, false, 1);
+        // Workers report concurrently; plain fields would lose updates exactly
+        // like a lost 4096 report (the production consumer is an AtomicLong).
+        java.util.concurrent.atomic.AtomicLong sum = new java.util.concurrent.atomic.AtomicLong();
+        java.util.concurrent.atomic.AtomicInteger maxChunk = new java.util.concurrent.atomic.AtomicInteger();
+        TerrainMapExporter exporter = new TerrainMapExporter(2);
+        exporter.export(spec, plainsSampler(), TerrainMapExporter.categories(null),
+                null, null, null, Y_MIN, Y_MAX, tempDir, "progress_", () -> false,
+                pixels -> {
+                    sum.addAndGet(pixels);
+                    maxChunk.accumulateAndGet((int) pixels, Math::max);
+                });
+        org.junit.jupiter.api.Assertions.assertEquals(96L * 96L, sum.get(),
+                "progress must sum to width*height");
+        org.junit.jupiter.api.Assertions.assertEquals(64 * 64, maxChunk.get(),
+                "reports are per tile, so a chunk is at most one tile");
     }
 }
