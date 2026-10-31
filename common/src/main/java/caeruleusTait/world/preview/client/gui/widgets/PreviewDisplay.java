@@ -326,6 +326,13 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     private int cachedCenterY = Integer.MIN_VALUE;
     private int cachedCenterZ = Integer.MIN_VALUE;
 
+    // --- Frame-time HUD string cache ---
+    // The HUD is rebuilt only when its content actually changes, so an idle
+    // preview with a stable frame time formats nothing per frame.
+    private String cachedFrameInfo = "";
+    private String cachedHeavyInfo = "";
+    private long cachedHeavyRuns = -1;
+
     private List<PreviewRenderEngine.RenderHelper> cachedRenderData = null;
 
     private final PreviewRenderEngine engine = new PreviewRenderEngine(this);
@@ -520,6 +527,7 @@ resizeImage();
                     // must perform its one-time black fill+upload again.
                     blackStateUploaded = false;
 
+                    final long heavyStartNanos = throttle.beginHeavyRender();
                     engine.beginFrameCounts();
                     hoverInspector.clearGridEntries();
                     // Structure hover grid was rebuilt; force tooltip re-query.
@@ -538,6 +546,12 @@ resizeImage();
                     // before generation would let a failed pass be recorded as
                     // rendered and skip the retry.
                     throttle.markRendered(currentCenter, currentWriteCounter);
+                    // L1 instrumentation: how often the heavy path runs and what
+                    // it costs.  Logged on a throttle because renders can fire
+                    // ~30x/s and the HUD is off by default.
+                    if (throttle.recordHeavyRender(heavyStartNanos, isDragging())) {
+                        WorldPreview.LOGGER.info(throttle.heavyRenderSummary());
+                    }
 
                     // Render the main texture
                     WorldPreviewClient.renderTexture(guiGraphics, engine.mainTexture(), xMin, yMin, xMax, yMax);
@@ -694,7 +708,28 @@ resizeImage();
             if (throttle.adaptiveSkipEveryN() > 1) {
                 frameInfo += " (throttled x" + throttle.adaptiveSkipEveryN() + ")";
             }
-            guiGraphics.drawString(minecraft.font, frameInfo, 5, 5, 0xFFFFFFFF);
+            // Heavy-render cost, when it has been observed.  Only appended on a
+            // fresh string when the values changed, so the common idle case
+            // allocates nothing extra.
+            final long heavyRuns = throttle.heavyRunCount();
+            if (heavyRuns != cachedHeavyRuns || !frameInfo.equals(cachedFrameInfo)) {
+                cachedHeavyRuns = heavyRuns;
+                cachedFrameInfo = frameInfo;
+                if (heavyRuns > 0) {
+                    cachedHeavyInfo = String.format(" | heavy %d @ %.1f/%.1fms",
+                            heavyRuns, throttle.heavyAverageMs(), throttle.heavyMaxMs());
+                } else {
+                    cachedHeavyInfo = "";
+                }
+            }
+            final String fullFrameInfo = cachedFrameInfo + cachedHeavyInfo;
+            // Guard against the readout running past the preview area on a
+            // narrow screen; the frame time itself always shows.
+            if (minecraft.font.width(fullFrameInfo) <= (xMax - xMin) - 10) {
+                guiGraphics.drawString(minecraft.font, fullFrameInfo, 5, 5, 0xFFFFFFFF);
+            } else if (minecraft.font.width(cachedFrameInfo) <= (xMax - xMin) - 10) {
+                guiGraphics.drawString(minecraft.font, cachedFrameInfo, 5, 5, 0xFFFFFFFF);
+            }
         }
 
         // Display the current center coordinates at the bottom-left of the

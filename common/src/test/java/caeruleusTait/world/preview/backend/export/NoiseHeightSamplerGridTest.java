@@ -1,0 +1,222 @@
+// Modified from original World Preview (https://modrinth.com/mod/world-preview).
+// See CHANGES.md for details.
+package caeruleusTait.world.preview.backend.export;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.HashSet;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Grid arithmetic of the live terrain-export height sampler.
+ * <p>
+ * The export walks a pixel grid anchored at an arbitrary block coordinate with
+ * a fixed step, while the noise sampler only yields heights per cell of a
+ * 4-block lattice. The two grids are generally misaligned, so the collector has
+ * to find exactly the requested columns belonging to each cell. A mistake here
+ * does not crash: it silently leaves pixels on the biome-based estimate (the
+ * seam this sampler exists to remove) or, worse, lets one pixel overwrite
+ * another.
+ * <p>
+ * These tests therefore assert the property that matters -- every grid cell is
+ * visited exactly once across all cells -- over a range of misalignments and
+ * steps, instead of hard-coding expected coordinates.
+ */
+class NoiseHeightSamplerGridTest {
+
+    private static final int CELL_WIDTH = 4;
+
+    /** Runs the collector over every cell the grid touches and returns the visited indices. */
+    private static Set<Integer> collectAll(int originX, int originZ, int step, int width, int height) {
+        final int maxX = originX + (width - 1) * step;
+        final int maxZ = originZ + (height - 1) * step;
+        final int firstCellX = Math.floorDiv(originX, CELL_WIDTH);
+        final int lastCellX = Math.floorDiv(maxX, CELL_WIDTH);
+        final int firstCellZ = Math.floorDiv(originZ, CELL_WIDTH);
+        final int lastCellZ = Math.floorDiv(maxZ, CELL_WIDTH);
+
+        final int cap = (CELL_WIDTH / step + 2) * (CELL_WIDTH / step + 2);
+        final int[] xs = new int[cap];
+        final int[] zs = new int[cap];
+        final double[] dXs = new double[cap];
+        final double[] dZs = new double[cap];
+        final int[] outIdx = new int[cap];
+
+        final Set<Integer> visited = new java.util.ArrayList<>(width * height).isEmpty()
+                ? new HashSet<>() : new HashSet<>();
+        int duplicates = 0;
+
+        for (int cx = firstCellX; cx <= lastCellX; cx++) {
+            for (int cz = firstCellZ; cz <= lastCellZ; cz++) {
+                final int count = NoiseHeightSampler.collectCellColumns(
+                        cx * CELL_WIDTH, cz * CELL_WIDTH, CELL_WIDTH,
+                        step, originX, originZ, maxX, maxZ, width,
+                        xs, zs, dXs, dZs, outIdx);
+                for (int i = 0; i < count; i++) {
+                    if (!visited.add(outIdx[i])) {
+                        duplicates++;
+                    }
+                    assertTrue(outIdx[i] >= 0 && outIdx[i] < width * height,
+                            "index " + outIdx[i] + " outside grid of " + (width * height));
+                    // The column must map back to the coordinates it was collected at.
+                    final int px = (xs[i] - originX) / step;
+                    final int pz = (zs[i] - originZ) / step;
+                    assertEquals(pz * width + px, outIdx[i],
+                            "index does not match its column at (" + xs[i] + "," + zs[i] + ")");
+                    // The cell-local interpolation factor must stay inside [0,1).
+                    assertTrue(dXs[i] >= 0.0 && dXs[i] < 1.0, "dX out of range: " + dXs[i]);
+                    assertTrue(dZs[i] >= 0.0 && dZs[i] < 1.0, "dZ out of range: " + dZs[i]);
+                }
+            }
+        }
+
+        assertEquals(0, duplicates, "a grid cell was visited more than once");
+        return visited;
+    }
+
+    @Test
+    void alignedGridIsFullyCovered() {
+        // origin on the cell lattice: the common case for a centred export.
+        Set<Integer> visited = collectAll(0, 0, 4, 16, 16);
+        assertEquals(16 * 16, visited.size(), "every cell must be visited once");
+    }
+
+    @Test
+    void misalignedOriginStillCoversEveryCell() {
+        for (int offset = 1; offset < CELL_WIDTH; offset++) {
+            Set<Integer> visited = collectAll(offset, offset, 4, 13, 11);
+            assertEquals(13 * 11, visited.size(),
+                    "offset " + offset + " left cells unvisited");
+        }
+    }
+
+    @Test
+    void negativeCoordinatesAreHandled() {
+        // Exports centred near the origin can start at negative blocks.
+        Set<Integer> visited = collectAll(-4093, -4091, 4, 17, 19);
+        assertEquals(17 * 19, visited.size(), "negative origin must not skip cells");
+    }
+
+    @Test
+    void everySupportedStepCoversTheGrid() {
+        // The UI offers 1, 2 and 4 blocks per pixel.
+        for (int step : new int[] {1, 2, 4}) {
+            for (int offset = 0; offset < step; offset++) {
+                Set<Integer> visited = collectAll(offset, offset * 2, step, 9, 7);
+                assertEquals(9 * 7, visited.size(),
+                        "step " + step + " offset " + offset + " left cells unvisited");
+            }
+        }
+    }
+
+    @Test
+    void singleCellGridWorks() {
+        Set<Integer> visited = collectAll(7, 9, 4, 1, 1);
+        assertEquals(1, visited.size());
+    }
+
+    @Test
+    void gridSmallerThanOneCellWorks() {
+        // A 1x1 export still has to land on exactly one column.
+        for (int x = 0; x < CELL_WIDTH; x++) {
+            for (int z = 0; z < CELL_WIDTH; z++) {
+                Set<Integer> visited = collectAll(x, z, 2, 1, 1);
+                assertEquals(1, visited.size(), "single cell at (" + x + "," + z + ") missing");
+            }
+        }
+    }
+
+    // --- surface-level bound ------------------------------------------------
+
+    @Test
+    void surfaceBoundTakesTheMaximumOfTheRegion() {
+        // A single high column anywhere in the region must drive the bound, or
+        // the scan would start below it and miss that terrain.
+        int bound = NoiseHeightSampler.maxSurfaceLevel(
+                (x, z) -> (x == 40 && z == 24) ? 190 : 70, 0, 0, 63, 63);
+        assertEquals(190, bound);
+    }
+
+    @Test
+    void surfaceBoundSamplesOnAFourBlockLattice() {
+        // The bound is deliberately coarse: it only has to be conservative
+        // enough to save work, and anything it undershoots is caught by the
+        // upper-band rescan. So a spike off the lattice may be missed -- but one
+        // on the lattice must not be, or that terrain would be scanned twice.
+        assertEquals(10, NoiseHeightSampler.maxSurfaceLevel(
+                        (x, z) -> (x == 63 && z == 63) ? 200 : 10, 0, 0, 63, 63),
+                "off-lattice spike is expected to be missed; the rescan covers it");
+
+        assertEquals(200, NoiseHeightSampler.maxSurfaceLevel(
+                        (x, z) -> (x == 60 && z == 60) ? 200 : 10, 0, 0, 63, 63),
+                "on-lattice spike must raise the bound");
+    }
+
+    @Test
+    void surfaceBoundReportsUnknownWhenEmpty() {
+        // Nothing estimated: callers read MIN_VALUE and fall back to a full scan.
+        assertEquals(Integer.MIN_VALUE,
+                NoiseHeightSampler.maxSurfaceLevel((x, z) -> Integer.MIN_VALUE, 0, 0, 63, 63));
+    }
+
+    @Test
+    void surfaceBoundWorksOnNegativeRegions() {
+        int bound = NoiseHeightSampler.maxSurfaceLevel((x, z) -> 120, -512, -512, -449, -449);
+        assertEquals(120, bound);
+    }
+
+    // --- Y-band clamp -------------------------------------------------------
+
+    @Test
+    void surfaceRangeFeedsBothBandEdges() {
+        int[] range = NoiseHeightSampler.surfaceLevelRange(
+                (x, z) -> (x == 40 && z == 24) ? 190 : 70, 0, 0, 63, 63);
+        assertEquals(70, range[0], "minimum covers the low terrain the band must still reach");
+        assertEquals(190, range[1]);
+    }
+
+    @Test
+    void bandBoundsBracketsTheSurfaceRange() {
+        int[] band = NoiseHeightSampler.bandBounds(-64, 384, 40, 110);
+        assertNotNull(band, "a mid-height band over the overworld must clamp");
+        assertEquals(-32, band[0], "(40 - 64) floors to the previous 16-line");
+        assertEquals(144, band[1], "(110 + 32) rounds up to the next 16-line");
+    }
+
+    @Test
+    void bandBoundsClampsToTheGridEdges() {
+        // The floor clamps to the grid bottom, the ceiling stays inside the
+        // grid top: a max high enough to reach it would make the band the
+        // full range, and the null case below covers that.
+        int[] band = NoiseHeightSampler.bandBounds(-64, 384, -1000, 200);
+        assertNotNull(band);
+        assertEquals(-64, band[0], "never below the grid bottom");
+        assertEquals(240, band[1], "never above the grid top");
+    }
+
+    @Test
+    void bandTopStrictlyCoversTheScanStart() {
+        // maxSurface + SURFACE_MARGIN lands exactly on a 16-line here (112 + 32
+        // = 144). Aligning the band top to that line would leave the band chunk
+        // unable to see y = 144, and a column surfacing exactly there resolves
+        // one block low with nothing unresolved for the fallback to fix. The
+        // band top must round PAST the scan start, not onto it.
+        int[] band = NoiseHeightSampler.bandBounds(-64, 384, 40, 112);
+        assertNotNull(band);
+        assertEquals(160, band[1], "112 + 32 aligns to 144; the top must go one line past it");
+        assertTrue(band[1] > 112 + 32);
+    }
+
+    @Test
+    void bandBoundsKeepsNearFullRangesOnTheFullChunk() {
+        assertNull(NoiseHeightSampler.bandBounds(-64, 384, -60, 310),
+                "a band that saves less than two alignment units is not worth a second chunk");
+        assertNull(NoiseHeightSampler.bandBounds(0, 128, 30, 80),
+                "short dimensions stay on the full range");
+    }
+}

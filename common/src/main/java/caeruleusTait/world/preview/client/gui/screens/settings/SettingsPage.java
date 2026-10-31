@@ -35,13 +35,6 @@ public interface SettingsPage {
     void reset();
 
     /**
-     * Validate pending values before they are committed.
-     */
-    default boolean validate() {
-        return true;
-    }
-
-    /**
      * Called every render tick so the page can update widget state
      * (e.g. enabling/disabling based on other settings).
      */

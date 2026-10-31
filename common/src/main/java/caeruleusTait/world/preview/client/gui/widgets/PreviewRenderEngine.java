@@ -8,6 +8,8 @@ import caeruleusTait.world.preview.backend.storage.PreviewSection;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.backend.terrain.ContourRenderer;
 import caeruleusTait.world.preview.backend.terrain.HillshadeRenderer;
+import caeruleusTait.world.preview.backend.terrain.NoiseIsolines;
+import caeruleusTait.world.preview.backend.terrain.NoiseTerrainOverlay;
 import caeruleusTait.world.preview.client.WorldPreviewClient;
 import caeruleusTait.world.preview.client.gui.PreviewDisplayDataProvider;
 import caeruleusTait.world.preview.domain.preview.accuracy.ViewportMapping;
@@ -44,6 +46,8 @@ class PreviewRenderEngine {
     record RenderHelper(
             PreviewSection dataSection,
             PreviewSection structureSection,
+            /** Heightmap channel for the same section, or null when the noise overlay is off. */
+            PreviewSection heightSection,
             PreviewSection.AccessData accessData,
             int sectionStartTexX,
             int sectionStartTexZ
@@ -424,6 +428,13 @@ class PreviewRenderEngine {
             return res;
         }
 
+        // The semantic overlay only applies to noise views and needs the
+        // heightmap channel of the same section to classify water/land. Skipped
+        // in dimensions whose worldgen fluid is not water (see updateTexture).
+        final boolean noiseOverlay = renderSettings.mode.isNoise()
+                && host.config().noiseTerrainOverlay
+                && host.workManager().hasWaterSea();
+
         // Load sections — no outer synchronized(storage) needed because
         // section4() already synchronizes on the correct y-layer monitor
         // (blocks[indexY]).  The outer lock was redundant and caused
@@ -434,9 +445,12 @@ class PreviewRenderEngine {
             int useY = renderSettings.mode.useY ? quartY : 0;
             PreviewSection dataSection = storage.section4(quartX, useY, quartZ, flag);
             PreviewSection structureSection = storage.section4(quartX, 0, quartZ, PreviewStorage.FLAG_STRUCT_START);
+            PreviewSection heightSection = noiseOverlay
+                    ? storage.section4(quartX, 0, quartZ, PreviewStorage.FLAG_HEIGHT)
+                    : null;
             PreviewSection.AccessData accessData = dataSection.calcQuartOffsetData(quartX, quartZ, maxQuartX, maxQuartZ);
 
-            res.add(new RenderHelper(dataSection, structureSection, accessData, sectionStartTexX, sectionStartTexZ));
+            res.add(new RenderHelper(dataSection, structureSection, heightSection, accessData, sectionStartTexX, sectionStartTexZ));
 
             // Can we fit more stuff in the X direction?
             if (accessData.continueX()) {
@@ -491,6 +505,20 @@ class PreviewRenderEngine {
         final short selectedBiomeId = host.selectedBiomeId();
         final boolean highlightCaves = host.highlightCaves();
         final int hfExpand = Math.max(1, quartExpand);
+
+        // Semantic overlay for the noise views: water tint + coastline, drawn
+        // from the heightmap channel. Both are resolved once per frame. The
+        // overlay is water-specific: dimensions whose worldgen fluid is lava
+        // (the Nether) or that report a sea level but no ocean (the End) would
+        // otherwise have their whole sub-sea-level terrain tinted as sea.
+        final boolean noiseOverlay = renderSettings.mode.isNoise()
+                && config.noiseTerrainOverlay
+                && host.workManager().hasWaterSea();
+        final int overlaySeaLevel = noiseOverlay ? host.workManager().seaLevel() : 0;
+        // Isolines are independent of the terrain overlay; 0 bands = off.
+        final int isolineBands = renderSettings.mode.isNoise() && config.noiseIsolines
+                ? Math.max(1, config.noiseIsolineBands)
+                : 0;
 
         boolean needHeightField = renderSettings.mode == RenderSettings.RenderMode.HEIGHTMAP
                 && (config.enableHillshade || config.enableContours);
@@ -603,6 +631,23 @@ class PreviewRenderEngine {
                                     final int idx = Math.min(1023, Math.max(0, 512 + (int) (data * 512)));
                                     color = noisePalette[idx];
                                 }
+                                // Isolines go on before the terrain overlay: on
+                                // land they read as band boundaries; over water
+                                // the tint damps them instead of drawing
+                                // isotherms across open sea. Peaks & valleys
+                                // displays peaksAndValleys(raw), a nonlinear
+                                // transform, so bands of the raw weirdness would
+                                // not line up with the colours; that mode gets
+                                // no isolines rather than misplaced ones.
+                                if (isolineBands > 0
+                                        && renderSettings.mode != RenderSettings.RenderMode.NOISE_PEAKS_AND_VALLEYS) {
+                                    color = applyIsolines(color, r.dataSection(), x, z,
+                                            quartStride, r.accessData(), isolineBands);
+                                }
+                                if (noiseOverlay && r.heightSection() != null) {
+                                    color = applyNoiseOverlay(color, r.heightSection(), x, z,
+                                            quartStride, r.accessData(), overlaySeaLevel);
+                                }
                             }
                         }
                         default -> {
@@ -643,6 +688,89 @@ class PreviewRenderEngine {
             applyHeightmapPostProcessing(quartExpand, texWidth, texHeight);
         }
 
+    }
+
+    /**
+     * Applies the semantic terrain overlay to one noise-view sample.
+     * <p>
+     * Neighbour heights are only consulted inside the current section's
+     * access window; across a section border the comparison is skipped rather
+     * than reading a section this frame did not load. A {@code Short.MIN_VALUE}
+     * neighbour means "not sampled yet" and never counts as land, so the
+     * progressive fill does not draw a false coastline at the sampling frontier.
+     * <p>
+     * The four diagonal samples are only taken for water columns: they feed the
+     * coast-line guard, which is the only consumer, while land relief shading
+     * reads the orthogonal axes alone. Skipping them on land removes four
+     * storage lookups from the majority of samples.
+     * </p>
+     */
+    private static int applyNoiseOverlay(int color, PreviewSection heights, int x, int z,
+                                         int quartStride, PreviewSection.AccessData access, int seaLevel) {
+        final int height = heights.get(x, z);
+        if (height == NoiseTerrainOverlay.UNKNOWN_HEIGHT) {
+            return color;
+        }
+        final boolean eastIn = x + quartStride < access.maxX();
+        final boolean westIn = x - quartStride >= access.minX();
+        final boolean southIn = z + quartStride < access.maxZ();
+        final boolean northIn = z - quartStride >= access.minZ();
+        final int east = eastIn
+                ? heights.get(x + quartStride, z)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        final int west = westIn
+                ? heights.get(x - quartStride, z)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        final int south = southIn
+                ? heights.get(x, z + quartStride)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        final int north = northIn
+                ? heights.get(x, z - quartStride)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        if (height >= seaLevel) {
+            // Land: relief shading only looks at the four orthogonal axes.
+            return NoiseTerrainOverlay.apply(color, height, east, west, south, north,
+                    NoiseTerrainOverlay.UNKNOWN_HEIGHT, NoiseTerrainOverlay.UNKNOWN_HEIGHT,
+                    NoiseTerrainOverlay.UNKNOWN_HEIGHT, NoiseTerrainOverlay.UNKNOWN_HEIGHT,
+                    seaLevel);
+        }
+        final int northEast = eastIn && northIn
+                ? heights.get(x + quartStride, z - quartStride)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        final int northWest = westIn && northIn
+                ? heights.get(x - quartStride, z - quartStride)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        final int southEast = eastIn && southIn
+                ? heights.get(x + quartStride, z + quartStride)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        final int southWest = westIn && southIn
+                ? heights.get(x - quartStride, z + quartStride)
+                : NoiseTerrainOverlay.UNKNOWN_HEIGHT;
+        return NoiseTerrainOverlay.apply(color, height, east, west, south, north,
+                northEast, northWest, southEast, southWest, seaLevel);
+    }
+
+    /**
+     * Applies the isoline overlay to one noise-view sample.
+     * <p>
+     * Same access-window rule as the terrain overlay: a neighbour outside the
+     * section this frame loaded, or one that has not been sampled yet, is
+     * treated as unknown and cannot produce a line.
+     * </p>
+     */
+    private static int applyIsolines(int color, PreviewSection data, int x, int z,
+                                     int quartStride, PreviewSection.AccessData access, int bands) {
+        final short value = data.get(x, z);
+        if (value == NoiseIsolines.UNKNOWN) {
+            return color;
+        }
+        final int east = x + quartStride < access.maxX()
+                ? data.get(x + quartStride, z)
+                : NoiseIsolines.UNKNOWN;
+        final int south = z + quartStride < access.maxZ()
+                ? data.get(x, z + quartStride)
+                : NoiseIsolines.UNKNOWN;
+        return NoiseIsolines.apply(color, value, east, south, bands);
     }
 
     private void applyHeightmapPostProcessing(int quartExpand, int texWidth, int texHeight) {

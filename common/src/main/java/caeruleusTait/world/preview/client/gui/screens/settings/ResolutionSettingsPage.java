@@ -63,22 +63,20 @@ public class ResolutionSettingsPage extends AbstractSettingsPage {
                      }
                      pc.previewDisplay().invalidateRenderCache();
                      if (RenderSettings.samplerStrideFor(previous)
-                             != RenderSettings.samplerStrideFor(val)) {
-                         // Only the 2/1 px levels change the sampling stride
-                         // (they skip quarts), which requires recreating the
-                         // sampler and storage sections.
-                         pc.workManager().cancel();
-                         pc.start();
-                         // This page's cancel+start already resumed/rebuilt the
-                         // preview: refresh the container's structural snapshot
-                         // so closing the settings screen does not trigger a
-                         // second full rebuild for the same change.
-                         pc.markStructuralRebuildApplied();
-                     } else {
+                             == RenderSettings.samplerStrideFor(val)) {
                          // Render-only rescale: reuse the sampled quarts, just
                          // re-queue the new field of view (same as the wheel).
                          pc.previewDisplay().applyIncrementalZoom();
                      }
+                     // A stride change (only the 2/1 px levels, which skip
+                     // quarts) deliberately does NOT rebuild here. This page
+                     // edits the screen's detached pending copy, so the live
+                     // settings still carry the old stride: any cancel+start
+                     // now would resample at the old density and be thrown
+                     // away the moment Done applies the pending value. Staying
+                     // suspended lets onSettingsClosed's structural diff see
+                     // the stride change and run exactly one rebuild, at the
+                     // new stride.
                  });
         pixelBtn.setTooltip(Tooltip.create(SETTINGS_SAMPLE_PIXELS_TITLE_2));
         widgets.add(pixelBtn);

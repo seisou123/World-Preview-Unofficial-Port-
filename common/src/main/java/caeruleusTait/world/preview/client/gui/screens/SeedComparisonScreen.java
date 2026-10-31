@@ -3,6 +3,7 @@ package caeruleusTait.world.preview.client.gui.screens;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchService;
 import caeruleusTait.world.preview.backend.analysis.SpawnAdvisor;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
+import caeruleusTait.world.preview.client.gui.ScoreColors;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import caeruleusTait.world.preview.domain.waypoint.WaypointStore;
 import net.minecraft.client.gui.GuiGraphics;
@@ -390,18 +391,7 @@ public final class SeedComparisonScreen extends Screen {
         graphics.drawString(font,
                 Component.literal(row.topBiome() + " §7" + String.format(Locale.ROOT, "%.1f%%", row.topBiomePercent()) + "§r"),
                 left + 240, y, 0xFFE0E4E8);
-        graphics.drawString(font, String.valueOf(row.spawnScore()), width - 78, y, scoreColor(row.spawnScore()));
-    }
-
-    /** Score coloring shared with the analysis panel: green >= 70, yellow >= 40, red below. */
-    private static int scoreColor(int score) {
-        if (score >= 70) {
-            return 0xFF55FF55;
-        }
-        if (score >= 40) {
-            return 0xFFFFFF55;
-        }
-        return 0xFFFF5555;
+        graphics.drawString(font, String.valueOf(row.spawnScore()), width - 78, y, ScoreColors.scoreColor(row.spawnScore()));
     }
 
     @Override

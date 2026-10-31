@@ -155,4 +155,51 @@ class PreviewStorageCacheKeyFlagsTest {
                 PreviewStorageCacheManager.configSamplingFlags(base),
                 PreviewStorageCacheManager.configSamplingFlags(touched));
     }
+
+    @Test
+    void terrainOverlayIsPartOfTheKey() {
+        // Regression: while noiseTerrainOverlay is on, HeightmapWorkUnit scans
+        // down to the noise grid floor instead of stopping at heightmapMinY.
+        // A cache written by the heightmap view (32..255) would otherwise be
+        // reused verbatim and the deep-ocean columns would stay unsampled.
+        WorldPreviewConfig off = cfg(32, 255, true, false, true);
+        WorldPreviewConfig on = cfg(32, 255, true, false, true);
+        on.noiseTerrainOverlay = true;
+
+        long offFlags = PreviewStorageCacheManager.configSamplingFlags(off);
+        long onFlags = PreviewStorageCacheManager.configSamplingFlags(on);
+
+        assertNotEquals(offFlags, onFlags, "the overlay widens the height scan, so it must change the key");
+        assertEquals(1L << 39, offFlags ^ onFlags, "the overlay must toggle exactly bit 39");
+        assertEquals(0L, offFlags & (1L << 39), "bit 39 stays clear for pre-existing caches");
+    }
+
+    @Test
+    void overlayFlagDoesNotDisturbTheOtherFields() {
+        // Turning the overlay on must not be able to impersonate any other
+        // sampling-config combination: the key with bit 39 set must be new.
+        WorldPreviewConfig on = cfg(32, 255, true, false, true);
+        on.noiseTerrainOverlay = true;
+        long withOverlay = PreviewStorageCacheManager.configSamplingFlags(on);
+
+        final int[] mins = {-64, 0, 32, 200};
+        final int[] maxs = {255, 512};
+        for (int min : mins) {
+            for (int max : maxs) {
+                for (boolean onlyVisual : new boolean[] {false, true}) {
+                    for (boolean storeNoise : new boolean[] {false, true}) {
+                        for (boolean compression : new boolean[] {false, true}) {
+                            assertNotEquals(withOverlay,
+                                    PreviewStorageCacheManager.configSamplingFlags(
+                                            cfg(min, max, onlyVisual, storeNoise, compression)),
+                                    "overlay-on key collided with overlay-off config min=" + min
+                                            + " max=" + max + " onlyVisual=" + onlyVisual
+                                            + " storeNoise=" + storeNoise
+                                            + " compression=" + compression);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

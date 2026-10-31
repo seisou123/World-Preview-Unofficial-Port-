@@ -30,9 +30,11 @@ import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.dimension.LevelStem;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.WorldOptions;
 import org.jetbrains.annotations.Nullable;
 
@@ -1130,8 +1132,11 @@ public class WorkManager {
             units += queueForLevel(chunks, 0, 256, PreviewStorage.FLAG_STRUCT_START, (pos, y) -> new StructStartWorkUnit(this, sampleUtils, pos, previewData));
         }
 
-        // Height map
-        if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null && !deferDetailLayers) {
+        // Height map. Also sampled when the noise-view terrain overlay is on:
+        // the overlay needs the surface height of every visible column even if
+        // the user never opened the heightmap view.
+        final boolean wantHeightLayer = config.sampleHeightmap || config.noiseTerrainOverlay;
+        if (wantHeightLayer && heightmapSupported && shouldContinueQueuing(epochSnapshot) && sampleUtils.noiseGeneratorSettings() != null && !deferDetailLayers) {
             LongSet queuedChunks = new LongOpenHashSet(chunks.size());
             List<ChunkPos> heightMapChunks = new ArrayList<>(chunks.size());
             final int sectionSizeExponent = PreviewSection.SHIFT - PreviewSection.QUART_TO_SECTION_SHIFT;
@@ -1146,7 +1151,7 @@ public class WorkManager {
                 final SamplingTier tier = samplingTier;
                 return bindTier(new HeightmapWorkUnit(this, tier.sampler(), sampleUtils, pos, numChunks, previewData), tier);
             });
-        } else if (config.sampleHeightmap && heightmapSupported && shouldContinueQueuing(epochSnapshot) && !deferDetailLayers) {
+        } else if (wantHeightLayer && heightmapSupported && shouldContinueQueuing(epochSnapshot) && !deferDetailLayers) {
             units += queueForLevel(chunks, 0, 64, PreviewStorage.FLAG_HEIGHT, (pos, y) -> {
                 final SamplingTier tier = samplingTier;
                 return bindTier(new SlowHeightmapWorkUnit(this, tier.sampler(), sampleUtils, pos, previewData), tier);
@@ -1185,13 +1190,6 @@ public class WorkManager {
                 units += queueForLevel(chunks, y, 4096, PreviewStorage.FLAG_BIOME, this::workUnitFactory);
             }
         }
-
-        /* Compression debug code
-        if (units == 0) {
-            List<Short> x = previewStorage.compressionStatistics();
-            LOGGER.info("Compression statistics: {}", Arrays.toString(x.toArray()));
-        }
-         */
 
         final Instant end = Instant.now();
         // currentBatches holds retained in-flight batches from previous passes
@@ -1510,6 +1508,32 @@ public class WorkManager {
 
     public int yMax() {
         return yMin() + (dimensionType == null ? 256 : dimensionType.height());
+    }
+
+    /**
+     * Sea level of the current dimension, used by the noise-view terrain
+     * overlay to classify water columns. Falls back to the vanilla overworld
+     * default for the window before worldgen setup completes.
+     */
+    public int seaLevel() {
+        return chunkGenerator != null ? chunkGenerator.getSeaLevel() : 63;
+    }
+
+    /**
+     * Whether the current dimension's worldgen fluid is water.
+     * <p>
+     * The terrain overlay classifies "below sea level" as water, which only
+     * holds where the dimension actually fills its basins with water. The
+     * Nether's default fluid is lava and its sea level is 32, so without this
+     * check every nether column whose surface sits below y=32 would be tinted
+     * as an ocean and outlined along the y=32 height contour; the End reports
+     * sea level 0 and would tint its void floor.
+     * </p>
+     */
+    public boolean hasWaterSea() {
+        final SampleUtils utils = sampleUtils;
+        final NoiseGeneratorSettings settings = utils == null ? null : utils.noiseGeneratorSettings();
+        return settings == null || settings.defaultFluid().is(Blocks.WATER);
     }
 
     public PreviewStorage previewStorage() {
