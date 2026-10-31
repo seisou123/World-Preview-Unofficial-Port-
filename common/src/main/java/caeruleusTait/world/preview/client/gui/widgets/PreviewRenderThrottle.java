@@ -40,6 +40,9 @@ final class PreviewRenderThrottle {
      */
     private static final long ZOOM_RENDER_COALESCE_NANOS = 33_333_333L; // ~30 fps ceiling
 
+    /** Minimum spacing between heavy-render summary log lines (10s). */
+    private static final long HEAVY_LOG_INTERVAL_NANOS = 10_000_000_000L;
+
     // --- Lightweight frame-time tracking (no boxing, no allocation) ---
     private long lastFrameNanos = 0;
     private double frameTimeEmaMs = 0; // EMA of frame time in milliseconds
@@ -133,6 +136,120 @@ final class PreviewRenderThrottle {
     /** Called when a click starts so the first drag frame renders immediately. */
     void touchDragRenderTimer() {
         lastDragRenderNanos = System.nanoTime();
+    }
+
+    // --- Heavy-render instrumentation (L1) ---
+    // The heavy path (generateRenderData + updateTexture + uploadMainTexture) is
+    // the dominant render cost, but nothing recorded how often it ran or how
+    // long it took, so every performance question about it was unanswerable.
+    // Counters are plain longs and the per-frame work is a nanoTime pair: no
+    // boxing, no allocation, so leaving them always-on costs nothing measurable.
+    private long heavyCount = 0;
+    private long heavyTotalNanos = 0;
+    private long heavyMaxNanos = 0;
+    private long heavyDragCount = 0;
+    private long heavyDragTotalNanos = 0;
+    private long heavyLastNanos = 0;
+    /** Wall-clock of the last emitted summary, for throttled logging. */
+    private long heavyLogLastNanos = 0;
+
+    /**
+     * Marks the start of a heavy render pass.  Returns the start timestamp to
+     * hand back to {@link #recordHeavyRender}, so the caller does not take a
+     * second nanoTime reading.
+     */
+    long beginHeavyRender() {
+        final long now = System.nanoTime();
+        heavyLastNanos = now;
+        return now;
+    }
+
+    /**
+     * Records a completed heavy render pass.  {@code dragging} splits the
+     * buckets: drag-time renders are the ones users actually feel, and mixing
+     * them with idle renders hides which is which.
+     *
+     * @return true when a throttled log line is due, so the caller can flush it
+     */
+    boolean recordHeavyRender(long startNanos, boolean dragging) {
+        final long elapsed = System.nanoTime() - startNanos;
+        heavyCount++;
+        heavyTotalNanos += elapsed;
+        if (elapsed > heavyMaxNanos) {
+            heavyMaxNanos = elapsed;
+        }
+        if (dragging) {
+            heavyDragCount++;
+            heavyDragTotalNanos += elapsed;
+        }
+        heavyLastNanos = 0;
+        return heavyLogDue(System.nanoTime());
+    }
+
+    /**
+     * Throttled-log gate.  Logging on every heavy render would flood the log
+     * (renders run up to ~30/s), so a line is due at most every 10s and only
+     * while renders are actually happening.
+     */
+    private boolean heavyLogDue(long now) {
+        if (heavyLogLastNanos == 0) {
+            heavyLogLastNanos = now;
+            return false;
+        }
+        if (now - heavyLogLastNanos < HEAVY_LOG_INTERVAL_NANOS) {
+            return false;
+        }
+        heavyLogLastNanos = now;
+        return true;
+    }
+
+    /**
+     * One-line heavy-render summary for the log, or {@code null} when nothing
+     * has been recorded yet.  Deliberately built only when a log line is
+     * actually due, never per frame.
+     */
+    String heavyRenderSummary() {
+        if (heavyCount == 0) {
+            return null;
+        }
+        final double avgMs = heavyTotalNanos / (double) heavyCount / 1_000_000.0;
+        final double maxMs = heavyMaxNanos / 1_000_000.0;
+        final StringBuilder sb = new StringBuilder(96);
+        sb.append("heavy render: ").append(heavyCount).append(" runs, avg ")
+                .append(String.format(java.util.Locale.ROOT, "%.2f", avgMs)).append("ms, max ")
+                .append(String.format(java.util.Locale.ROOT, "%.2f", maxMs)).append("ms");
+        if (heavyDragCount > 0) {
+            sb.append(" (drag: ").append(heavyDragCount).append(" runs, avg ")
+                    .append(String.format(java.util.Locale.ROOT, "%.2f",
+                            heavyDragTotalNanos / (double) heavyDragCount / 1_000_000.0))
+                    .append("ms)");
+        }
+        return sb.toString();
+    }
+
+    /** Frames per second derived from the frame-time EMA, for the HUD readout. */
+    double frameRate() {
+        return frameTimeEmaMs <= 0 ? 0 : 1000.0 / frameTimeEmaMs;
+    }
+
+    /** Mean heavy-render cost in milliseconds, or 0 when none recorded. */
+    double heavyAverageMs() {
+        return heavyCount == 0 ? 0 : heavyTotalNanos / (double) heavyCount / 1_000_000.0;
+    }
+
+    /** Slowest heavy render seen since the last {@link #invalidateAll()}, in ms. */
+    double heavyMaxMs() {
+        return heavyMaxNanos / 1_000_000.0;
+    }
+
+    /** Heavy renders recorded since the last {@link #invalidateAll()}. */
+    long heavyRunCount() {
+        return heavyCount;
+    }
+
+    /** True while a heavy pass is in flight (start recorded, end not yet). */
+    boolean heavyRenderInFlight() {
+        return heavyLastNanos != 0;
     }
 
     void resetDragTimers() {
@@ -282,6 +399,15 @@ final class PreviewRenderThrottle {
         // A full invalidation (new world config / reused display) overrides
         // any pending zoom window: the forced render must not be deferred.
         zoomCoalescePending = false;
+        // Heavy-render stats describe one world configuration; carrying them
+        // across a config change would blend two incomparable populations.
+        heavyCount = 0;
+        heavyTotalNanos = 0;
+        heavyMaxNanos = 0;
+        heavyDragCount = 0;
+        heavyDragTotalNanos = 0;
+        heavyLastNanos = 0;
+        heavyLogLastNanos = 0;
     }
 
     /**

@@ -1,7 +1,6 @@
 package caeruleusTait.world.preview.backend.export;
 
 import caeruleusTait.world.preview.backend.terrain.ContourRenderer;
-import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.biome.Biome;
 import org.jetbrains.annotations.Nullable;
@@ -42,11 +41,11 @@ import static caeruleusTait.world.preview.WorldPreview.LOGGER;
  * <p>
  * Unlike TFC's stripe-based parallel sampling, this uses a tile-based parallel strategy:
  * The export image is split into square tiles, each sampled and classified by a worker thread,
- * and the main thread writes tile results to {@link NativeImage} in completion order.
+ * and the main thread assembles tile results in completion order.
  * </p>
  * <p>
  * Unlike TFC's custom BinaryIndexedPngWriter (1-bit indexed PNG),
- * this uses Minecraft's built-in NativeImage API to output full-color RGB PNG.
+ * this writes full-color PNG through the pure-Java {@link PngWriter}.
  * </p>
  */
 public final class TerrainMapExporter {
@@ -60,7 +59,12 @@ public final class TerrainMapExporter {
     private final int workerThreads;
 
     public TerrainMapExporter(int workerThreads) {
-        this.workerThreads = Math.clamp(workerThreads, 1, 8);
+        // The pool is sized by the configured preview thread count; the only
+        // ceiling that matters is the machine itself. The previous fixed cap
+        // of 8 left the extra cores of larger hosts idle for minutes-long
+        // exports.
+        this.workerThreads = Math.clamp(workerThreads, 1,
+                Math.max(1, Runtime.getRuntime().availableProcessors()));
     }
 
     /**
@@ -73,6 +77,36 @@ public final class TerrainMapExporter {
     @FunctionalInterface
     public interface HeightProbe {
         @Nullable Integer heightAt(int blockX, int blockZ) throws Exception;
+    }
+
+    /**
+     * A height probe that can fill a whole pixel grid at once.
+     * <p>
+     * Worldgen height sampling works on the noise chunk's cell lattice, not on
+     * isolated points: the expensive part is advancing the interpolator through
+     * the Y column, which serves every column of a cell at once. A per-pixel
+     * probe would therefore pay that cost once per pixel. Implementations of
+     * this interface receive the export tile as a grid and can batch the work
+     * by chunk, which is what makes live sampling viable for a full-size export.
+     * <p>
+     * Implementations must leave a cell untouched (never write to {@code out})
+     * when they cannot determine its height, so the caller can fall back to the
+     * estimate for exactly those pixels.
+     */
+    public interface BatchHeightProbe extends HeightProbe {
+        /**
+         * Fills the heights of a block-space grid.
+         *
+         * @param originX block X of the first grid cell
+         * @param originZ block Z of the first grid cell
+         * @param step    block distance between neighbouring grid cells
+         * @param width   grid width in cells
+         * @param height  grid height in cells
+         * @param out     {@code width * height} block-Y values, row-major, pre-filled with
+         *                {@link Integer#MIN_VALUE} for "unknown"
+         */
+        void fillGrid(int originX, int originZ, int step, int width, int height, int[] out,
+                      BooleanSupplier cancelled) throws Exception;
     }
 
     /** Lineage info written into the export metadata (world identity). */
@@ -89,6 +123,19 @@ public final class TerrainMapExporter {
     public interface BiomeIdProbe {
         /** Storage hit returns the biome id; unsampled or guarded returns null. */
         @Nullable Short biomeIdAt(int blockX, int blockZ) throws Exception;
+
+        /**
+         * Bulk variant of {@link #biomeIdAt}: fills {@code out} (row-major,
+         * {@code width * height} grid cells, pre-filled with -1) with the
+         * storage biome id of every cell the probe can answer, leaving -1
+         * where the per-pixel probe would answer null. Batches the storage
+         * locking per layer instead of acquiring it per cell. Returns false
+         * when unsupported; the exporter then stays on the per-pixel probe.
+         */
+        default boolean biomeIdBand(int minBlockX, int minBlockZ, int step, int width, int height,
+                                    short[] out, BooleanSupplier cancelled) throws Exception {
+            return false;
+        }
     }
 
     /**
@@ -145,6 +192,9 @@ public final class TerrainMapExporter {
      * otherwise agnostic of whether it paints terrain categories or biomes.
      */
     public interface TerrainColorSource {
+        /** Sentinel in the packed estimate slot: the source cannot supply a height estimate. */
+        int NO_ESTIMATE = 0xFFFF;
+
         /**
          * Color for a storage biome id (fast path). Only called for ids the
          * facts resolver knows, so the resolver guard and the color table
@@ -173,6 +223,45 @@ public final class TerrainMapExporter {
 
         /** Writes the pixel-count statistics and the color legend into the export metadata. */
         void writeLegend(JsonObject metadata, long[] statCounts);
+
+        /**
+         * One lookup for a freshly sampled holder: ARGB color in bits 63..32,
+         * statistics bucket in bits 31..16 (signed; -1 skips the pixel) and
+         * estimated world Y in bits 15..0 (unsigned; {@link #NO_ESTIMATE}
+         * when unknown). Implementations override this so a pixel that needs
+         * color, bucket and height estimate classifies once instead of once
+         * per accessor.
+         */
+        default long resolveHolder(@Nullable Holder<Biome> holder) {
+            int estimate = holder == null ? 0
+                    : TerrainClassifier.categoryHeight(TerrainClassifier.classify(holder));
+            return pack(colorForHolder(holder), bucketForHolder(holder), estimate);
+        }
+
+        /** One lookup for a storage biome id (fast path), same packing as {@link #resolveHolder}. */
+        default long resolveId(short id) {
+            return pack(colorForId(id), bucketForId(id), NO_ESTIMATE);
+        }
+
+        /** Packs the fused style triple; see {@link #resolveHolder}. */
+        static long pack(int argb, int bucket, int estimatedHeight) {
+            return ((long) argb << 32) | ((bucket & 0xFFFFL) << 16) | (estimatedHeight & 0xFFFFL);
+        }
+
+        /** ARGB color slot of a packed style; see {@link #resolveHolder}. */
+        static int argbOf(long style) {
+            return (int) (style >>> 32);
+        }
+
+        /** Statistics bucket slot of a packed style; -1 keeps its sign. */
+        static int bucketOf(long style) {
+            return (short) (style >>> 16);
+        }
+
+        /** Estimated-height slot of a packed style; {@link #NO_ESTIMATE} when unknown. */
+        static int estimatedHeightOf(long style) {
+            return (int) (style & 0xFFFF);
+        }
     }
 
     /** Category mode: the historical nine-category coloring over the facts resolver. */
@@ -195,6 +284,27 @@ public final class TerrainMapExporter {
         @Override
         public int bucketForHolder(@Nullable Holder<Biome> holder) {
             return TerrainClassifier.classify(holder).ordinal();
+        }
+
+        @Override
+        public long resolveHolder(@Nullable Holder<Biome> holder) {
+            if (holder == null) {
+                // estimateHeight(null) has always been 0, not UNKNOWN's 70.
+                return TerrainColorSource.pack(TerrainCategory.UNKNOWN.argbColor(), TerrainCategory.UNKNOWN.ordinal(), 0);
+            }
+            TerrainCategory category = TerrainClassifier.classify(holder);
+            return TerrainColorSource.pack(category.argbColor(), category.ordinal(),
+                    TerrainClassifier.categoryHeight(category));
+        }
+
+        @Override
+        public long resolveId(short id) {
+            if (resolver != null) {
+                return TerrainColorSource.pack(resolver.category(id).argbColor(), resolver.category(id).ordinal(),
+                        resolver.estimatedHeight(id));
+            }
+            return TerrainColorSource.pack(TerrainCategory.UNKNOWN.argbColor(), TerrainCategory.UNKNOWN.ordinal(),
+                    TerrainClassifier.categoryHeight(TerrainCategory.UNKNOWN));
         }
 
         @Override
@@ -268,6 +378,23 @@ public final class TerrainMapExporter {
         @Override
         public int bucketForHolder(@Nullable Holder<Biome> holder) {
             return idForHolder(holder);
+        }
+
+        @Override
+        public long resolveHolder(@Nullable Holder<Biome> holder) {
+            short id = idForHolder(holder);
+            int argb = id >= 0 ? colorById[id] : TerrainCategory.UNKNOWN.argbColor();
+            int estimate = holder == null ? 0
+                    : TerrainClassifier.categoryHeight(TerrainClassifier.classify(holder));
+            return TerrainColorSource.pack(argb, id, estimate);
+        }
+
+        @Override
+        public long resolveId(short id) {
+            // The facts resolver owns the height estimates on this path; the
+            // color table does not carry them.
+            return TerrainColorSource.pack(knownColor(id) ? colorById[id] : TerrainCategory.UNKNOWN.argbColor(),
+                    id, NO_ESTIMATE);
         }
 
         @Override
@@ -404,6 +531,11 @@ public final class TerrainMapExporter {
             heightPath = outputDir.resolve(heightName);
             heightPart = heightPath.resolveSibling(heightName + ".part");
         }
+        // Colors never depend on heights, so when neither the contour overlay
+        // nor the heightmap consumes the height field the whole height channel
+        // -- per-tile arrays, the batch probe sweep, the per-pixel probe
+        // ladder -- is skipped and the metadata says so.
+        final boolean heightsRequested = spec.exportContours() || spec.exportHeightmap();
         AtomicBoolean stopping = new AtomicBoolean();
         BooleanSupplier taskCancelled = () -> stopping.get() || cancelled.getAsBoolean();
         ExecutorService workers = Executors.newFixedThreadPool(workerThreads, new ExportThreadFactory());
@@ -412,8 +544,7 @@ public final class TerrainMapExporter {
         boolean complete = false;
         try {
             int[] colors = new int[width * height];
-            short[] heights = spec.exportContours() || spec.exportHeightmap()
-                    ? new short[width * height] : null;
+            short[] heights = heightsRequested ? new short[width * height] : null;
             int columns = (width + TILE_SIZE - 1) / TILE_SIZE;
             int totalTiles = columns * ((height + TILE_SIZE - 1) / TILE_SIZE);
             int submitted = 0;
@@ -428,7 +559,7 @@ public final class TerrainMapExporter {
                     TileTask task = new TileTask(tx, ty, Math.min(TILE_SIZE, width - tx),
                             Math.min(TILE_SIZE, height - ty));
                     inFlight.add(completions.submit(() -> sampleTile(task, spec, sampler, colorSource,
-                            heightProbe, biomeFacts, yMin, ySpan, taskCancelled, progress)));
+                            heightProbe, biomeFacts, heightsRequested, yMin, ySpan, taskCancelled, progress)));
                     submitted++;
                 }
                 Future<TileResult> ready;
@@ -456,42 +587,43 @@ public final class TerrainMapExporter {
             }
             checkCancelled(cancelled);
             if (heights != null) {
-                overlayContours(heights, colors, width, height, spec.contourInterval(), cancelled);
+                if (spec.heightSampleStride() > 1) {
+                    // Interpolated heights: render onto a copy and keep only
+                    // contour components that connect into larger structures.
+                    // Sampling every stride-th pixel and interpolating turns
+                    // node-scale terrain oscillation into per-cell bumps, and
+                    // every bump straddling a contour level renders as an
+                    // isolated ring or cross locked to the stride lattice --
+                    // on near-flat terrain a regular field of dots covering
+                    // whole oceans. The bumps are the interpolation's shape,
+                    // not quantization noise, so no amount of smoothing or
+                    // level shifting removes them; dropping the small
+                    // disconnected components does, and everything that ties
+                    // into the real contour network survives.
+                    int[] contoured = colors.clone();
+                    overlayContours(heights, contoured, width, height, spec.contourInterval(), cancelled);
+                    copyLargeContourComponents(contoured, colors, width, height, 64, cancelled);
+                } else {
+                    overlayContours(heights, colors, width, height, spec.contourInterval(), cancelled);
+                }
             }
             if (spec.gridIntervalBlocks() > 0) {
                 drawGridOverlay(colors, spec, width, height, cancelled);
             }
             checkCancelled(cancelled);
-            try (NativeImage image = new NativeImage(NativeImage.Format.RGBA, width, height, false)) {
-                for (int y = 0; y < height; y++) {
-                    checkCancelled(cancelled);
-                    fillRowRuns(image, colors, y * width, 0, y, width, width);
-                }
-                checkCancelled(cancelled);
-                // Native PNG encoding cannot be interrupted; cancellation is checked immediately after it.
-                image.writeToFile(partPath.toFile());
-            }
+            // Pure-Java encoder: palette for the nine category colors, truecolor
+            // otherwise, cancellable between rows (the native encode was
+            // uninterruptible for the whole file).
+            PngWriter.writeArgb(partPath, colors, width, height, cancelled);
             if (writeHeightmap) {
+                checkCancelled(cancelled);
                 // Grayscale height field from the same offsets the contour
-                // overlay consumes; run-merged like the color rows. R=G=B, so
-                // the ABGR/ARGB sink difference is a no-op for these pixels.
-                try (NativeImage gray = new NativeImage(NativeImage.Format.RGBA, width, height, false)) {
-                    int[] row = new int[width];
-                    for (int y = 0; y < height; y++) {
-                        checkCancelled(cancelled);
-                        for (int x = 0; x < width; x++) {
-                            int g = grayForOffset(heights[y * width + x], ySpan);
-                            row[x] = 0xFF000000 | (g << 16) | (g << 8) | g;
-                        }
-                        fillRowRuns(gray, row, 0, 0, y, width, width);
-                    }
-                    checkCancelled(cancelled);
-                    gray.writeToFile(heightPart.toFile());
-                }
+                // overlay consumes, written straight from the short field.
+                PngWriter.writeGray(heightPart, heights, ySpan, width, height, cancelled);
             }
             checkCancelled(cancelled);
             Files.writeString(metaPart, buildMetadata(spec, width, height, timestamp,
-                    heightProbe != null, realHeightPixels, exportContext, yMin, ySpan,
+                    heightsRequested, heightProbe != null, realHeightPixels, exportContext, yMin, ySpan,
                     writeHeightmap ? heightPath.getFileName().toString() : null, colorSource, statCounts));
             checkCancelled(cancelled);
             moveCompleteFile(partPath, pngPath);
@@ -532,23 +664,82 @@ public final class TerrainMapExporter {
         }
     }
 
-    /** Render overlapping two-row strips, retaining the global minor-then-major pass order. */
+    /**
+     * Contour overlay: one full-image render per level, minor first then
+     * major. Byte-identical to the former two-row strip implementation: a
+     * strip's bottom row was always recomputed as the next strip's top row,
+     * so only the top-row writes survived -- exactly what the full-image
+     * render produces -- and the strips' per-row copies are gone.
+     */
     static void overlayContours(short[] heights, int[] colors, int width, int height,
                                 int interval, BooleanSupplier cancelled) {
-        short[] stripHeights = new short[width * 2];
-        int[] stripColors = new int[width * 2];
         int[] intervals = {Math.max(1, interval / 5), interval};
         int[] lineColors = {0x608B6914, 0xC08B4513};
         for (int pass = 0; pass < intervals.length; pass++) {
+            checkCancelled(cancelled);
             // Blending treats each channel identically, so the renderer also accepts ARGB buffers.
             ContourRenderer renderer = new ContourRenderer(intervals[pass], false,
                     lineColors[pass], lineColors[pass]);
-            for (int y = 0; y < height - 1; y++) {
+            renderer.render(heights, colors, width, height);
+        }
+    }
+
+    /**
+     * Copies from {@code contoured} back into {@code target} only the pixels
+     * of 8-connected contour components larger than {@code maxPixels}.
+     * {@code target} holds the pre-contour colors, so a pixel differs between
+     * the two exactly where the overlay drew. Small isolated components --
+     * the interpolation rings and crosses of the stride modes -- are dropped;
+     * anything tied into the larger contour network is kept. Cancellation is
+     * checked per row of the component scan.
+     */
+    static void copyLargeContourComponents(int[] contoured, int[] target, int width, int height,
+                                           int maxPixels, BooleanSupplier cancelled) {
+        final int size = width * height;
+        boolean[] drawn = new boolean[size];
+        for (int i = 0; i < size; i++) {
+            drawn[i] = contoured[i] != target[i];
+        }
+        boolean[] seen = new boolean[size];
+        java.util.ArrayDeque<Integer> queue = new java.util.ArrayDeque<>();
+        java.util.ArrayList<Integer> members = new java.util.ArrayList<>();
+        for (int start = 0; start < size; start++) {
+            if (seen[start] || !drawn[start]) {
+                continue;
+            }
+            queue.add(start);
+            seen[start] = true;
+            members.clear();
+            while (!queue.isEmpty()) {
+                int idx = queue.poll();
+                members.add(idx);
+                int x = idx % width;
+                int y = idx / width;
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= height) {
+                        continue;
+                    }
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= width) {
+                            continue;
+                        }
+                        int n = ny * width + nx;
+                        if (!seen[n] && drawn[n]) {
+                            seen[n] = true;
+                            queue.add(n);
+                        }
+                    }
+                }
+            }
+            if (members.size() > maxPixels) {
+                for (int i = 0; i < members.size(); i++) {
+                    target[members.get(i)] = contoured[members.get(i)];
+                }
+            }
+            if ((start & 0xFFFF) == 0) {
                 checkCancelled(cancelled);
-                System.arraycopy(heights, y * width, stripHeights, 0, stripHeights.length);
-                System.arraycopy(colors, y * width, stripColors, 0, stripColors.length);
-                renderer.render(stripHeights, stripColors, width, 2);
-                System.arraycopy(stripColors, 0, colors, y * width, stripColors.length);
             }
         }
     }
@@ -560,24 +751,103 @@ public final class TerrainMapExporter {
             TerrainColorSource colorSource,
             @Nullable HeightProbe heightProbe,
             @Nullable BiomeFacts biomeFacts,
+            boolean heightsRequested,
             int yMin,
             int ySpan,
             BooleanSupplier cancelled,
             LongConsumer progress
     ) {
         int[] pixels = new int[task.tileWidth * task.tileHeight];
-        short[] heights = new short[task.tileWidth * task.tileHeight];
+        short[] heights = heightsRequested ? new short[task.tileWidth * task.tileHeight] : null;
         int realHeightCount = 0;
         long[] statCounts = new long[colorSource.bucketCount()];
         int minBlockX = spec.minBlockX();
         int minBlockZ = spec.minBlockZ();
         int bpp = spec.blocksPerPixel();
+        final int tileMinBlockX = minBlockX + task.startX * bpp;
+        final int tileMinBlockZ = minBlockZ + task.startY * bpp;
+
+        // Per-tile quart memo (bpp < 4 only): with fewer than four blocks per
+        // pixel, neighbouring pixels share a quart column and the sampler
+        // would answer them identically, so one lookup serves the whole
+        // 4x4 block square. Tile origins are TILE_SIZE * bpp blocks apart --
+        // a multiple of four -- so a quart cell never straddles a tile
+        // boundary, and every piece of state is thread-confined. Opt-in
+        // through the QuartBiomeSampler marker: a sampler without the quart
+        // contract stays exactly per-pixel. Indices are relative to the
+        // tile's own first block, so off-grid export origins only shift the
+        // base, never the cell count.
+        final boolean memoQuarts = bpp < 4 && sampler instanceof QuartBiomeSampler;
+        final int quartBaseX = tileMinBlockX >> 2;
+        final int quartBaseZ = tileMinBlockZ >> 2;
+        // Offset-aware cell count: (tileMinBlockX & 3) can add one column at the right edge.
+        final int quartCols = memoQuarts ? (((task.tileWidth - 1) * bpp + (tileMinBlockX & 3)) >> 2) + 1 : 1;
+        final int quartRows = memoQuarts ? (((task.tileHeight - 1) * bpp + (tileMinBlockZ & 3)) >> 2) + 1 : 1;
+        final QuartMemo quartMemo = memoQuarts ? new QuartMemo(quartCols * quartRows) : null;
+        // Fused-style memo: biome holders are canonical, so an identity probe
+        // resolves each distinct holder (color+bucket+estimate) once per tile.
+        final StyleMemo styleMemo = new StyleMemo();
+
+        // Batch height pass: a cell-lattice sampler can answer the whole tile in
+        // one sweep, so ask it once per tile instead of once per pixel. Falls
+        // back to the per-pixel probe (and then to the estimate) when the batch
+        // sampler is absent or declines. Never invoked when no consumer reads
+        // the height field. With heightSampleStride > 1 the sweep covers a
+        // coarse grid (every stride-th pixel) and the per-pixel heights are
+        // interpolated from it -- an explicit quality/speed dial, so only the
+        // exact grid nodes count as real heights in the metadata.
+        final int stride = heightsRequested ? Math.max(1, spec.heightSampleStride()) : 1;
+        final int gridWidth = (task.tileWidth + stride - 1) / stride;
+        final int gridHeight = (task.tileHeight + stride - 1) / stride;
+        int[] batchHeights = null;
+        if (heightsRequested && heightProbe instanceof BatchHeightProbe batch) {
+            int[] filled = new int[gridWidth * gridHeight];
+            java.util.Arrays.fill(filled, Integer.MIN_VALUE);
+            try {
+                batch.fillGrid(tileMinBlockX, tileMinBlockZ, bpp * stride,
+                        gridWidth, gridHeight, filled, cancelled);
+                batchHeights = filled;
+            } catch (CancellationException e) {
+                throw e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new CancellationException("Terrain export interrupted");
+            } catch (Exception e) {
+                // A batch failure must not fail the export: drop to the
+                // per-pixel probe and let the estimate cover the rest.
+                batchHeights = null;
+            }
+        }
+
+        // Storage fast-path band: one bulk query per tile instead of one probe
+        // call per pixel; -1 cells fall back to the per-pixel probe, so the
+        // hit/miss semantics stay exactly the per-pixel probe's.
+        short[] storedBand = null;
+        if (biomeFacts != null) {
+            short[] band = new short[task.tileWidth * task.tileHeight];
+            java.util.Arrays.fill(band, (short) -1);
+            try {
+                if (biomeFacts.probe().biomeIdBand(tileMinBlockX, tileMinBlockZ, bpp,
+                        task.tileWidth, task.tileHeight, band, cancelled)) {
+                    storedBand = band;
+                }
+            } catch (CancellationException e) {
+                throw e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new CancellationException("Terrain export interrupted");
+            } catch (Exception e) {
+                // A bulk failure must not fail the export: per-pixel probes cover it.
+                storedBand = null;
+            }
+        }
 
         for (int row = 0; row < task.tileHeight; row++) {
             checkCancelled(cancelled);
             int pixelZ = task.startY + row;
             int blockZ = minBlockZ + pixelZ * bpp;
             int rowOffset = row * task.tileWidth;
+            final int quartRowBase = memoQuarts ? ((blockZ >> 2) - quartBaseZ) * quartCols : 0;
 
             for (int col = 0; col < task.tileWidth; col++) {
                 int pixelX = task.startX + col;
@@ -587,16 +857,22 @@ public final class TerrainMapExporter {
                 // Probed before the biome lookup so the storage fast path below
                 // can still honor real heights.
                 Integer realHeight = null;
-                if (heightProbe != null) {
-                    try {
-                        realHeight = heightProbe.heightAt(blockX, blockZ);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new CancellationException("Terrain export interrupted");
-                    } catch (CancellationException e) {
-                        throw e;
-                    } catch (Exception ignored) {
-                        realHeight = null;
+                if (heightsRequested) {
+                    if (batchHeights != null) {
+                        realHeight = stride == 1
+                                ? orUnknown(batchHeights[rowOffset + col])
+                                : interpolateCoarse(batchHeights, gridWidth, gridHeight, stride, col, row);
+                    } else if (heightProbe != null) {
+                        try {
+                            realHeight = heightProbe.heightAt(blockX, blockZ);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new CancellationException("Terrain export interrupted");
+                        } catch (CancellationException e) {
+                            throw e;
+                        } catch (Exception ignored) {
+                            realHeight = null;
+                        }
                     }
                 }
 
@@ -608,26 +884,46 @@ public final class TerrainMapExporter {
                 // in the metadata, matching the estimate fallback below.
                 if (biomeFacts != null) {
                     Short stored = null;
-                    try {
-                        stored = biomeFacts.probe().biomeIdAt(blockX, blockZ);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new CancellationException("Terrain export interrupted");
-                    } catch (CancellationException e) {
-                        throw e;
-                    } catch (Exception ignored) {
-                        stored = null;
+                    if (storedBand != null) {
+                        final short banded = storedBand[rowOffset + col];
+                        if (banded >= 0) {
+                            stored = banded;
+                        }
+                    }
+                    if (stored == null) {
+                        try {
+                            stored = biomeFacts.probe().biomeIdAt(blockX, blockZ);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new CancellationException("Terrain export interrupted");
+                        } catch (CancellationException e) {
+                            throw e;
+                        } catch (Exception ignored) {
+                            stored = null;
+                        }
                     }
                     if (stored != null && biomeFacts.resolver().known(stored)) {
-                        if (realHeight != null) {
-                            realHeightCount++;
-                            heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
-                        } else {
-                            heights[rowOffset + col] = toHeightFieldOffset(
-                                    biomeFacts.resolver().estimatedHeight(stored), yMin, ySpan);
+                        if (heightsRequested) {
+                            if (realHeight != null) {
+                                // Interpolated coarse values fill non-node pixels;
+                                // the node test only gates the metadata counter.
+                                // Writing the estimate here instead would embed
+                                // biome-constant plateaus (plains 70, ocean 50)
+                                // under real node values, and every node/plateau
+                                // gap straddles a minor contour level -- the
+                                // lattice-locked checkerboard of spurious lines.
+                                if (exactHeightNode(stride, col, row)) {
+                                    realHeightCount++;
+                                }
+                                heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
+                            } else {
+                                heights[rowOffset + col] = toHeightFieldOffset(
+                                        biomeFacts.resolver().estimatedHeight(stored), yMin, ySpan);
+                            }
                         }
-                        pixels[rowOffset + col] = colorSource.colorForId(stored);
-                        int storedBucket = colorSource.bucketForId(stored);
+                        long style = colorSource.resolveId(stored);
+                        pixels[rowOffset + col] = TerrainColorSource.argbOf(style);
+                        int storedBucket = TerrainColorSource.bucketOf(style);
                         if (storedBucket >= 0) {
                             statCounts[storedBucket]++;
                         }
@@ -636,37 +932,127 @@ public final class TerrainMapExporter {
                 }
 
                 Holder<Biome> biomeHolder;
-                try {
-                    biomeHolder = sampler.sample(blockX, blockZ);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new CancellationException("Terrain export interrupted");
-                } catch (CancellationException e) {
-                    throw e;
-                } catch (Exception e) {
-                    biomeHolder = null;
-                }
-
-                if (realHeight != null) {
-                    realHeightCount++;
-                    heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
+                final int quartIndex = memoQuarts
+                        ? quartRowBase + ((blockX >> 2) - quartBaseX)
+                        : 0;
+                if (memoQuarts && quartMemo.isDone(quartIndex)) {
+                    biomeHolder = quartMemo.holder(quartIndex);
                 } else {
-                    heights[rowOffset + col] = toHeightFieldOffset(estimateHeight(biomeHolder), yMin, ySpan);
+                    try {
+                        biomeHolder = sampler.sample(blockX, blockZ);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("Terrain export interrupted");
+                    } catch (CancellationException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        biomeHolder = null;
+                    }
+                    if (memoQuarts) {
+                        // A failure stores null on purpose: null must not be
+                        // re-sampled sixteen times for the same quart.
+                        quartMemo.store(quartIndex, biomeHolder);
+                    }
                 }
 
-                pixels[rowOffset + col] = colorSource.colorForHolder(biomeHolder);
-                int holderBucket = colorSource.bucketForHolder(biomeHolder);
+                long style = styleMemo.resolve(colorSource, biomeHolder);
+                if (heightsRequested) {
+                    if (realHeight != null) {
+                        // Same contract as the storage fast path: interpolated
+                        // coarse values fill non-node pixels, the node test only
+                        // gates the metadata counter, and the estimate covers
+                        // only pixels whose coarse neighborhood holds no data.
+                        if (exactHeightNode(stride, col, row)) {
+                            realHeightCount++;
+                        }
+                        heights[rowOffset + col] = toHeightFieldOffset(realHeight, yMin, ySpan);
+                    } else {
+                        int estimate = TerrainColorSource.estimatedHeightOf(style);
+                        if (estimate == TerrainColorSource.NO_ESTIMATE) {
+                            // Only reachable for external sources that fill no
+                            // estimate slot; 0 matches the old null fallback.
+                            estimate = 0;
+                        }
+                        heights[rowOffset + col] = toHeightFieldOffset(estimate, yMin, ySpan);
+                    }
+                }
+
+                pixels[rowOffset + col] = TerrainColorSource.argbOf(style);
+                int holderBucket = TerrainColorSource.bucketOf(style);
                 if (holderBucket >= 0) {
                     statCounts[holderBucket]++;
                 }
             }
 
             checkCancelled(cancelled);
-            progress.accept(task.tileWidth);
         }
+
+        // One report per tile: the consumer is a contended AtomicLong (and, in
+        // the batch path, a formatted status string rebuilt from it). A 64x64
+        // tile is far finer than the status poll can show. Cancellation
+        // checks stay per row so cancel latency stays <= one row.
+        progress.accept((long) task.tileWidth * task.tileHeight);
 
         return new TileResult(task.startX, task.startY, task.tileWidth, task.tileHeight, pixels, heights, realHeightCount,
                 statCounts);
+    }
+
+    /** Integer.MIN_VALUE maps to "no height" so the estimate covers the pixel. */
+    @Nullable
+    private static Integer orUnknown(int batched) {
+        return batched != Integer.MIN_VALUE ? batched : null;
+    }
+
+    /** Whether a pixel sits exactly on the coarse grid (its height is real, not interpolated). */
+    private static boolean exactHeightNode(int stride, int col, int row) {
+        return stride == 1 || (col % stride == 0 && row % stride == 0);
+    }
+
+    /**
+     * Bilinear lookup in the coarse height grid the batch probe filled for
+     * {@code stride > 1}. Unknown corners drop out of the weighted average; a
+     * fully unknown neighborhood stays null so the biome estimate covers the
+     * pixel.
+     */
+    @Nullable
+    private static Integer interpolateCoarse(int[] coarse, int gridWidth, int gridHeight,
+                                             int stride, int col, int row) {
+        final int gx = col / stride;
+        final int gz = row / stride;
+        final int gx1 = Math.min(gx + 1, gridWidth - 1);
+        final int gz1 = Math.min(gz + 1, gridHeight - 1);
+        final int fx = col - gx * stride;
+        final int fz = row - gz * stride;
+        final int c00 = coarse[gz * gridWidth + gx];
+        final int c10 = coarse[gz * gridWidth + gx1];
+        final int c01 = coarse[gz1 * gridWidth + gx];
+        final int c11 = coarse[gz1 * gridWidth + gx1];
+        final int w00 = (stride - fx) * (stride - fz);
+        final int w10 = fx * (stride - fz);
+        final int w01 = (stride - fx) * fz;
+        final int w11 = fx * fz;
+        long sum = 0L;
+        long weight = 0L;
+        if (c00 != Integer.MIN_VALUE) {
+            sum += (long) c00 * w00;
+            weight += w00;
+        }
+        if (c10 != Integer.MIN_VALUE) {
+            sum += (long) c10 * w10;
+            weight += w10;
+        }
+        if (c01 != Integer.MIN_VALUE) {
+            sum += (long) c01 * w01;
+            weight += w01;
+        }
+        if (c11 != Integer.MIN_VALUE) {
+            sum += (long) c11 * w11;
+            weight += w11;
+        }
+        if (weight == 0L) {
+            return null;
+        }
+        return (int) Math.round((double) sum / weight);
     }
 
     /**
@@ -683,19 +1069,7 @@ public final class TerrainMapExporter {
         return (offset * 255) / ySpan;
     }
 
-    /**
-     * Paints one row of {@code cols} pixels with horizontal run merging:
-     * consecutive pixels sharing the same color are emitted as a single
-     * {@code fillRect} instead of one call per pixel. Output is identical to
-     * per-pixel filling because {@link NativeImage#fillRect} overwrites (no
-     * blending) and runs are emitted left-to-right in order.
-     */
-    private static void fillRowRuns(NativeImage image, int[] pixels, int rowOffset,
-                                    int startX, int y, int cols, int imageWidth) {
-        fillRowRuns(image::fillRect, pixels, rowOffset, startX, y, cols, imageWidth);
-    }
-
-    /** Sink abstraction over {@code NativeImage#fillRect} so run merging is unit-testable. */
+    /** Sink abstraction over the image fill so run merging is unit-testable. */
     @FunctionalInterface
     interface RectSink {
         void fillRect(int x, int y, int width, int height, int color);
@@ -735,14 +1109,6 @@ public final class TerrainMapExporter {
                 }
             }
         }
-    }
-
-    /**
-     * Roughly estimate terrain height from biome.
-     */
-    private static short estimateHeight(Holder<Biome> biomeHolder) {
-        if (biomeHolder == null) return 0;
-        return TerrainClassifier.categoryHeight(TerrainClassifier.classify(biomeHolder));
     }
 
     private static TileResult await(Future<TileResult> future) throws Exception {
@@ -814,12 +1180,15 @@ public final class TerrainMapExporter {
 
 
     private static String buildMetadata(TerrainExportSpec spec, int width, int height, String timestamp,
-                                        boolean heightProbeSupplied, int realHeightPixels,
+                                        boolean heightsRequested, boolean heightProbeSupplied,
+                                        int realHeightPixels,
                                         @Nullable ExportContext exportContext, int yMin, int ySpan,
                                         @Nullable String heightmapFile, TerrainColorSource colorSource,
                                         long[] statCounts) {
         String heightSource;
-        if (!heightProbeSupplied) {
+        if (!heightsRequested) {
+            heightSource = "none";
+        } else if (!heightProbeSupplied) {
             heightSource = "estimated";
         } else if (realHeightPixels <= 0) {
             heightSource = "estimated";
@@ -851,6 +1220,7 @@ public final class TerrainMapExporter {
         metadata.addProperty("exportY", spec.exportY());
         metadata.addProperty("coverageRadius", spec.coverageRadius());
         metadata.addProperty("blocksPerPixel", spec.blocksPerPixel());
+        metadata.addProperty("heightSampleStride", spec.heightSampleStride());
         metadata.addProperty("exportContours", spec.exportContours());
         metadata.addProperty("contourInterval", spec.contourInterval());
         metadata.addProperty("gridIntervalBlocks", spec.gridIntervalBlocks());
@@ -875,6 +1245,17 @@ public final class TerrainMapExporter {
         Holder<Biome> sample(int blockX, int blockZ) throws Exception;
     }
 
+    /**
+     * {@link BiomeSampler} whose result depends only on the block's quart
+     * column: for a fixed quart Y, {@code sample(bx, bz)} is constant over the
+     * 4x4 block square containing {@code (bx, bz)}. The vanilla wiring samples
+     * through {@code QuartPos.fromBlock} at a fixed {@code spec.exportY}, so it
+     * holds; the exporter then memoises one lookup per quart inside a tile
+     * instead of one per pixel. Samplers without that contract must stay plain
+     * {@link BiomeSampler}s so they keep their exact per-pixel behavior.
+     */
+    public interface QuartBiomeSampler extends BiomeSampler {}
+
     /** Export result. */
     public record Result(Path pngPath, Path metadataPath) {}
 
@@ -884,6 +1265,111 @@ public final class TerrainMapExporter {
     /** Tile sampling result. */
     private record TileResult(int startX, int startY, int tileWidth, int rowCount, int[] pixels, short[] heights,
                               int realHeightCount, long[] statCounts) {}
+
+    /**
+     * Thread-confined per-tile memo of quart-column biome holders. The
+     * {@code done} flag is separate from the holder because a sampling failure
+     * stores null, and null must not be re-sampled once per pixel.
+     */
+    private static final class QuartMemo {
+        private final Holder<Biome>[] holders;
+        private final boolean[] done;
+
+        @SuppressWarnings("unchecked")
+        QuartMemo(int cells) {
+            holders = new Holder[cells];
+            done = new boolean[cells];
+        }
+
+        boolean isDone(int cell) {
+            return done[cell];
+        }
+
+        Holder<Biome> holder(int cell) {
+            return holders[cell];
+        }
+
+        void store(int cell, @Nullable Holder<Biome> holder) {
+            holders[cell] = holder;
+            done[cell] = true;
+        }
+    }
+
+    /**
+     * Per-tile identity memo for fused style lookups. One instance per
+     * {@code sampleTile} call, never shared. Identity (not equals) on purpose:
+     * biome holders are canonical in the registry, so an identity probe
+     * resolves each distinct holder once; a non-canonical holder simply misses
+     * and resolves per pixel, which stays correct. Past {@link #MAX_ENTRIES}
+     * the memo stops caching and resolves every pixel.
+     */
+    private static final class StyleMemo {
+        private static final int MAX_ENTRIES = 4096;
+
+        private Holder<Biome>[] keys = new Holder[256];
+        private long[] values = new long[256];
+        private int size;
+        private boolean nullDone;
+        private long nullStyle;
+
+        long resolve(TerrainColorSource source, @Nullable Holder<Biome> holder) {
+            if (holder == null) {
+                if (!nullDone) {
+                    nullStyle = source.resolveHolder(null);
+                    nullDone = true;
+                }
+                return nullStyle;
+            }
+            int mask = keys.length - 1;
+            int slot = System.identityHashCode(holder) & mask;
+            while (true) {
+                Holder<Biome> key = keys[slot];
+                if (key == holder) {
+                    return values[slot];
+                }
+                if (key == null) {
+                    break;
+                }
+                slot = (slot + 1) & mask;
+            }
+            long style = source.resolveHolder(holder);
+            if ((size + 1) * 2 > keys.length) {
+                if (keys.length >= MAX_ENTRIES) {
+                    return style;
+                }
+                grow();
+                mask = keys.length - 1;
+                slot = System.identityHashCode(holder) & mask;
+                while (keys[slot] != null) {
+                    slot = (slot + 1) & mask;
+                }
+            }
+            keys[slot] = holder;
+            values[slot] = style;
+            size++;
+            return style;
+        }
+
+        @SuppressWarnings("unchecked")
+        private void grow() {
+            Holder<Biome>[] oldKeys = keys;
+            long[] oldValues = values;
+            keys = new Holder[oldKeys.length * 2];
+            values = new long[oldKeys.length * 2];
+            int mask = keys.length - 1;
+            for (int i = 0; i < oldKeys.length; i++) {
+                Holder<Biome> key = oldKeys[i];
+                if (key != null) {
+                    int slot = System.identityHashCode(key) & mask;
+                    while (keys[slot] != null) {
+                        slot = (slot + 1) & mask;
+                    }
+                    keys[slot] = key;
+                    values[slot] = oldValues[i];
+                }
+            }
+        }
+    }
 
     /** Export thread factory. */
     private static final class ExportThreadFactory implements ThreadFactory {

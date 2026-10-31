@@ -9,7 +9,6 @@ import caeruleusTait.world.preview.backend.WorkManager;
 import caeruleusTait.world.preview.backend.analysis.AnalysisSession;
 import caeruleusTait.world.preview.backend.analysis.AnalysisRequest;
 import caeruleusTait.world.preview.backend.analysis.LightweightSeedSampler;
-import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchService;
@@ -26,7 +25,6 @@ import caeruleusTait.world.preview.client.gui.widgets.OldStyleImageButton;
 import caeruleusTait.world.preview.client.gui.widgets.PreviewDisplay;
 import caeruleusTait.world.preview.client.gui.widgets.ToggleButton;
 import caeruleusTait.world.preview.client.gui.widgets.TranslucentButton;
-import caeruleusTait.world.preview.client.gui.widgets.lists.BaseObjectSelectionList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.BiomesList;
 import caeruleusTait.world.preview.client.gui.widgets.lists.StructuresList;
 import caeruleusTait.world.preview.mixin.client.ScreenAccessor;
@@ -43,7 +41,6 @@ import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.WorldCreationContext;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
 import net.minecraft.core.LayeredRegistryAccess;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
@@ -52,10 +49,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.packs.resources.Resource;
-import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.tags.TagKey;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelHeightAccessor;
@@ -70,13 +64,7 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.file.Path;
-import caeruleusTait.world.preview.backend.export.TerrainCategory;
-import caeruleusTait.world.preview.backend.export.TerrainClassifier;
-import caeruleusTait.world.preview.backend.export.TerrainExportColorMode;
 import caeruleusTait.world.preview.backend.export.TerrainExportController;
 import caeruleusTait.world.preview.backend.export.TerrainExportSpec;
 import caeruleusTait.world.preview.backend.export.TerrainMapExporter;
@@ -84,13 +72,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -142,10 +126,6 @@ import static caeruleusTait.world.preview.client.WorldPreviewComponents.TITLE;
 
 public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvider {
 
-    public static final TagKey<Biome> C_CAVE = TagKey.create(Registries.BIOME, Identifier.fromNamespaceAndPath("c", "caves"));
-    public static final TagKey<Biome> C_IS_CAVE = TagKey.create(Registries.BIOME, Identifier.fromNamespaceAndPath("c", "is_cave"));
-    public static final TagKey<Biome> FORGE_CAVE = TagKey.create(Registries.BIOME, Identifier.fromNamespaceAndPath("forge", "caves"));
-    public static final TagKey<Biome> FORGE_IS_CAVE = TagKey.create(Registries.BIOME, Identifier.fromNamespaceAndPath("forge", "is_cave"));
     public static final TagKey<Structure> DISPLAY_BY_DEFAULT = TagKey.create(Registries.STRUCTURE, Identifier.fromNamespaceAndPath("c", "display_on_map_by_default"));
 
     public static final Identifier BUTTONS_TEXTURE = Identifier.parse("world_preview:textures/gui/buttons.png");
@@ -164,41 +144,18 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private final RenderSettings renderSettings;
     private final PreviewMappingData previewMappingData;
     private PreviewData previewData;
-    private SeedSearchService seedSearchService;
-    private TerrainExportController terrainExportController;
-    /**
-     * Quart-space biome query over the worldgen context's noise resolver.
-     * The export layer is chosen per export (the preview center's Y at start
-     * time), so only this resolver-shaped query is captured at setup; the
-     * per-export {@code BiomeSampler} is assembled in {@link #startTerrainExport}.
-     */
-    @FunctionalInterface
-    private interface NoiseBiomeQuery {
-        Holder<Biome> get(int quartX, int quartY, int quartZ);
-    }
-
-    private volatile NoiseBiomeQuery terrainExportNoise;
-    /** Worldgen epoch the current terrainExportNoise/seedSearchFactory were built for. */
+    private SeedSearchCoordinator seedSearch;
+    private TerrainExportGateway terrainExport;
+    /** Worldgen epoch the current terrain-export probes/seed-search factory were built for. */
     private volatile long samplerContextEpoch = -1;
-    private volatile SeedSearchService.SeedContextFactory seedSearchFactory;
     // Analysis session lifecycle: the container owns the session so closing the
     // WorldAnalysisScreen only detaches the view — a running analysis keeps
     // going and is re-attached when the screen is reopened for the same world.
     @Nullable private AnalysisSession activeAnalysisSession;
     private long activeAnalysisSessionEpoch = -1;
-    // Analytic structure probe for the current worldgen context's seed (see
-    // probeNearestStructures): built lazily on the render thread and cached per
-    // worldgen epoch, so world switches never reuse a stale sampler.
-    @Nullable private volatile LightweightSeedSampler structureSampler;
-    private volatile long structureSamplerEpoch = -1;
-    // Seed search listener indirection: a search started on one screen keeps
-    // running in the background, and a reopened screen can take over the
-    // progress/completion callbacks. Callbacks always fire on the main thread
-    // (via minecraftExecute), so reassigning the listeners is race-free.
-    private volatile java.util.function.Consumer<SeedSearchResult> seedSearchCompleteListener = r -> { };
-    private volatile java.util.function.Consumer<Integer> seedSearchProgressListener = a -> { };
-    @Nullable private volatile SeedSearchResult lastSeedSearchResult;
-    @Nullable private volatile String lastSeedSearchCriteria;
+    // Analytic structure probe (see probeNearestStructures): lazy, cached
+    // per worldgen epoch, dropped on world switches.
+    private StructureProbeService structureProbes;
     /** Session-level advanced search options (anchor/distances/attempts/hits); survives screen round-trips, not persisted. */
     private final SeedSearchOptions seedSearchOptions;
     private final NoiseColorProvider noiseColorProvider = new NoiseColorProvider();
@@ -265,9 +222,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private PreviewContainerTabManager tabManager;
     private BiomesList.BiomeEntry[] allBiomes;
     private StructuresList.StructureEntry[] allStructures;
-    private NativeImage[] allStructureIcons;
-    private NativeImage playerIcon;
-    private NativeImage spawnIcon;
+    private final ContainerIcons icons = new ContainerIcons();
     private ScreenRectangle lastScreenRectangle;
 
     private boolean inhibitUpdates = true;
@@ -385,8 +340,9 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     }
 
     private void createServices() {
-        this.seedSearchService = new SeedSearchService(minecraft, workManager.threadCount());
-        this.terrainExportController = new TerrainExportController(workManager.threadCount());
+        this.seedSearch = new SeedSearchCoordinator(minecraft, workManager.threadCount());
+        this.structureProbes = new StructureProbeService(workManager);
+        this.terrainExport = new TerrainExportGateway(workManager, workManager.threadCount());
     }
 
     /** Creates the seed edit box plus the randomize/save buttons (not yet added to {@code toRender}). */
@@ -912,8 +868,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
         LevelStem levelStem = levelStemRegistry.getValue(renderSettings.dimension);
 
-        Set<Identifier> caveBiomes = collectCaveBiomes(biomeRegistry);
-        Set<Identifier> allKnownBiomes = collectKnownBiomes(biomeRegistry, levelStem);
+        Set<Identifier> caveBiomes = SidebarEntryFactory.collectCaveBiomes(biomeRegistry);
+        Set<Identifier> allKnownBiomes = SidebarEntryFactory.collectKnownBiomes(biomeRegistry, levelStem);
 
         previewData = previewMappingData.generateMapData(
                 allKnownBiomes,
@@ -941,7 +897,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // finish before buildStructureEntries() which needs them.
         java.util.concurrent.Future<?> iconFuture;
         try (var vthreadExecutor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            iconFuture = vthreadExecutor.submit(this::loadAllIcons);
+            iconFuture = vthreadExecutor.submit(() ->
+                    icons.loadAll(minecraft.getResourceManager(), workManager.sampleResourceManager(), previewData));
             // buildBiomeEntries runs on the current (main) thread while icons
             // load in parallel on a virtual thread.
             buildBiomeEntries(biomeRegistry);
@@ -952,8 +909,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         } catch (Exception e) {
             LOGGER.warn("Parallel icon loading failed, falling back", e);
             // Ensure icons are at least initialized even if parallel load failed
-            if (allStructureIcons == null) {
-                loadAllIcons();
+            if (icons.structureIcons() == null) {
+                icons.loadAll(minecraft.getResourceManager(), workManager.sampleResourceManager(), previewData);
             }
         }
         buildStructureEntries(strucutreRegistry, layeredRegistryAccess);
@@ -986,31 +943,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         }
     }
 
-    private Set<Identifier> collectCaveBiomes(Registry<Biome> biomeRegistry) {
-        Set<Identifier> caveBiomes = new HashSet<>();
-        for (TagKey<Biome> tagKey : List.of(C_CAVE, C_IS_CAVE, FORGE_CAVE, FORGE_IS_CAVE)) {
-            caveBiomes.addAll(
-                    StreamSupport.stream(biomeRegistry.getTagOrEmpty(tagKey).spliterator(), false)
-                            .map(x -> x.unwrapKey().orElseThrow().identifier())
-                            .toList()
-            );
-        }
-        return caveBiomes;
-    }
 
-    private Set<Identifier> collectKnownBiomes(Registry<Biome> biomeRegistry, @Nullable LevelStem levelStem) {
-        // Merge biomes from both the biome registry AND the biome source's
-        // possibleBiomes().  Some mods use custom biome sources or register
-        // biomes in a different registry context, so biomeRegistry.keySet()
-        // alone may not include every biome the source can actually generate.
-        Set<Identifier> allKnownBiomes = new HashSet<>(biomeRegistry.keySet());
-        if (levelStem != null) {
-            levelStem.generator().getBiomeSource().possibleBiomes().forEach(holder -> {
-                holder.unwrapKey().ifPresent(key -> allKnownBiomes.add(key.identifier()));
-            });
-        }
-        return allKnownBiomes;
-    }
 
     private void setupWorkManager(
             LevelStem levelStem,
@@ -1064,29 +997,28 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
      */
     private void invalidateWorldScopedTasks() {
         // Drop the stale factories first so no new task can capture them.
-        terrainExportNoise = null;
-        seedSearchFactory = null;
+        terrainExport.invalidate();
+        seedSearch.clearFactory();
         samplerContextEpoch = -1;
-        closeStructureSampler();
-        terrainExportController.cancel();
-        seedSearchService.cancel();
+        structureProbes.invalidate();
+        seedSearch.cancel();
         closeActiveAnalysisSession();
     }
 
-    /** Drops the cached analytic structure probe so the next probe rebuilds it for the new epoch. */
-    private void closeStructureSampler() {
-        LightweightSeedSampler sampler = structureSampler;
-        structureSampler = null;
-        structureSamplerEpoch = -1;
-        if (sampler != null) {
-            try {
-                // close() is a no-op today (see LightweightSeedSampler), but
-                // staying AutoCloseable-clean keeps that free to change.
-                sampler.close();
-            } catch (Throwable ignored) {
-                // Never block world switches on probe cleanup.
-            }
-        }
+    /**
+     * Analytic nearest-structure probe for the current preview seed: pure
+     * worldgen math (the vanilla /locate placement pipeline), no storage and
+     * no server infrastructure, so it is safe to call on the render thread
+     * when the analysis screen opens. The backing sampler is built lazily,
+     * cached per worldgen epoch, and dropped on world switches.
+     *
+     * @return found structure id to its located position (ids that could not
+     *         be located within the distance cap are simply omitted), or
+     *         {@code null} when probing is unavailable — no live worldgen
+     *         context, or the probe sampler could not be built
+     */
+    public @Nullable Map<Identifier, BlockPos> probeNearestStructures(Set<Identifier> types, BlockPos anchor, int maxDistanceBlocks) {
+        return structureProbes.probeNearest(types, anchor, maxDistanceBlocks);
     }
 
     /** Closes and forgets the currently owned analysis session, if any. */
@@ -1170,7 +1102,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         final var probeHeightFinal = probeHeight;
         final var probeTemplatesFinal = probeTemplates;
 
-        seedSearchFactory = seed -> {
+        seedSearch.setFactory(seed -> {
             // Create lightweight RandomState per seed, no DummyMinecraftServer needed
             net.minecraft.world.level.levelgen.RandomState randomState;
             if (chunkGenerator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noiseBasedChunkGenerator) {
@@ -1189,7 +1121,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 
             return new caeruleusTait.world.preview.backend.analysis.LightweightSeedSampler(
                     biomeSource, chunkGenerator, probeRegistriesFinal, randomState, seed, probeHeightFinal, probeTemplatesFinal);
-        };
+        });
 
         // Set up terrain export sampler
         final long currentSeed = worldgenContext.seed();
@@ -1206,116 +1138,37 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // The export layer is chosen per export (the preview center's Y at
         // start time, spec.exportY), so only the quart-space resolver query
         // is captured here.
-        terrainExportNoise = (quartX, quartY, quartZ) ->
+        final TerrainExportGateway.NoiseBiomeQuery terrainExportNoise = (quartX, quartY, quartZ) ->
             biomeSource.getNoiseBiome(
                 quartX,
                 quartY,
                 quartZ,
                 terrainSampler);
 
+        // Live height sampler for the same seed. Only a noise-based generator
+        // exposes the settings and fluid picker the noise chunk needs; other
+        // generators keep the storage-backed probe (and the estimate beyond it).
+        final TerrainMapExporter.HeightProbe terrainExportHeight;
+        if (chunkGenerator instanceof net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator noiseGenerator) {
+            terrainExportHeight = new caeruleusTait.world.preview.backend.export.NoiseHeightSampler(
+                    noiseGenerator.generatorSettings().value(),
+                    terrainRandomState,
+                    noiseGenerator,
+                    worldgenContext.dimensionType().minY(),
+                    worldgenContext.dimensionType().minY() + worldgenContext.dimensionType().height() - 1);
+        } else {
+            terrainExportHeight = null;
+        }
+        terrainExport.updateContext(terrainExportNoise, terrainExportHeight);
+
         // Remember which worldgen epoch these snapshots belong to; background
         // tasks started later verify this before they run or publish.
         samplerContextEpoch = workManager.epoch();
     }
 
-    /**
-     * Analytic nearest-structure probe for the current preview seed: pure
-     * worldgen math (the vanilla /locate placement pipeline), no storage and
-     * no server infrastructure, so it is safe to call on the render thread
-     * when the analysis screen opens.
-     * <p>
-     * The backing {@link LightweightSeedSampler} is built lazily on first use
-     * (at most one build attempt per worldgen epoch) and cached until
-     * {@link #invalidateWorldScopedTasks()} drops it on a world switch. Only
-     * render-thread callers are expected; the fields are volatile so an
-     * accidental cross-thread use stays memory-safe without locking.
-     *
-     * @return found structure id to its located position (ids that could not
-     *         be located within the distance cap are simply omitted), or
-     *         {@code null} when probing is unavailable — no live worldgen
-     *         context, or the probe sampler could not be built
-     */
-    public @Nullable Map<Identifier, BlockPos> probeNearestStructures(Set<Identifier> types, BlockPos anchor, int maxDistanceBlocks) {
-        var context = workManager.worldgenContext();
-        if (context == null) return null;
-        long epoch = workManager.epoch();
-        if (structureSamplerEpoch != epoch) {
-            structureSampler = buildStructureSampler(context);
-            structureSamplerEpoch = epoch;
-        }
-        if (structureSampler == null) return null;
-        Map<Identifier, BlockPos> out = new LinkedHashMap<>();
-        for (Identifier id : types) {
-            try {
-                BlockPos found = structureSampler.nearestStructure(Set.of(id), anchor, maxDistanceBlocks);
-                if (found != null) out.put(id, found);
-            } catch (Exception e) {
-                LOGGER.debug("structure probe failed for {}", id, e);
-            }
-        }
-        return out;
-    }
-
-    /**
-     * Builds the analytic structure probe sampler for the given worldgen
-     * context, following the same assembly recipe as
-     * {@link #setupSearchContext()} (shared biome source / chunk generator /
-     * composite registry access, a per-seed {@link RandomState}, and the
-     * height accessor + template manager from the context's sample utilities)
-     * but fixed to the context's current seed instead of a per-seed factory.
-     *
-     * @return the sampler, or {@code null} when probing is unavailable — most
-     *         notably when the structure template manager cannot be obtained
-     */
-    @Nullable
-    private LightweightSeedSampler buildStructureSampler(WorldgenContext worldgenContext) {
-        try {
-            final var biomeSource = worldgenContext.biomeSource();
-            final var chunkGenerator = worldgenContext.chunkGenerator();
-            // compositeAccess() returns RegistryAccess.Frozen, supports lookupOrThrow
-            final var compositeRegistryAccess = worldgenContext.registryAccess().compositeAccess();
-            final var probeRegistries = new LightweightSeedSampler.RegistryAccessBundle(
-                    compositeRegistryAccess,
-                    compositeRegistryAccess.lookupOrThrow(Registries.STRUCTURE),
-                    compositeRegistryAccess.lookupOrThrow(Registries.STRUCTURE_SET));
-            final LevelHeightAccessor probeHeight;
-            final StructureTemplateManager probeTemplates;
-            try {
-                // Reuse the WorkManager-owned SampleUtils: it already carries the
-                // template manager and height accessor for this worldgen context.
-                var sampleUtils = worldgenContext.createSampleUtils();
-                probeHeight = sampleUtils.levelHeightAccessor();
-                probeTemplates = sampleUtils.structureTemplateManager();
-            } catch (Exception e) {
-                LOGGER.warn("Structure probing disabled: failed to obtain structure template manager", e);
-                return null;
-            }
-            final long seed = worldgenContext.seed();
-            RandomState randomState;
-            if (chunkGenerator instanceof NoiseBasedChunkGenerator noiseBasedChunkGenerator) {
-                randomState = RandomState.create(
-                    noiseBasedChunkGenerator.generatorSettings().value(),
-                    compositeRegistryAccess.lookupOrThrow(Registries.NOISE),
-                    seed
-                );
-            } else {
-                randomState = RandomState.create(
-                    NoiseGeneratorSettings.dummy(),
-                    compositeRegistryAccess.lookupOrThrow(Registries.NOISE),
-                    seed
-                );
-            }
-            return new LightweightSeedSampler(
-                    biomeSource, chunkGenerator, probeRegistries, randomState, seed, probeHeight, probeTemplates);
-        } catch (RuntimeException e) {
-            LOGGER.warn("Failed to build structure probe sampler", e);
-            return null;
-        }
-    }
-
     public void onBiomeRightClick(BiomesList.BiomeEntry entry) {
-        if (seedSearchService.isSearching()) {
-            seedSearchService.cancel();
+        if (seedSearch.isRunning()) {
+            seedSearch.cancel();
         }
         openSeedSearchScreen(entry, null, true);
     }
@@ -1351,12 +1204,12 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
 
     /** Whether a seed search is currently running. */
     public boolean isSeedSearchRunning() {
-        return seedSearchService.isSearching();
+        return seedSearch.isRunning();
     }
 
     /** Cancels the running seed search, if any. */
     public void cancelSeedSearch() {
-        seedSearchService.cancel();
+        seedSearch.cancel();
     }
 
     /**
@@ -1374,26 +1227,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             java.util.function.Consumer<SeedSearchResult> onComplete,
             java.util.function.Consumer<Integer> onProgress
     ) {
-        if (seedSearchFactory == null) {
-            LOGGER.warn("Search context not available");
-            return false;
-        }
-        boolean started = seedSearchService.startSearch(request, seedSearchFactory,
-                null, result -> seedSearchCompleteListener.accept(result), attempts -> seedSearchProgressListener.accept(attempts));
-        if (started) {
-            // Only after a successful start: discard the previous result and
-            // route the running search's callbacks through the new listeners,
-            // recording the outcome for later reopens.
-            lastSeedSearchResult = null;
-            lastSeedSearchCriteria = null;
-            seedSearchCompleteListener = result -> {
-                lastSeedSearchResult = result;
-                lastSeedSearchCriteria = criteriaLabel;
-                onComplete.accept(result);
-            };
-            seedSearchProgressListener = onProgress;
-        }
-        return started;
+        return seedSearch.start(request, criteriaLabel, onComplete, onProgress);
     }
 
     /** Makes the given listener the target of the running search's progress/completion callbacks. */
@@ -1401,23 +1235,19 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             java.util.function.Consumer<SeedSearchResult> onComplete,
             java.util.function.Consumer<Integer> onProgress
     ) {
-        seedSearchCompleteListener = result -> {
-            lastSeedSearchResult = result;
-            onComplete.accept(result);
-        };
-        seedSearchProgressListener = onProgress;
+        seedSearch.reattach(onComplete, onProgress);
     }
 
     /** The most recent completed seed search result, or null before the first completion. */
     @Nullable
     public SeedSearchResult lastSeedSearchResult() {
-        return lastSeedSearchResult;
+        return seedSearch.lastResult();
     }
 
     /** The criteria label stored alongside {@link #lastSeedSearchResult()}, or null. */
     @Nullable
     public String lastSeedSearchCriteria() {
-        return lastSeedSearchCriteria;
+        return seedSearch.lastCriteria();
     }
 
     /** Player-anchored initial center for the next open, set by the in-game preview screen (opt-in). */
@@ -1481,203 +1311,15 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     }
 
     private void buildBiomeEntries(Registry<Biome> biomeRegistry) {
-        List<String> missing = Arrays.stream(previewData.biomeId2BiomeData())
-                .filter(x -> x.dataSource() == PreviewData.DataSource.MISSING)
-                .map(PreviewData.BiomeData::tag)
-                .map(Identifier::toString)
-                .toList();
-        worldPreview.writeMissingColors(missing);
-
-        // Build a lookup from Identifier -> Holder.Reference<Biome> for fast access.
-        // Some biomes may be in the biome source but not in the biome registry
-        // (e.g. when a mod uses a custom biome source or a different registry
-        // context).  For those, we create a standalone Holder.Reference so they
-        // still appear in the biome list and sidebar.
-        Map<Identifier, Holder.Reference<Biome>> registryHolders = biomeRegistry.listElements()
-                .collect(Collectors.toMap(x -> x.key().identifier(), x -> x));
-
-        allBiomes = new BiomesList.BiomeEntry[previewData.biomeId2BiomeData().length];
-        for (PreviewData.BiomeData biomeData : previewData.biomeId2BiomeData()) {
-            final short id = (short) biomeData.id();
-            Holder.Reference<Biome> holder = registryHolders.get(biomeData.tag());
-            if (holder == null) {
-                // Biome is in the biome source but not in the registry.
-                // Create a standalone reference so it can still be displayed.
-                holder = Holder.Reference.createStandAlone(biomeRegistry, ResourceKey.create(Registries.BIOME, biomeData.tag()));
-            }
-            allBiomes[id] = biomesList.createEntry(
-                    holder, id,
-                    biomeData.color(), biomeData.resourceOnlyColor(),
-                    biomeData.isCave(), biomeData.resourceOnlyIsCave(),
-                    biomeData.name(), biomeData.dataSource()
-            );
-        }
-        Arrays.sort(allBiomes, Comparator.comparing(BiomesList.BiomeEntry::id));
-
-        // Initialize biomes list with all biomes
+        allBiomes = SidebarEntryFactory.buildBiomeEntries(biomesList, worldPreview, previewData, biomeRegistry);
         biomesList.replaceEntries(Arrays.asList(allBiomes));
         biomesList.setSelected(null);
     }
 
-    private void loadAllIcons() {
-        freeStructureIcons();
-        final ResourceManager builtinResourceManager = minecraft.getResourceManager();
-        final ResourceManager sampleResourceManager = workManager.sampleResourceManager();
-        // Fingerprint of the current resource packs; a change (pack
-        // added/removed/reordered) automatically generations the IconCache.
-        final String fp = IconCache.fingerprint(builtinResourceManager, sampleResourceManager);
-        allStructureIcons = new NativeImage[previewData.structId2StructData().length];
-
-        // Collect unique icon identifiers to avoid loading the same icon twice.
-        // Use a LinkedHashMap to preserve insertion order while deduplicating.
-        final java.util.LinkedHashMap<Identifier, Integer> uniqueIconIds = new java.util.LinkedHashMap<>();
-        for (int i = 0; i < previewData.structId2StructData().length; ++i) {
-            PreviewData.StructureData data = previewData.structId2StructData()[i];
-            Identifier iconId = data.icon();
-            if (iconId == null) {
-                iconId = Identifier.parse("world_preview:textures/structure/unknown.png");
-            }
-            uniqueIconIds.putIfAbsent(iconId, i);
-        }
-
-        // Load all unique icons in parallel using virtual threads (Java 21+).
-        // Icon loading is I/O-bound (file reads + PNG decoding), so virtual
-        // threads provide significant speedup with minimal overhead.
-        // The ConcurrentHashMap ensures thread-safe results aggregation.
-        final java.util.concurrent.ConcurrentHashMap<Identifier, NativeImage> loadedIcons =
-                new java.util.concurrent.ConcurrentHashMap<>();
-        final int iconCount = uniqueIconIds.size();
-        if (iconCount > 0) {
-            try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-                final java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>(iconCount);
-                for (Identifier iconId : uniqueIconIds.keySet()) {
-                    futures.add(executor.submit(() -> {
-                        NativeImage img = IconCache.getOrLoadCopy(iconId, fp, builtinResourceManager, sampleResourceManager);
-                        loadedIcons.put(iconId, img);
-                    }));
-                }
-                // Wait for all icons to load
-                for (var f : futures) {
-                    try {
-                        f.get();
-                    } catch (Exception e) {
-                        LOGGER.warn("Failed to load icon in parallel", e);
-                    }
-                }
-            }
-        }
-
-        // Assign loaded icons to the array (deduplication: same icon ID -> same NativeImage)
-        for (int i = 0; i < previewData.structId2StructData().length; ++i) {
-            PreviewData.StructureData data = previewData.structId2StructData()[i];
-            Identifier iconId = data.icon();
-            if (iconId == null) {
-                iconId = Identifier.parse("world_preview:textures/structure/unknown.png");
-            }
-            allStructureIcons[i] = loadedIcons.get(iconId);
-        }
-
-        // Load player and spawn icons in parallel as well
-        freePlayerAndSpawnIcons();
-        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var playerFuture = executor.submit(() -> {
-                try {
-                    final Optional<Resource> playerResource = builtinResourceManager.getResource(
-                            Identifier.parse("world_preview:textures/etc/player.png"));
-                    try (InputStream in = playerResource.orElseThrow().open()) {
-                        return NativeImage.read(in);
-                    }
-                } catch (Exception e) {
-                    LOGGER.error("Failed to load the player icon; using a blank fallback", e);
-                    return new NativeImage(16, 16, true);
-                }
-            });
-            var spawnFuture = executor.submit(() -> {
-                try {
-                    final Optional<Resource> spawnResource = builtinResourceManager.getResource(
-                            Identifier.parse("world_preview:textures/etc/bed.png"));
-                    try (InputStream in = spawnResource.orElseThrow().open()) {
-                        return NativeImage.read(in);
-                    }
-                } catch (Exception e) {
-                    LOGGER.error("Failed to load the spawn icon; using a blank fallback", e);
-                    return new NativeImage(16, 16, true);
-                }
-            });
-            try {
-                playerIcon = playerFuture.get();
-                spawnIcon = spawnFuture.get();
-            } catch (Exception e) {
-                playerIcon = new NativeImage(16, 16, true);
-                spawnIcon = new NativeImage(16, 16, true);
-                LOGGER.error("Failed to load the player and spawn icons; using blank fallbacks", e);
-            }
-        }
-    }
-
-    /**
-     * Loads a single structure icon from the builtin or sample resource manager.
-     * Thread-safe: creates a new NativeImage and does not modify shared state.
-     * Package-visible: also used as the decode routine by {@link IconCache},
-     * which caches the decoded master and hands out private copies.
-     */
-    static NativeImage loadSingleIcon(Identifier iconId,
-                                               ResourceManager builtinResourceManager,
-                                               ResourceManager sampleResourceManager) {
-        Optional<Resource> resource = builtinResourceManager.getResource(iconId);
-        if (resource.isEmpty()) {
-            resource = sampleResourceManager.getResource(iconId);
-        }
-        if (resource.isEmpty()) {
-            LOGGER.error("Failed to load structure icon: '{}'", iconId);
-            resource = builtinResourceManager.getResource(
-                    Identifier.parse("world_preview:textures/structure/unknown.png"));
-        }
-        if (resource.isEmpty()) {
-            LOGGER.error("FATAL ERROR LOADING: '{}' -- unable to load fallback!", iconId);
-            return new NativeImage(16, 16, true);
-        }
-        try {
-            try (InputStream in = resource.get().open()) {
-                return NativeImage.read(in);
-            }
-        } catch (IOException e) {
-            LOGGER.error("Failed to decode structure icon '{}'; using a blank fallback", iconId, e);
-            return new NativeImage(16, 16, true);
-        }
-    }
-
     private void buildStructureEntries(Registry<Structure> strucutreRegistry,
                                        LayeredRegistryAccess<RegistryLayer> layeredRegistryAccess) {
-        List<String> missing = Arrays.stream(previewData.structId2StructData())
-                .filter(x -> x.dataSource() == PreviewData.DataSource.MISSING)
-                .map(PreviewData.StructureData::tag)
-                .map(Identifier::toString)
-                .toList();
-        worldPreview.writeMissingStructures(missing);
-
-        Registry<Item> itemRegistry = layeredRegistryAccess.compositeAccess().lookupOrThrow(Registries.ITEM);
-        allStructures = strucutreRegistry.listElements()
-                .map(x -> {
-                    final short id = previewData.struct2Id().getShort(x.key().identifier().toString());
-                    if (id < 0 || id >= previewData.structId2StructData().length) {
-                        return null;
-                    }
-                    final PreviewData.StructureData structureData = previewData.structId2StructData()[id];
-                    return structuresList.createEntry(
-                            id,
-                            x.key().identifier(),
-                            allStructureIcons[id],
-                            structureData.item() == null ? null : itemRegistry.getValue(structureData.item()),
-                            structureData.name(),
-                            structureData.showByDefault(),
-                            structureData.showByDefault()
-                    );
-                })
-                .filter(Objects::nonNull)
-                .sorted(Comparator.comparingInt(StructuresList.StructureEntry::id))
-                .toArray(StructuresList.StructureEntry[]::new);
-
+        allStructures = SidebarEntryFactory.buildStructureEntries(structuresList, worldPreview, previewData,
+                icons.structureIcons(), strucutreRegistry, layeredRegistryAccess);
         structuresList.replaceEntries(new ArrayList<>());
     }
 
@@ -2489,8 +2131,8 @@ public void onScreenReentry() {
                 pendingBiomesListFlush.cancel(false);
             }
             try {
-                seedSearchService.close();
-                terrainExportController.close();
+                seedSearch.close();
+                terrainExport.close();
                 closeActiveAnalysisSession();
             } catch (RuntimeException e) {
                 // Keep going: workManager.cancel() below must still run.
@@ -2514,8 +2156,8 @@ public void onScreenReentry() {
                 releaseError = e;
             }
             try {
-                freeStructureIcons();
-                freePlayerAndSpawnIcons();
+                icons.freeStructureIcons();
+                icons.freePlayerAndSpawnIcons();
             } catch (RuntimeException e) {
                 if (releaseError == null) {
                     releaseError = e;
@@ -2560,25 +2202,6 @@ public void onScreenReentry() {
         }
     }
 
-    private void freeStructureIcons() {
-        if (allStructureIcons == null) {
-            return;
-        }
-        Arrays.stream(allStructureIcons).filter(Objects::nonNull).forEach(NativeImage::close);
-        allStructureIcons = null;
-    }
-
-    private void freePlayerAndSpawnIcons() {
-        if (playerIcon != null) {
-            playerIcon.close();
-            playerIcon = null;
-        }
-        if (spawnIcon != null) {
-            spawnIcon.close();
-            spawnIcon = null;
-        }
-    }
-
     public List<BiomesList.BiomeEntry> allBiomes() {
         return Arrays.stream(allBiomes).sorted(Comparator.comparing(BiomesList.BiomeEntry::name)).toList();
     }
@@ -2605,17 +2228,17 @@ public void onScreenReentry() {
 
     @Override
     public NativeImage[] structureIcons() {
-        return allStructureIcons;
+        return icons.structureIcons();
     }
 
     @Override
     public NativeImage playerIcon() {
-        return playerIcon;
+        return icons.playerIcon();
     }
 
     @Override
     public NativeImage spawnIcon() {
-        return spawnIcon;
+        return icons.spawnIcon();
     }
 
     @Override
@@ -2716,192 +2339,33 @@ public void onScreenReentry() {
     }
 
     public void openTerrainExportScreen() {
-        if (terrainExportNoise == null) return;
+        if (!terrainExport.isReady()) return;
         minecraft.setScreen(new TerrainExportScreen(parentScreen, this));
     }
 
     /** @return false when the export was not started (busy, no sampler, or stale worldgen context). */
     public boolean startTerrainExport(TerrainExportSpec spec) {
-        if (terrainExportController.isRunning()) return false;
-        // Capture the query once: a world switch mid-export nulls the field,
-        // but the running export must keep sampling its own captured context
-        // until the epoch guard and cancellation stop it.
-        NoiseBiomeQuery noise = terrainExportNoise;
-        if (noise == null) return false;
-        // Lineage guard: the sampler was built for a specific worldgen context.
-        // After a seed/dimension/generator switch the old sampler must not
-        // produce exports labeled with (or sampling) the new world.
-        if (samplerContextEpoch != workManager.epoch()) {
-            LOGGER.warn("Terrain export rejected: worldgen context changed since the sampler was built");
-            return false;
-        }
-        Path outputDir = worldPreview.configDir().resolve("terrain_exports");
-        // The export evaluates biomes at the Y layer the preview is scrolled
-        // to (spec.exportY, captured at start time), so the exported map
-        // matches the viewed layer and the storage fast path below hits the
-        // sampled layer.
-        final int exportQuartY = net.minecraft.core.QuartPos.fromBlock(spec.exportY());
-        TerrainMapExporter.BiomeSampler sampler = (blockX, blockZ) -> noise.get(
-                net.minecraft.core.QuartPos.fromBlock(blockX), exportQuartY,
-                net.minecraft.core.QuartPos.fromBlock(blockZ));
-        TerrainMapExporter.BiomeFacts biomeFacts = buildTerrainExportBiomeFacts(spec);
-        TerrainMapExporter.TerrainColorSource colorSource;
-        if (spec.colorMode() == TerrainExportColorMode.BIOMES) {
-            TerrainMapExporter.BiomeColorTable colorTable = buildTerrainExportBiomeColors();
-            colorSource = colorTable != null
-                    ? TerrainMapExporter.biomes(colorTable)
-                    : TerrainMapExporter.categories(biomeFacts == null ? null : biomeFacts.resolver());
-        } else {
-            colorSource = TerrainMapExporter.categories(biomeFacts == null ? null : biomeFacts.resolver());
-        }
-        return terrainExportController.start(spec, sampler, colorSource, heightProbe(), exportOrigin(),
-                biomeFacts, workManager.yMin(), workManager.yMax(), outputDir);
+        return terrainExport.start(spec, cfg, previewData,
+                worldPreview.configDir().resolve("terrain_exports"), samplerContextEpoch);
     }
 
     /**
-     * Storage-backed biome facts for terrain export: reuses the preview
-     * storage's already-sampled biome ids (same seed, same worldgen epoch as
-     * the export sampler) instead of re-running the noise sampler per pixel.
-     * Returns {@code null} — pure noise-sampling fallback — whenever the
-     * facts cannot be trusted (no storage, no preview data, no worldgen
-     * context, or table build failure). Storage access is strictly read-only.
-     */
-    @Nullable
-    private TerrainMapExporter.BiomeFacts buildTerrainExportBiomeFacts(TerrainExportSpec spec) {
-        final var storage = workManager.previewStorage();
-        if (storage == null || previewData == null || workManager.worldgenContext() == null) {
-            return null;
-        }
-
-        // Per-id tables: storage biome ids index into previewData's biome
-        // list. A null slot marks an id that must not be trusted (misaligned
-        // storage id or unregistered biome) and sends the exporter back to
-        // noise sampling for that pixel.
-        final PreviewData.BiomeData[] biomeDataById = previewData.biomeId2BiomeData();
-        final TerrainCategory[] categoryById = new TerrainCategory[biomeDataById.length];
-        final short[] estimatedHeightById = new short[biomeDataById.length];
-        try {
-            Registry<Biome> biomeRegistry = workManager.worldgenContext().registryAccess()
-                    .compositeAccess().lookupOrThrow(Registries.BIOME);
-            Map<Identifier, Holder.Reference<Biome>> registryHolders = biomeRegistry.listElements()
-                    .collect(Collectors.toMap(x -> x.key().identifier(), x -> x));
-            for (int id = 0; id < biomeDataById.length; id++) {
-                final PreviewData.BiomeData biomeData = biomeDataById[id];
-                if (biomeData == null || biomeData.tag() == null) {
-                    continue;
-                }
-                Holder.Reference<Biome> holder = registryHolders.get(biomeData.tag());
-                if (holder == null) {
-                    // Biome is in the biome source but not in the registry;
-                    // standalone holders classify through the id-keyword
-                    // fallback, matching the sidebar biome list behavior.
-                    holder = Holder.Reference.createStandAlone(
-                            biomeRegistry, ResourceKey.create(Registries.BIOME, biomeData.tag()));
-                }
-                final TerrainCategory category = TerrainClassifier.classify(holder);
-                categoryById[id] = category;
-                estimatedHeightById[id] = TerrainClassifier.categoryHeight(category);
-            }
-        } catch (Exception e) {
-            LOGGER.warn("Terrain export biome facts unavailable; falling back to noise sampling", e);
-            return null;
-        }
-
-        // The export sampler evaluates biomes at the spec's export Y (the
-        // preview center's Y at start time), so reuse the storage's matching
-        // biome layer. Completion bits live on the primary section layer:
-        // y=0 with full-vertical chunk sampling, the sampled layer itself
-        // otherwise. An unsampled or partially sampled chunk makes the probe
-        // answer null (noise-sampling fallback for that pixel) — never a
-        // stale or missing value.  Only FULL-RESOLUTION completion counts:
-        // a chunk the drag tier filled with its coarse sampler is treated as
-        // unsampled here, so the export falls back to sampling instead of
-        // baking a 4x4-quart block into the image.
-        final int dataQuartY = net.minecraft.core.QuartPos.fromBlock(spec.exportY());
-        final int completionQuartY = cfg.buildFullVertChunk
-                ? net.minecraft.core.QuartPos.fromBlock(0) : dataQuartY;
-        TerrainMapExporter.BiomeIdProbe probe = (blockX, blockZ) -> {
-            int qx = net.minecraft.core.QuartPos.fromBlock(blockX);
-            int qz = net.minecraft.core.QuartPos.fromBlock(blockZ);
-            if (!storage.isChunkSampledFine(qx, completionQuartY, qz,
-                    caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_BIOME)) {
-                return null;
-            }
-            short v = storage.getRawData4(qx, dataQuartY, qz,
-                    caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_BIOME);
-            return v == Short.MIN_VALUE ? null : v;
-        };
-
-        return new TerrainMapExporter.BiomeFacts(
-                probe, new TerrainMapExporter.IdTableResolver(categoryById, estimatedHeightById));
-    }
-
-    /**
-     * Per-id biome color table for the export's biome color mode: preview
-     * color, registry tag and display name for every registered biome id,
-     * sharing the storage id space with {@link #buildTerrainExportBiomeFacts}.
-     * Registry-level data with no storage dependency, so the batch path (no
-     * facts) can use it too. Returns {@code null} when preview data is
-     * missing or the table cannot be built; callers fall back to the
-     * category color source.
+     * Per-id biome color table for the export's biome color mode; the batch
+     * export path (no storage facts) uses it directly. Returns {@code null}
+     * when the table cannot be built; callers fall back to the category
+     * color source.
      */
     @Nullable
     public TerrainMapExporter.BiomeColorTable buildTerrainExportBiomeColors() {
-        if (previewData == null) {
-            return null;
-        }
-        try {
-            final PreviewData.BiomeData[] biomeDataById = previewData.biomeId2BiomeData();
-            final int[] colorById = new int[biomeDataById.length];
-            final String[] tagById = new String[biomeDataById.length];
-            final String[] nameById = new String[biomeDataById.length];
-            for (int id = 0; id < biomeDataById.length; id++) {
-                final PreviewData.BiomeData biomeData = biomeDataById[id];
-                if (biomeData == null || biomeData.tag() == null) {
-                    continue;
-                }
-                // The preview engine paints biome pixels as color|0xFF000000
-                // (textureColor), so the export uses the same opaque ARGB.
-                colorById[id] = biomeData.color() | 0xFF000000;
-                tagById[id] = biomeData.tag().toString();
-                nameById[id] = biomeData.name();
-            }
-            return new TerrainMapExporter.BiomeColorTable(colorById, tagById, nameById);
-        } catch (Exception e) {
-            LOGGER.warn("Terrain export biome color table unavailable; falling back to category colors", e);
-            return null;
-        }
-    }
-
-    /** Real-height probe over the live preview storage; null when unavailable. */
-    @Nullable
-    private TerrainMapExporter.HeightProbe heightProbe() {
-        var storage = workManager.previewStorage();
-        if (storage == null) {
-            return null;
-        }
-        return (blockX, blockZ) -> {
-            short h = storage.getRawData4(
-                    net.minecraft.core.QuartPos.fromBlock(blockX), 0,
-                    net.minecraft.core.QuartPos.fromBlock(blockZ),
-                    caeruleusTait.world.preview.backend.storage.PreviewStorage.FLAG_HEIGHT);
-            return h == Short.MIN_VALUE ? null : (int) h;
-        };
-    }
-
-    /** World lineage written into terrain export metadata. */
-    @Nullable
-    private TerrainMapExporter.ExportContext exportOrigin() {
-        var ctx = workManager.worldgenContext();
-        return ctx == null ? null : new TerrainMapExporter.ExportContext(Long.toString(ctx.seed()), ctx.dimension());
+        return terrainExport.buildBiomeColors(previewData);
     }
 
     public void cancelTerrainExport() {
-        terrainExportController.cancel();
+        terrainExport.cancel();
     }
 
     public TerrainExportController.Status terrainExportStatus() {
-        return terrainExportController.status();
+        return terrainExport.status();
     }
 
     public PreviewDisplay previewDisplay() {
@@ -3028,7 +2492,7 @@ public void onScreenReentry() {
      */
     @Nullable
     public SeedSearchService.SeedContextFactory seedSearchFactory() {
-        return seedSearchFactory;
+        return seedSearch.factory();
     }
 
     public List<AbstractWidget> widgets() {

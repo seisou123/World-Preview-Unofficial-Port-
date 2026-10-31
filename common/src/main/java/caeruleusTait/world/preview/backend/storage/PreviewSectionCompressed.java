@@ -9,6 +9,14 @@ import java.util.List;
 
 public abstract class PreviewSectionCompressed extends PreviewSection {
 
+    /**
+     * Map slot that permanently holds {@link Short#MIN_VALUE}, the "never
+     * sampled" sentinel.  Real values are stored from slot 1 onward, which is
+     * what keeps an unsampled cell from aliasing a slot that a later write
+     * would hand to a real height.
+     */
+    private static final short RESERVED_SENTINEL_SLOT = 0;
+
     private final int size;
 
     /**
@@ -176,17 +184,29 @@ public abstract class PreviewSectionCompressed extends PreviewSection {
      * <p>
      * If the mapData is already full, the compression will be migrated
      * to the next level and a new CompactState is published.
+     * <p>
+     * Map slot 0 is reserved for {@link Short#MIN_VALUE} -- the "never sampled"
+     * sentinel -- so a cell that was never written can never share its slot with
+     * a real height. Slots 1..n use {@link Short#MIN_VALUE} as the free-slot
+     * marker; no real value may ever be stored there, which is why the sentinel
+     * resolves to slot 0 immediately instead of being searched for.
      *
      * @return the map index, or the raw value when expanding to no compression
      */
     private short cacheMapIdx(CompactState s, short value) {
+        // The unsampled sentinel owns slot 0 permanently; returning it here
+        // keeps an unsampled cell from pointing at a slot a later write frees.
+        if (value == Short.MIN_VALUE) {
+            return RESERVED_SENTINEL_SLOT;
+        }
+
         // Check cache
         if (s.mapData[lastIdx] == value) {
             return lastIdx;
         }
 
-        // Find or insert in existing map
-        for (short i = 0; i < s.mapData.length; ++i) {
+        // Find or insert in existing map (slot 0 is reserved for the sentinel)
+        for (short i = RESERVED_SENTINEL_SLOT + 1; i < s.mapData.length; ++i) {
             if (value == s.mapData[i]) {
                 return lastIdx = i;
             } else if (s.mapData[i] == Short.MIN_VALUE) {
@@ -266,14 +286,18 @@ public abstract class PreviewSectionCompressed extends PreviewSection {
                 s.data[0] = biome;
             } else {
                 // new value --> expand to first level compression
+                // Slot 0 is the reserved sentinel; the previous uniform value keeps
+                // slot 1, and every pre-existing cell points at it. The new value
+                // gets whichever slot cacheMapIdx hands out -- which is slot 0 when
+                // the new value is itself the sentinel.
                 short[] newData = new short[(size * size) >> 3];
-                Arrays.fill(newData, (short) 0);
+                Arrays.fill(newData, (short) 0b0101010101010101);
                 CompactState expanded = new CompactState(
-                        new short[]{s.data[0], biome, Short.MIN_VALUE, Short.MIN_VALUE},
+                        new short[]{Short.MIN_VALUE, s.data[0], Short.MIN_VALUE, Short.MIN_VALUE},
                         newData
                 );
                 this.state = expanded;
-                internalSetData(expanded, x, z, (short) 1);
+                internalSetData(expanded, x, z, cacheMapIdx(expanded, biome));
             }
         } else if (s.mapData.length == 1) {
             // Handle no compression
@@ -309,18 +333,5 @@ public abstract class PreviewSectionCompressed extends PreviewSection {
     @Override
     public void addStructure(PreviewStruct structureData) {
         throw new NotImplementedException();
-    }
-
-    public synchronized short mapSize() {
-        short[] mapData = state.mapData;
-        short s;
-
-        for (s = 0; s < mapData.length; s++) {
-            if (mapData[s] == Short.MIN_VALUE) {
-                return s;
-            }
-        }
-
-        return s;
     }
 }

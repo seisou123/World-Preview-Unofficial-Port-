@@ -1,3 +1,24 @@
+## 1.5.6
+
+### Fixes
+
+- Fixed blocky artefacts in the heightmap layer where columns that never hit an opaque block — open ocean floors, terrain above the sampled height range — read back a neighbouring column's height and were shaded as if they had been sampled; they now carry an explicit "not sampled" marker, and the compressed storage reserves a dedicated map slot for it so those cells can no longer be overwritten by later heights
+- Fixed the sample-resolution setting rebuilding the whole preview twice for a single change: the first rebuild used the outgoing resolution and was discarded before it finished
+- Caches written by earlier versions are re-sampled once instead of being reused, since their never-sampled height columns cannot be told apart from real samples
+
+### Improvements
+
+- The noise views (temperature, humidity, continentalness, erosion, depth, weirdness and peaks & valleys) can be read against the terrain: an opt-in overlay uses the heightmap channel to tint columns whose surface lies below sea level with a depth-shaded blue, draw a dark line on the water side of shorelines, and shade land by slope. Water takes its hue from the depth ramp and inherits only the field's lightness, so warm climate bands no longer turn lakes grey. The overlay is skipped in dimensions whose worldgen fluid is not water, and while it is on the height scan is widened down to the dimension floor so deep ocean floors are classified instead of reading back as unsampled
+- The noise views can optionally draw isolines, splitting each field into a configurable number of bands (opt-in, off by default; the peaks & valleys view is excluded because it displays a nonlinear transform of the raw value)
+- The frame-time readout now also reports how often the expensive re-render path runs and what it costs (average and worst case), and the same numbers are written to the log every 10 seconds even when the readout is hidden
+- Terrain map export reports progress once per tile instead of once per pixel row, which removes a contended cross-thread counter update from the export's inner loop; cancellation is still checked every row
+- Hover queries no longer rebuild the noise-channel flag array on every call
+
+### Internal
+
+- Removed dead code: the preview level's unused chunk cache and (on Minecraft 1.21.11 and the 26.x versions) its unused biome registry, the compression-statistics debug method and its map-size accessor, three never-called validation hooks whose clamping is already applied by config normalization, and the superseded analysis cache signature
+- The block-level storage concurrency test moved into the shared test sources, so it now runs on every supported Minecraft version and both loaders — including the 26.x versions, which previously had no coverage for it
+- The preview cache key now encodes the noise-view terrain overlay, since enabling it changes the sampled height range; an older cache simply misses once instead of being reused with a shallow height column
 ## 1.5.5
 
 ### Fixes
@@ -29,12 +50,6 @@
 - Right-clicking a waypoint pin on the preview map copies a /tp command with the waypoint's coordinates
 - Terrain map exports can color the map per biome (opt-in): every pixel takes the biome's preview color — the same colors the preview's biome view uses, including user overrides — instead of the nine terrain categories, and the export metadata JSON carries a per-biome legend mapping every used color to its biome id and name
 - Terrain map exports sample biomes at the Y layer the preview is scrolled to instead of a fixed Y 64, so the exported map matches the layer being viewed and the storage fast path applies to it; every dimension of a batch export samples at that same layer and the metadata JSON records it
-- The Russian and Portuguese (Portugal) translations now cover every language key, with a language parity test guarding key coverage, key order and format placeholders; two pre-existing placeholder mistakes that could crash tooltip rendering in those locales were fixed
-
-### Internal
-
-- Added a shared pixel allocation limit for terrain exports, and tests covering the per-version pixel formats
-- Worker and icon-loading exceptions are now written to the game log instead of bare stack traces
 
 ## 1.5.4
 

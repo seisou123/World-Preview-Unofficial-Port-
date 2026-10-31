@@ -40,8 +40,13 @@ public interface PreviewStorageCacheManager {
      *  {@code onlySampleInVisualRange} flag joined the key; v3 keys clamped the
      *  range to 0..255 (colliding -64 with 0 and anything above 255 with 255)
      *  and dropped the flag, so two different height-sampling configs could
-     *  share a filename.  Payload format unchanged. */
-    int CACHE_FORMAT_VERSION = 4;
+     *  share a filename.  Payload format unchanged.
+     *  Bumped to 5 when unsampled height columns started publishing the
+     *  {@link Short#MIN_VALUE} sentinel instead of leaving them to read back a
+     *  neighbouring column's height.  v4 payloads stored those cells with a
+     *  flood value that is indistinguishable from a real sample, so reusing them
+     *  would keep the artefacts this version removes. */
+    int CACHE_FORMAT_VERSION = 5;
 
     /** Zip entry name for the binary payload. */
     String CACHE_ZIP_ENTRY = "bin";
@@ -100,6 +105,17 @@ public interface PreviewStorageCacheManager {
      * window the settings UI accepts (-64..512; v3 clamped to 0..255, which
      * collided -64 with 0 and anything above 255 with 255) — and bit 38
      * {@code onlySampleInVisualRange} (not encoded at all in v3).
+     * <p>
+     * Bit 39 is {@code noiseTerrainOverlay}. The switch changes the sampled
+     * data even though it is not a heightmap setting: while it is on,
+     * {@code HeightmapWorkUnit} widens the scan down to the noise grid floor so
+     * the overlay can classify deep ocean, instead of stopping at
+     * {@code heightmapMinY}. Without this bit a cache written while the
+     * heightmap view was open (32..255, sub-32 columns already marked sampled)
+     * would be reused verbatim when the user turns the overlay on, leaving the
+     * deep-ocean columns untinted. No {@code CACHE_FORMAT_VERSION} bump is
+     * needed: older caches simply have the bit clear, so enabling the overlay
+     * misses and resamples, while leaving it off still matches.
      */
     static long configSamplingFlags(WorldPreviewConfig cfg) {
         long flags = 0;
@@ -108,6 +124,7 @@ public interface PreviewStorageCacheManager {
         flags |= (long) ((Math.max(-64, Math.min(512, cfg.heightmapMinY)) + 64) & 0x3FF) << 18;
         flags |= (long) ((Math.max(-64, Math.min(512, cfg.heightmapMaxY)) + 64) & 0x3FF) << 28;
         flags |= cfg.onlySampleInVisualRange ? 1L << 38 : 0;
+        flags |= cfg.noiseTerrainOverlay ? 1L << 39 : 0;
         return flags;
     }
 

@@ -100,13 +100,13 @@ class MetricAggregatorTest {
         long seed = 42; java.util.Random rnd = new java.util.Random(seed);
         short[][] h = new short[3][3];
         for (int z = 0; z < 3; z++) for (int x = 0; x < 3; x++) h[z][x] = (short) (60 + rnd.nextInt(40));
-        // 打乱插入顺序，模拟多线程完成次序
+        // Shuffle the insertion order to mimic threads completing out of order
         List<int[]> cells = new java.util.ArrayList<>();
         for (int z = 0; z < 3; z++) for (int x = 0; x < 3; x++) cells.add(new int[]{x, z});
         java.util.Collections.shuffle(cells, rnd);
         for (int[] c : cells) agg.addSample(c[0] * 4, c[1] * 4, (short) 1, h[c[1]][c[0]]);
         RegionMetrics m = agg.snapshot();
-        // 全量对拍：所有 +x/+z 边（同一网格、同一 step）
+        // Exhaustive cross-check: every +x/+z edge of the same grid at the same step
         double sum = 0, max = 0; long pairs = 0, flat = 0;
         for (int z = 0; z < 3; z++) for (int x = 0; x < 3; x++) {
             if (x + 1 < 3) { long d = Math.abs((long) h[z][x + 1] - h[z][x]); sum += d; max = Math.max(max, d); pairs++; if (d <= 1) flat++; }
@@ -121,8 +121,8 @@ class MetricAggregatorTest {
     void histogramMedianAndWaterShare() {
         MetricAggregator agg = new MetricAggregator(4, 1);
         agg.setSeaLevel(63);
-        agg.addSample(0, 0, (short) 1, (short) 70); // 陆地
-        agg.addSample(4, 0, (short) 1, (short) 62); // 水
+        agg.addSample(0, 0, (short) 1, (short) 70); // land
+        agg.addSample(4, 0, (short) 1, (short) 62); // water
         agg.addSample(8, 0, (short) 1, (short) 64);
         agg.addSample(12, 0, (short) 1, (short) 70);
         RegionMetrics m = agg.snapshot();
@@ -132,11 +132,11 @@ class MetricAggregatorTest {
         org.junit.jupiter.api.Assertions.assertEquals(70, m.maxHeight().getAsInt());
         org.junit.jupiter.api.Assertions.assertEquals(9, m.heightHistogram().length); // 62..70
         org.junit.jupiter.api.Assertions.assertEquals(62, m.histogramMinY());
-        org.junit.jupiter.api.Assertions.assertEquals(1, m.heightHistogram()[0]); // y=62 一格
+        org.junit.jupiter.api.Assertions.assertEquals(1, m.heightHistogram()[0]); // one column at y=62
     }
 
     @Test
-    void snapshotIsCheapAndConsistent() { // 快照重复调用返回同一实例（dirty flag 不失效）
+    void snapshotIsCheapAndConsistent() { // repeated snapshots return the same instance (the dirty flag holds)
         MetricAggregator agg = new MetricAggregator(2, 1);
         agg.addSample(0, 0, (short) 1, (short) 10);
         RegionMetrics a = agg.snapshot();

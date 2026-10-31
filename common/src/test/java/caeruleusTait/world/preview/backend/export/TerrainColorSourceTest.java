@@ -98,6 +98,63 @@ class TerrainColorSourceTest {
         assertEquals(3, colors.bucketCount());
     }
 
+    /**
+     * The fused holder lookup must answer exactly what the individual
+     * accessors answer -- color, bucket (including the -1 skip sentinel) and
+     * the height estimate (0 for null holders) -- for both color modes and
+     * the four holder semantics: null, table-known, unregistered, modded.
+     */
+    @Test
+    void resolveHolderMatchesTheIndividualAccessors() {
+        TerrainMapExporter.TerrainColorSource category = TerrainMapExporter.categories(null);
+        TerrainMapExporter.TerrainColorSource biome = TerrainMapExporter.biomes(table());
+        Holder<Biome>[] holders = new Holder[]{
+                null, biome("minecraft:plains"), biome("minecraft:savanna"), biome("somemod:weird_swamp")};
+        for (TerrainMapExporter.TerrainColorSource source : new TerrainMapExporter.TerrainColorSource[]{category, biome}) {
+            for (Holder<Biome> holder : holders) {
+                long style = source.resolveHolder(holder);
+                assertEquals(source.colorForHolder(holder), TerrainMapExporter.TerrainColorSource.argbOf(style),
+                        "color slot must match colorForHolder for " + holder);
+                assertEquals(source.bucketForHolder(holder), TerrainMapExporter.TerrainColorSource.bucketOf(style),
+                        "bucket slot must match bucketForHolder for " + holder);
+                int expectedEstimate = holder == null ? 0
+                        : TerrainClassifier.categoryHeight(TerrainClassifier.classify(holder));
+                assertEquals(expectedEstimate, TerrainMapExporter.TerrainColorSource.estimatedHeightOf(style),
+                        "estimate slot must match the classifier estimate for " + holder);
+            }
+        }
+    }
+
+    /** Same contract for the storage-id fast path, including the NO_ESTIMATE slot of biome mode. */
+    @Test
+    void resolveIdMatchesTheIndividualAccessors() {
+        TerrainMapExporter.IdTableResolver resolver = new TerrainMapExporter.IdTableResolver(
+                new TerrainCategory[]{null, TerrainCategory.OCEAN}, new short[]{0, 50});
+        for (short id : new short[]{1, 7}) {
+            long style = TerrainMapExporter.categories(resolver).resolveId(id);
+            assertEquals(TerrainMapExporter.categories(resolver).colorForId(id),
+                    TerrainMapExporter.TerrainColorSource.argbOf(style), "color slot for id " + id);
+            assertEquals(TerrainMapExporter.categories(resolver).bucketForId(id),
+                    TerrainMapExporter.TerrainColorSource.bucketOf(style), "bucket slot for id " + id);
+            assertEquals(resolver.estimatedHeight(id),
+                    TerrainMapExporter.TerrainColorSource.estimatedHeightOf(style), "estimate slot for id " + id);
+        }
+
+        TerrainMapExporter.TerrainColorSource biome = TerrainMapExporter.biomes(table());
+        long known = biome.resolveId((short) 1);
+        assertEquals(0xFF123456, TerrainMapExporter.TerrainColorSource.argbOf(known));
+        assertEquals(1, TerrainMapExporter.TerrainColorSource.bucketOf(known));
+        assertEquals(TerrainMapExporter.TerrainColorSource.NO_ESTIMATE,
+                TerrainMapExporter.TerrainColorSource.estimatedHeightOf(known),
+                "biome mode carries no estimate on the id path");
+
+        long unknown = biome.resolveId((short) 7);
+        assertEquals(TerrainCategory.UNKNOWN.argbColor(), TerrainMapExporter.TerrainColorSource.argbOf(unknown));
+        assertEquals(7, TerrainMapExporter.TerrainColorSource.bucketOf(unknown));
+        assertEquals(TerrainMapExporter.TerrainColorSource.NO_ESTIMATE,
+                TerrainMapExporter.TerrainColorSource.estimatedHeightOf(unknown));
+    }
+
     @Test
     void legendWritersDescribeTheMetadata() {
         JsonObject categoryMeta = new JsonObject();
