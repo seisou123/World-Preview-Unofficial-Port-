@@ -8,8 +8,8 @@
 
 ### Improvements
 
-- The noise views (temperature, humidity, continentalness, erosion, depth, weirdness and peaks & valleys) can be read against the terrain: an opt-in overlay uses the heightmap channel to tint columns whose surface lies below sea level with a depth-shaded blue, draw a dark line on the water side of shorelines, and shade land by slope. Water takes its hue from the depth ramp and inherits only the field's lightness, so warm climate bands no longer turn lakes grey. The overlay is skipped in dimensions whose worldgen fluid is not water, and while it is on the height scan is widened down to the dimension floor so deep ocean floors are classified instead of reading back as unsampled
-- The noise views can optionally draw isolines, splitting each field into a configurable number of bands (opt-in, off by default; the peaks & valleys view is excluded because it displays a nonlinear transform of the raw value)
+- The noise views can be read against the terrain: an opt-in overlay tints water columns by depth, draws a line along shorelines and shades land by slope. Off by default, skipped where the worldgen fluid is not water, and the height scan widens to the dimension floor while it is on so deep ocean floors are tinted too
+- The noise views can draw isolines that split each field into a configurable number of bands (off by default; the peaks & valleys view is excluded because it displays a nonlinear transform of the raw value)
 - The frame-time readout now also reports how often the expensive re-render path runs and what it costs (average and worst case), and the same numbers are written to the log every 10 seconds even when the readout is hidden
 - Terrain map export reports progress once per tile instead of once per pixel row, which removes a contended cross-thread counter update from the export's inner loop; cancellation is still checked every row
 - Hover queries no longer rebuild the noise-channel flag array on every call
@@ -18,7 +18,8 @@
 
 - Removed dead code: the preview level's unused chunk cache and (on Minecraft 1.21.11 and the 26.x versions) its unused biome registry, the compression-statistics debug method and its map-size accessor, three never-called validation hooks whose clamping is already applied by config normalization, and the superseded analysis cache signature
 - The block-level storage concurrency test moved into the shared test sources, so it now runs on every supported Minecraft version and both loaders — including the 26.x versions, which previously had no coverage for it
-- The preview cache key now encodes the noise-view terrain overlay, since enabling it changes the sampled height range; an older cache simply misses once instead of being reused with a shallow height column
+- The preview cache key now encodes the noise-view terrain overlay, since enabling it changes the sampled height range; older caches re-sample once instead of reusing a shallow height column
+
 ## 1.5.5
 
 ### Fixes
