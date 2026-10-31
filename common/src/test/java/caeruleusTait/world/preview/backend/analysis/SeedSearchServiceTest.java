@@ -13,9 +13,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 测试 SeedSearchService 的核心逻辑。
- * 通过 SeedSearchService.SeedContextFactory 和 BiomeSampler 接口注入 fake 实现，
- * 不依赖真实 Minecraft 世界生成。
+ * Tests the core logic of SeedSearchService.
+ * Fake implementations are injected through the SeedSearchService.SeedContextFactory
+ * and BiomeSampler interfaces, so no real Minecraft world generation is involved.
  */
 class SeedSearchServiceTest {
 
@@ -27,12 +27,12 @@ class SeedSearchServiceTest {
     }
 
     @Test
-    @DisplayName("命中即停：首个种子命中后停止搜索")
+    @DisplayName("hit stops the search: the first hit ends it")
     void hitStopsFurtherSearch() throws Exception {
         var request = legacyRequest(PLAINS, 100);
 
         var resultRef = new AtomicReference<SeedSearchResult>();
-        // 所有种子都返回目标群系，因此第一个随机种子即命中
+        // Every seed resolves to the target biome, so the first candidate hits
         var factory = new FakeSamplerFactory(seed -> "minecraft:plains");
 
         service.startSearch(request, factory, seed -> {}, result -> resultRef.set(result), attempts -> {});
@@ -40,12 +40,12 @@ class SeedSearchServiceTest {
 
         assertNotNull(resultRef.get());
         assertInstanceOf(SeedSearchResult.Hit.class, resultRef.get());
-        // 种子可以是任意 long 值（正数或负数）
+        // A seed can be any long value, positive or negative
         assertNotEquals(0, ((SeedSearchResult.Hit) resultRef.get()).seed());
     }
 
     @Test
-    @DisplayName("达到最大尝试次数后报告 Miss")
+    @DisplayName("reports a Miss once the attempt limit is reached")
     void missAfterMaxAttempts() throws Exception {
         var request = legacyRequest(RARE, 10);
 
@@ -60,7 +60,7 @@ class SeedSearchServiceTest {
     }
 
     @Test
-    @DisplayName("取消后停止且不注入")
+    @DisplayName("cancel stops the search without injecting a seed")
     void cancelStopsSearch() throws Exception {
         var request = legacyRequest(RARE, 100);
 
@@ -80,7 +80,7 @@ class SeedSearchServiceTest {
     }
 
     @Test
-    @DisplayName("重复请求被拒绝")
+    @DisplayName("a duplicate request is rejected")
     void rejectsDuplicateRequest() throws Exception {
         var request = legacyRequest(PLAINS, 100);
 
@@ -91,7 +91,7 @@ class SeedSearchServiceTest {
     }
 
     @Test
-    @DisplayName("连续失败超过阈值后提前终止")
+    @DisplayName("aborts early once consecutive failures exceed the threshold")
     void consecutiveFailuresEarlyAbort() throws Exception {
         var request = legacyRequest(RARE, 100);
 
@@ -103,12 +103,12 @@ class SeedSearchServiceTest {
 
         assertNotNull(resultRef.get());
         assertInstanceOf(SeedSearchResult.Miss.class, resultRef.get());
-        // 应在 10 次连续失败后提前终止
+        // Should abort early after 10 consecutive failures
         assertTrue(factory.callCount.get() >= 10 && factory.callCount.get() <= 15);
     }
 
     @Test
-    @DisplayName("BiomeSampler.close() 被调用")
+    @DisplayName("BiomeSampler.close() is called")
     void samplerCloseIsCalled() throws Exception {
         var request = legacyRequest(RARE, 3);
 
@@ -119,13 +119,13 @@ class SeedSearchServiceTest {
         Thread.sleep(500);
 
         assertNotNull(resultRef.get());
-        // 每个候选种子都应关闭其采样器
-        assertTrue(factory.closeCount.get() >= 1, "BiomeSampler.close() 应被调用");
+        // Every candidate seed must close its sampler
+        assertTrue(factory.closeCount.get() >= 1, "BiomeSampler.close() must be called");
     }
 
-    // ========== 测试辅助 ==========
+    // ========== Test helpers ==========
 
-    /** 仿真的种子上下文工厂，通过 BiomeSampler 接口注入 fake 采样结果 */
+    /** Fake seed-context factory that injects results through the BiomeSampler interface. */
     private static class FakeSamplerFactory implements SeedSearchService.SeedContextFactory {
         private final java.util.function.LongFunction<String> biomeFn;
         FakeSamplerFactory(java.util.function.LongFunction<String> biomeFn) {
@@ -138,7 +138,7 @@ class SeedSearchServiceTest {
         }
     }
 
-    // 辅助类：始终抛异常的工厂
+    // Helper: a factory whose samplers always throw
     private static class FailingSamplerFactory implements SeedSearchService.SeedContextFactory {
         final AtomicInteger callCount = new AtomicInteger(0);
         @Override
@@ -148,7 +148,7 @@ class SeedSearchServiceTest {
         }
     }
 
-    // 辅助类：跟踪 close() 调用的工厂
+    // Helper: a factory that tracks close() calls
     private static class CloseTrackingSamplerFactory implements SeedSearchService.SeedContextFactory {
         final AtomicInteger closeCount = new AtomicInteger(0);
         @Override
@@ -156,7 +156,7 @@ class SeedSearchServiceTest {
             return new SeedSearchService.BiomeSampler() {
                 @Override
                 public boolean sampleContains(int x, int y, int z, Identifier target) {
-                    return false; // 永远不命中
+                    return false; // never matches
                 }
                 @Override
                 public void close() {
@@ -167,7 +167,7 @@ class SeedSearchServiceTest {
     }
 
     @Test
-    @DisplayName("种子在一次搜索内不重复")
+    @DisplayName("seeds do not repeat within one search")
     void seedsAreUniqueWithinSearch() throws Exception {
         var request = legacyRequest(RARE, 20);
 
@@ -185,12 +185,12 @@ class SeedSearchServiceTest {
         Thread.sleep(1000);
 
         assertNotNull(resultRef.get());
-        // 每个种子只出现一次（Set 去重后 size == 种子数）
+        // Each seed appears once, so the deduplicated set size equals the seed count
         assertEquals(20, seedsSeen.size());
     }
 
     @Test
-    @DisplayName("SeedSearchRequest 拒绝无效视口边界")
+    @DisplayName("SeedSearchRequest rejects an invalid viewport")
     void requestRejectsInvalidViewport() {
         assertThrows(IllegalArgumentException.class, () -> new SeedSearchRequest(
                 Identifier.parse("minecraft:plains"), "minecraft:overworld",

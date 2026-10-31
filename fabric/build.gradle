@@ -60,8 +60,9 @@ dependencies {
 		testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
 	}
 
-// 共享测量工具：单一副本在 ../world-preview-tools/java，6 个孪生仓共用这一份。
-// 只作用于 test sourceSet —— 不进主 jar，不影响发布产物。
+// Shared measurement tools: a single copy lives in ../world-preview-tools/java and
+// is used by all six sibling repos. Wired into the test sourceSet only, so it never
+// reaches the main jar or the release artefacts.
 sourceSets {
 	 test {
 		java.srcDir rootProject.file('../world-preview-tools/java')

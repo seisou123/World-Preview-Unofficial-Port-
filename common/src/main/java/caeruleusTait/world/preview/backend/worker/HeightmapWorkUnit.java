@@ -62,8 +62,17 @@ public class HeightmapWorkUnit extends WorkUnit {
         // (cellCountY = floorDiv(maxY - minY, cellHeight)) dropped that cell,
         // so surfaces sitting in its band were never sampled and heights were
         // reported too low.  See {@link #cellScan}.
+        // While the noise-view terrain overlay is on, the height channel is
+        // also its terrain reference, and the overlay classifies water by
+        // comparing the surface against sea level. The configured range
+        // defaults to 32..255, which excludes deep ocean floors (below y=32):
+        // those columns would read back as unsampled and be left un-tinted,
+        // leaving holes in the middle of oceans. Widen the range down to the
+        // dimension floor for that case; the heightmap view itself still
+        // clamps its colour ramp to the configured range.
+        final boolean overlayNeedsFullColumn = config.noiseTerrainOverlay;
         final CellScan scan = cellScan(
-                config.heightmapMinY,
+                overlayNeedsFullColumn ? Math.min(config.heightmapMinY, noiseSettings.minY()) : config.heightmapMinY,
                 config.heightmapMaxY,
                 config.onlySampleInVisualRange,
                 noiseSettings.minY(),
@@ -146,6 +155,21 @@ public class HeightmapWorkUnit extends WorkUnit {
                                     --idx;
                                 }
                             }
+                        }
+                    }
+
+                    // Columns that stayed in the lattice never hit an opaque block
+                    // (open ocean floor, terrain above heightmapMaxY).  Leaving them
+                    // unwritten makes them read back the section's flood value --
+                    // some other column's real height -- which the renderer then
+                    // shades as if it were sampled, producing blocky artefacts.
+                    // Publish the unsampled sentinel instead; consumers already
+                    // skip values <= Short.MIN_VALUE.  Skipped when cancelled: a
+                    // cancelled unit must not cement untouched columns as sampled.
+                    if (count > 0 && !isCanceled()) {
+                        for (int idx = 0; idx < count; ++idx) {
+                            mutableBlockPos.set(xs[idx], 0, zs[idx]);
+                            sampler.expandRaw(mutableBlockPos, Short.MIN_VALUE, res);
                         }
                     }
                 }
