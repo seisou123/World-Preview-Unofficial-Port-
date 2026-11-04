@@ -226,6 +226,12 @@ public class SampleUtils implements AutoCloseable {
                     .getResourceKey(levelStem)
                     .orElseThrow();
             dimension = Registries.levelStemToLevel(levelStemResourceKey);
+            // Expose this dimension's real level to third-party code that reads
+            // the level out of a WorldGenLevel (see PreviewLevel#attachLevel).
+            // The lookup may legitimately return null (the preview can point at
+            // a dimension the server never loaded); attachLevel(null) then
+            // leaves the accessor throwing instead of handing out a wrong level.
+            this.previewLevel.attachLevel(minecraftServer.getLevel(dimension));
 
             if (chunkGenerator instanceof NoiseBasedChunkGenerator noiseBasedChunkGenerator) {
                 randomState = RandomState.create(
@@ -519,6 +525,11 @@ public class SampleUtils implements AutoCloseable {
                     null
                 );
 
+            // The fake level is the only ServerLevel this path has, so it is what
+            // getLevel() reports to third-party structure code. It is detached in
+            // close() before the level is closed.
+            this.previewLevel.attachLevel(serverLevel);
+
             // Initialize mod compatibility adapter
             this.chunkGeneratorAdapter = adapter;
             this.minecraftChunkGenerator = new caeruleusTait.world.preview.infra.minecraft.MinecraftChunkGeneratorImpl(
@@ -691,6 +702,10 @@ public class SampleUtils implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
         ownedExecutors.clear();
+
+        // Stop handing out the level before closing it: a worker still inside
+        // createStructures() must not receive a level whose resources are gone.
+        this.previewLevel.attachLevel(null);
 
         try {
             if (serverLevel != null) {
