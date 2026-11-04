@@ -48,6 +48,24 @@ public class PreviewLevel implements WorldGenLevel {
     private final LevelHeightAccessor levelHeightAccessor;
     private final Registry<Biome> biomeRegistry;
 
+    /**
+     * Real level backing this preview level, or {@code null} while none has been attached.
+     *
+     * <p>This class is a throwaway stand-in: it serves generated chunks from
+     * thin air and stubs out everything it does not need. That works until some
+     * third-party code treats every {@link WorldGenLevel} as a
+     * {@link net.minecraft.world.level.ServerLevelAccessor} and calls
+     * {@link #getLevel()} on it — structure generators hooked by mods such as
+     * Goety: Revelation do exactly that, which used to fail every structure
+     * work unit with a {@link NotImplementedException}.
+     *
+     * <p>Only the two accessors below delegate. The rest of the class stays a
+     * stub on purpose: this is a compatibility bridge for code that probes
+     * {@code getLevel()}, not a claim that the preview level is the real one.
+     */
+    @Nullable
+    private volatile ServerLevel backingLevel;
+
     public PreviewLevel(RegistryAccess registryAccess, LevelHeightAccessor levelHeightAccessor) {
         this.registryAccess = registryAccess;
         this.levelHeightAccessor = levelHeightAccessor;
@@ -67,6 +85,18 @@ public class PreviewLevel implements WorldGenLevel {
         return registryAccess;
     }
 
+    /**
+     * Attaches the level that {@link #getLevel()} and {@link #getServer()} report.
+     *
+     * <p>Passing {@code null} detaches it again; call that before the backing
+     * level is closed so a late worker cannot hand out a closed level.
+     *
+     * @param backingLevel the real level to expose, or {@code null} to detach
+     */
+    public void attachLevel(@Nullable ServerLevel backingLevel) {
+        this.backingLevel = backingLevel;
+    }
+
     // Stuff we don't need but still need to implement:
 
     @Override
@@ -74,9 +104,22 @@ public class PreviewLevel implements WorldGenLevel {
         throw new NotImplementedException("Not implemented");
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Delegates to the attached level, because third-party structure code
+     * reaches for the owning level through the {@link net.minecraft.world.level.ServerLevelAccessor}
+     * contract that {@link WorldGenLevel} extends. Throws when nothing is
+     * attached, so the failure stays visible instead of turning into a null
+     * dereference somewhere inside the caller.
+     */
     @Override
     public ServerLevel getLevel() {
-        throw new NotImplementedException("Not implemented");
+        final ServerLevel level = backingLevel;
+        if (level == null) {
+            throw new NotImplementedException("No level attached to the preview level");
+        }
+        return level;
     }
 
     @Override
@@ -107,7 +150,13 @@ public class PreviewLevel implements WorldGenLevel {
     @Nullable
     @Override
     public MinecraftServer getServer() {
-        throw new NotImplementedException("Not implemented");
+        // Same bridge as getLevel(): callers that ask for the server through
+        // the level accessor contract get the real one when it is attached.
+        final ServerLevel level = backingLevel;
+        if (level == null) {
+            throw new NotImplementedException("Not implemented");
+        }
+        return level.getServer();
     }
 
     @Override

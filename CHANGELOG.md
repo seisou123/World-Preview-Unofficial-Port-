@@ -2,6 +2,7 @@
 
 ### Fixes
 
+- Fixed the structure layer staying empty with Goety: Revelation installed: the mod's structure generator reads the owning level from the preview's level stand-in, which threw on every structure sample and left the layer blank; the preview level now reports the backing level, and still throws when none is attached
 - Fixed blocky artefacts in the heightmap layer where columns that never hit an opaque block — open ocean floors, terrain above the sampled height range — read back a neighbouring column's height and were shaded as if they had been sampled; they now carry an explicit "not sampled" marker, and the compressed storage reserves a dedicated map slot for it so those cells can no longer be overwritten by later heights
 - Fixed the sample-resolution setting rebuilding the whole preview twice for a single change: the first rebuild used the outgoing resolution and was discarded before it finished
 - Caches written by earlier versions are re-sampled once instead of being reused, since their never-sampled height columns cannot be told apart from real samples
