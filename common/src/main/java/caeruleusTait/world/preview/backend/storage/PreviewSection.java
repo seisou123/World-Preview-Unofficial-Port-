@@ -2,6 +2,8 @@
 // See CHANGES.md for details.
 package caeruleusTait.world.preview.backend.storage;
 
+import caeruleusTait.world.preview.backend.FillLevel;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.QuartPos;
 import net.minecraft.world.level.ChunkPos;
@@ -46,6 +48,18 @@ public abstract class PreviewSection {
     // without touching fine completions; they are session-local and never
     // serialized.
     private final BitSet coarseCompleted = new BitSet(SECTION_SIZE * HALF_SIZE);
+
+    // Quarter-level fill marks: completion granted to units that sampled the
+    // chunk's full 2x2 quart lattice — the middle stage of the staged initial
+    // fill.  Like the coarse marks they are session-local, never serialized,
+    // and are swept as soon as the chunk is refined to full resolution.
+    private final BitSet quarterCompleted = new BitSet(SECTION_SIZE * HALF_SIZE);
+
+    // Raster-dirty tracking: bumped whenever sampled values change (once per
+    // applied work result, not per cell).  The renderer compares this against
+    // the version it last painted for the section and skips unchanged
+    // sections, so a loading map only re-rasterizes the areas that moved.
+    private volatile long writeVersion;
 
     protected PreviewSection(int quartX, int quartZ) {
         this.quartX = quartX & MASK;
@@ -212,29 +226,49 @@ public abstract class PreviewSection {
      * Chunk coords
      */
     public synchronized boolean isCompleted(ChunkPos chunkPos) {
-        return completed.get((chunkPos.x - chunkX) * SECTION_SIZE + (chunkPos.z - chunkZ))
-                || coarseCompleted.get((chunkPos.x - chunkX) * SECTION_SIZE + (chunkPos.z - chunkZ));
+        final int index = chunkIndex(chunkPos);
+        return completed.get(index) || quarterCompleted.get(index) || coarseCompleted.get(index);
+    }
+
+    /**
+     * Chunk coords.  True when the chunk reached at least the given lattice
+     * density.  The staged initial fill uses this to decide whether a chunk
+     * still needs the next refinement pass; {@link FillLevel#FULL} means the
+     * chunk is finished (the completion bit).
+     */
+    public synchronized boolean isCompletedAtLeast(ChunkPos chunkPos, FillLevel level) {
+        final int index = chunkIndex(chunkPos);
+        return switch (level) {
+            case SINGLE -> completed.get(index) || quarterCompleted.get(index) || coarseCompleted.get(index);
+            case QUARTER -> completed.get(index) || quarterCompleted.get(index);
+            case FULL -> completed.get(index);
+        };
     }
 
     /**
      * Chunk coords.  Like {@link #isCompleted} but also requires that the
-     * chunk was NOT touched by the drag tier: coarse sampling overwrites a
-     * chunk's sixteen quarts with one sample, so a chunk carrying both a fine
-     * and a coarse mark may hold coarse values under a fine completion (the
-     * two units raced the drag edge).  Consumers that treat a stored value as
-     * ground truth (analysis fact reuse, terrain export probes) use this
-     * variant so such a chunk is re-sampled instead of trusted.
+     * chunk was NOT touched by a coarser fill stage: coarse sampling
+     * overwrites a chunk's sixteen quarts with one sample, so a chunk carrying
+     * both a fine and a staged mark may hold coarse values under a fine
+     * completion (the two units raced the fill edge).  Consumers that treat a
+     * stored value as ground truth (analysis fact reuse, terrain export
+     * probes) use this variant so such a chunk is re-sampled instead of
+     * trusted.
      */
     public synchronized boolean isCompletedFine(ChunkPos chunkPos) {
-        final int index = (chunkPos.x - chunkX) * SECTION_SIZE + (chunkPos.z - chunkZ);
-        return completed.get(index) && !coarseCompleted.get(index);
+        final int index = chunkIndex(chunkPos);
+        return completed.get(index) && !quarterCompleted.get(index) && !coarseCompleted.get(index);
+    }
+
+    private int chunkIndex(ChunkPos chunkPos) {
+        return (chunkPos.x - chunkX) * SECTION_SIZE + (chunkPos.z - chunkZ);
     }
 
     /**
      * Chunk coords
      */
     public synchronized void markCompleted(ChunkPos chunkPos) {
-        completed.set((chunkPos.x - chunkX) * SECTION_SIZE + (chunkPos.z - chunkZ));
+        completed.set(chunkIndex(chunkPos));
     }
 
     /**
@@ -244,7 +278,17 @@ public abstract class PreviewSection {
      * the marks on release so the fine pass re-samples those chunks.
      */
     public synchronized void markCompletedCoarse(ChunkPos chunkPos) {
-        coarseCompleted.set((chunkPos.x - chunkX) * SECTION_SIZE + (chunkPos.z - chunkZ));
+        coarseCompleted.set(chunkIndex(chunkPos));
+    }
+
+    /**
+     * Chunk coords.  Completion granted to a unit that sampled the chunk's
+     * full quarter lattice — the middle stage of the staged initial fill.
+     * {@link #isCompletedAtLeast} reports it, so the full-resolution pass only
+     * re-samples the chunks that reached this level.
+     */
+    public synchronized void markCompletedQuarter(ChunkPos chunkPos) {
+        quarterCompleted.set(chunkIndex(chunkPos));
     }
 
     /**
@@ -259,10 +303,78 @@ public abstract class PreviewSection {
      * untouched.
      */
     public synchronized void clearCoarseCompletions() {
-        for (int i = coarseCompleted.nextSetBit(0); i >= 0; i = coarseCompleted.nextSetBit(i + 1)) {
+        clearAndDropFine(coarseCompleted);
+    }
+
+    /**
+     * Drops the quarter-level marks of the staged fill, and with each of them
+     * the fine completion of the same chunk, for the same race reason as
+     * {@link #clearCoarseCompletions}.
+     */
+    public synchronized void clearQuarterCompletions() {
+        clearAndDropFine(quarterCompleted);
+    }
+
+    /**
+     * Drops every staged fill mark (single- and quarter-level) WITHOUT touching
+     * the fine completion bits.  Used when a staged fill finished: every
+     * completed chunk holds target-resolution data by then, so the staged
+     * marks are pure bookkeeping and must not demote the chunk to
+     * "not ground truth".
+     */
+    public synchronized void clearStagedMarks() {
+        coarseCompleted.clear();
+        quarterCompleted.clear();
+    }
+
+    /**
+     * Drops every staged fill mark and the fine completion of the same chunks.
+     * Used when a staged fill is abandoned mid-way: its values are not usable
+     * as full-resolution data, so the touched chunks must be re-sampled.
+     */
+    public synchronized void clearStagedCompletions() {
+        clearAndDropFine(coarseCompleted);
+        clearAndDropFine(quarterCompleted);
+    }
+
+    /** Clears {@code marks} and the fine completion of every chunk it covers. */
+    private void clearAndDropFine(BitSet marks) {
+        for (int i = marks.nextSetBit(0); i >= 0; i = marks.nextSetBit(i + 1)) {
             completed.clear(i);
         }
-        coarseCompleted.clear();
+        marks.clear();
+    }
+
+    /** Monotonic value-write version for the renderer's incremental raster cache. */
+    public long writeVersion() {
+        return writeVersion;
+    }
+
+    /**
+     * Bumps {@link #writeVersion()}; called once per applied work result, after
+     * its samples (and structures) have been written.  A per-result instead of
+     * per-cell bump keeps the cost negligible while still guaranteeing that a
+     * section is repainted when any of its data changed.
+     */
+    public void bumpWriteVersion() {
+        writeVersion++;
+    }
+
+    /**
+     * Number of chunk columns that completed full-resolution sampling in this
+     * section.
+     *
+     * <p>Coarse (coarse-first / drag-tier) completions are deliberately not
+     * counted: they are a transient preview that is swept and re-sampled as
+     * soon as the full-resolution pass runs, so including them would make the
+     * displayed progress jump back down at that transition.
+     *
+     * <p>Unlike a section-count, this reflects work actually performed: the
+     * render path allocates viewport sections eagerly, so their existence says
+     * nothing about how much of the layer has been sampled.
+     */
+    public synchronized int completedChunkCount() {
+        return completed.cardinality();
     }
 
     public AccessData calcQuartOffsetData(int minQuartX, int minQuartZ, int maxQuartX, int maxQuartZ) {

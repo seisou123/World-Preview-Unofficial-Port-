@@ -89,6 +89,75 @@ public abstract class AbstractSettingsPage extends ConfigurablePage implements S
     }
 
     /**
+     * Adds a checkbox row and returns the widget, for pages that need to
+     * enable/disable it from another control. The plain overload above stays
+     * as the returning-y form used by every existing call site.
+     */
+    protected Checkbox addCheckboxRowWidget(int x, int y, Component label, boolean value,
+                                            Component tooltip, Consumer<Boolean> onSave) {
+        final Checkbox cb = createCheckbox(x, y, label, value, tooltip, onSave);
+        widgets.add(cb);
+        return cb;
+    }
+
+    /**
+     * Adds a slider row and returns the widget; see
+     * {@link #addCheckboxRowWidget}. Same layout as {@link #addSliderRow}.
+     */
+    protected AbstractSliderButton addSliderRowWidget(int x, int y, ScreenRectangle area,
+                                                      Component label, int value, int min, int max,
+                                                      Component tooltip, IntConsumer onSave) {
+        final AbstractSliderButton slider = createSlider(x, y, area, label, value, min, max, tooltip, onSave);
+        widgets.add(slider);
+        return slider;
+    }
+
+    private Checkbox createCheckbox(int x, int y, Component label, boolean value,
+                                    Component tooltip, Consumer<Boolean> onSave) {
+        // 1.20.1 has no Checkbox.builder(); WPCheckbox bridges the constructor.
+        Checkbox cb = new caeruleusTait.world.preview.client.gui.widgets.WPCheckbox(
+                x, y, label, value, onSave);
+        if (tooltip != null) {
+            cb.setTooltip(Tooltip.create(tooltip));
+        }
+        cb.setPosition(x, y);
+        return cb;
+    }
+
+    private AbstractSliderButton createSlider(int x, int y, ScreenRectangle area,
+                                              Component label, int value, int min, int max,
+                                              Component tooltip, IntConsumer onSave) {
+        int labelWidth = Math.min(SettingsTheme.LABEL_WIDTH, Math.max(0, area.right() - x - 10));
+        StringWidget sw = new StringWidget(x, y, labelWidth, SettingsTheme.ROW_HEIGHT,
+                label, Minecraft.getInstance().font);
+        widgets.add(sw);
+
+        int sliderX = x + labelWidth + 10;
+        int sliderW = Math.max(20, Math.min(SettingsTheme.CONTROL_WIDTH, area.right() - sliderX - SettingsTheme.CONTENT_PADDING));
+        int range = Math.max(0, max - min);
+        int clampedValue = Math.max(min, Math.min(max, value));
+        AbstractSliderButton slider = new AbstractSliderButton(sliderX, y, sliderW, 20,
+                Component.literal(String.valueOf(clampedValue)),
+                range == 0 ? 0.0 : (double) (clampedValue - min) / range) {
+            @Override
+            protected void updateMessage() {
+                int v = range == 0 ? min : (int) Math.round(value * range + min);
+                this.setMessage(Component.literal(String.valueOf(v)));
+            }
+
+            @Override
+            protected void applyValue() {
+                int v = range == 0 ? min : (int) Math.round(this.value * range + min);
+                onSave.accept(Math.max(min, Math.min(max, v)));
+            }
+        };
+        if (tooltip != null) {
+            slider.setTooltip(Tooltip.create(tooltip));
+        }
+        return slider;
+    }
+
+    /**
      * Adds a slider row with a label and tooltip.
      *
      * @param x the x coordinate

@@ -4,6 +4,7 @@ package caeruleusTait.world.preview.client.gui.screens;
 
 import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
+import caeruleusTait.world.preview.backend.storage.PreviewStorageCacheManager;
 import caeruleusTait.world.preview.client.gui.PreviewContainerDataProvider;
 import caeruleusTait.world.preview.mixin.client.CreateWorldScreenAccessor;
 import net.minecraft.Util;
@@ -263,11 +264,11 @@ public class PreviewTab implements Tab, AutoCloseable, PreviewContainerDataProvi
         if (!worldPreview.cfg().cacheInNew) {
             return;
         }
-        minecraft.setScreen(new PreviewCacheLoadingScreen(SAVING_PREVIEW));
-        writeCacheFile(storage, cacheDir().resolve(filename(seed)));
-        previewContainer.setCacheLoading(true);
-        minecraft.setScreen(createWorldScreen);
-        previewContainer.setCacheLoading(false);
+        // Resolve the path here (it depends on the current config dir) but
+        // leave the zip write to the cache I/O thread: it used to flash a
+        // "Saving preview" screen while the render thread serialized every
+        // sampled section.
+        PreviewStorageCacheManager.writeCacheAsync(this, storage, cacheDir().resolve(filename(seed)));
     }
 
     @Override

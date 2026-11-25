@@ -211,7 +211,6 @@ public class SettingsScreen extends Screen {
         int y = bodyTop();
         int availableHeight = bodyHeight();
         for (Button button : sidebar.buttons()) {
-            int buttonHeight = Math.max(0, Math.min(categoryHeight - 2, availableHeight));
             button.setX(x);
             button.setY(y);
             button.setWidth(sidebarWidth());
@@ -280,7 +279,7 @@ public class SettingsScreen extends Screen {
     }
 
     private void initPages() {
-        pages[0] = new GeneralSettingsPage(pendingConfig, previewContainer);
+        pages[0] = new GeneralSettingsPage(pendingConfig, previewContainer, this);
         pages[1] = new CacheSettingsPage(pendingConfig, previewContainer);
         pages[2] = new ResolutionSettingsPage(pendingRender);
         pages[3] = new HeightmapSettingsPage(pendingConfig, previewContainer);

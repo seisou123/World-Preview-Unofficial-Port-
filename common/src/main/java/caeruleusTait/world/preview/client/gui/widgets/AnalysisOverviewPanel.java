@@ -17,7 +17,6 @@ import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
-import net.minecraft.locale.Language;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -470,10 +469,9 @@ public final class AnalysisOverviewPanel extends AbstractWidget implements caeru
 
     // ===== Helpers =====
 
-    /** Structure label: {@code world_preview.structure.<path>} when translated, else the raw path. */
+    /** Structure label; delegates so every screen agrees on the name. */
     public static Component structureDisplayName(ResourceLocation id) {
-        String key = "world_preview.structure." + id.getPath();
-        return Language.getInstance().has(key) ? Component.translatable(key) : Component.literal(id.getPath());
+        return caeruleusTait.world.preview.client.gui.StructureNames.display(id);
     }
 
     private static String runStatusLabel(AnalysisStatus status) {

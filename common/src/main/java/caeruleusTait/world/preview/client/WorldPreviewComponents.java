@@ -31,8 +31,6 @@ public class WorldPreviewComponents {
     public static final Component BTN_TOGGLE_INTERSECT_DISABLED = Component.translatable("world_preview.preview.btn-toggle-intersect.disabled");
     public static final Component BTN_TOGGLE_EXPAND =  Component.translatable("world_preview.preview.btn-toggle-expand");
     public static final Component BTN_CYCLE_NOISE =  Component.translatable("world_preview.preview.btn-cycle-noise");
-    public static final Component BTN_EXPORT_IMAGE = Component.translatable("world_preview.preview.export_image");
-    public static final Component BTN_EXPORT_IMAGE_TOOLTIP = Component.translatable("world_preview.preview.export_image.tooltip");
     public static final Component BTN_SET_SPAWN = Component.translatable("world_preview.preview.btn-set-spawn");
     public static final Component BTN_SET_SPAWN_TOOLTIP = Component.translatable("world_preview.preview.btn-set-spawn.tooltip");
     public static final Component BTN_SET_SPAWN_PLACED = Component.translatable("world_preview.preview.btn-set-spawn.placed");

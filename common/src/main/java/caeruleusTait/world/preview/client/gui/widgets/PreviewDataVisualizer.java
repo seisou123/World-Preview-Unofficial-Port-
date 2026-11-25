@@ -1,5 +1,6 @@
 package caeruleusTait.world.preview.client.gui.widgets;
 
+import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.backend.WorkManager;
 import caeruleusTait.world.preview.backend.color.ColorMap;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
@@ -12,6 +13,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Owns minimap and statistics overlays for {@link PreviewDisplay}.
@@ -40,6 +42,15 @@ final class PreviewDataVisualizer {
     // viewport box/crosshair drawing itself stays per frame.
     private long lastMinimapRegenerateNanos = 0;
     private static final long MINIMAP_REGENERATE_COOLDOWN_NANOS = 250_000_000L;
+
+    // Second statistics HUD line: cached layer coverage. Kept across frames
+    // and only re-scanned when the layer, the render mode or the storage
+    // write counter moves.
+    private int progressCacheCount = -1;
+    private int progressCacheY = Integer.MIN_VALUE;
+    private long progressCacheFlags = Long.MIN_VALUE;
+    private long progressCacheWriteCounter = -1;
+    private long progressCacheNanos = 0;
 
     PreviewDataVisualizer(Minecraft minecraft, PreviewDisplayDataProvider dataProvider, WorkManager workManager) {
         this.minecraft = minecraft;
@@ -70,6 +81,15 @@ final class PreviewDataVisualizer {
         minimapNeedsRegenerate = true;
         // (R5) First paint after a context change stays immediate.
         lastMinimapRegenerateNanos = 0;
+        // The coverage cache belongs to the storage that was just replaced: a
+        // stale count would be reported as the new layer's progress until the
+        // layer, mode or write counter happens to move.  Reseed every key so
+        // the next frame re-scans, and drop the cached number.
+        progressCacheCount = -1;
+        progressCacheY = Integer.MIN_VALUE;
+        progressCacheFlags = Long.MIN_VALUE;
+        progressCacheWriteCounter = -1;
+        progressCacheNanos = 0;
     }
 
     void renderMinimap(GuiGraphics guiGraphics, int xMin, int yMin, int xMax, int yMax, BlockPos centerPos) {
@@ -184,7 +204,8 @@ final class PreviewDataVisualizer {
     }
 
     void renderStatistics(GuiGraphics guiGraphics, int xMin, int yMin, int xMax, int yMax,
-                          Short2LongMap visibleBiomes, Short2LongMap visibleStructures) {
+                          Short2LongMap visibleBiomes, Short2LongMap visibleStructures,
+                          RenderSettings.RenderMode mode, int layerBlockY) {
         if (dataProvider.isUpdating() || !workManager.isSetup()) {
             return;
         }
@@ -198,10 +219,75 @@ final class PreviewDataVisualizer {
                 biomeCount, structCount, threads
         ).getString();
 
+        final String progress = layerProgressLine(mode, layerBlockY);
+
+        final int lineHeight = minecraft.font.lineHeight;
         int textW = minecraft.font.width(stats);
-        int startY = yMax - minecraft.font.lineHeight - 5;
+        if (progress != null) {
+            textW = Math.max(textW, minecraft.font.width(progress));
+        }
+        final int lines = progress == null ? 1 : 2;
+        int startY = yMax - lineHeight - 5 - (lines - 1) * (lineHeight + 1);
         int startX = xMax - textW - 5;
-        guiGraphics.fill(startX - 3, startY - 1, xMax - 2, startY + minecraft.font.lineHeight, 0x80000000);
+        guiGraphics.fill(startX - 3, startY - 1, xMax - 2, yMax - 4, 0x80000000);
         guiGraphics.drawString(minecraft.font, stats, startX, startY, 0xFFFFFFFF);
+        if (progress != null) {
+            guiGraphics.drawString(minecraft.font, progress, startX, startY + lineHeight + 1, 0xFFAAAAAA);
+        }
+    }
+
+    /**
+     * Second HUD line: how many chunk columns of the active layer have
+     * actually been sampled.
+     *
+     * <p>Without it the map cannot answer "is this black area still loading or
+     * will it stay black" — switching to a layer that was never sampled looks
+     * exactly like a slow load.
+     *
+     * <p>The value counts completed chunk columns, not allocated sections:
+     * the render path pre-allocates every viewport section, so a section count
+     * would jump to the viewport area immediately and then stand still while
+     * the pixels are still being filled in.  Completion bits are only granted
+     * to units that ran to the end, so the number keeps moving.  Coarse-first
+     * chunks are excluded: they are re-sampled at full resolution right after
+     * the coarse pass, and counting them would make the number drop at that
+     * transition.
+     *
+     * <p>Cooldown-limited and cached like the minimap rescan: the scan walks
+     * every section of a layer under the layer lock and the write counter moves
+     * several times per second while sampling. The cache keys are deliberately
+     * not updated while suppressed, so a pending change retries once the
+     * cooldown window has elapsed.
+     */
+    @Nullable
+    private String layerProgressLine(@Nullable RenderSettings.RenderMode mode, int layerBlockY) {
+        final PreviewStorage storage = workManager.previewStorage();
+        if (storage == null || mode == null) {
+            return null;
+        }
+        if (progressCacheY != layerBlockY
+                || progressCacheFlags != mode.flag
+                || progressCacheWriteCounter != storage.writeCounter()) {
+            final long now = System.nanoTime();
+            if (now - progressCacheNanos >= MINIMAP_REGENERATE_COOLDOWN_NANOS) {
+                // Noise sections never receive completion bits: the units that
+                // fill them complete on their primary (biome) section.  Count
+                // that layer instead so the line keeps moving in noise views.
+                final long completionFlag = mode.flag < PreviewStorage.FLAG_NOISE
+                        ? mode.flag : PreviewStorage.FLAG_BIOME;
+                progressCacheCount = storage.completedChunkCount(layerBlockY, completionFlag);
+                progressCacheY = layerBlockY;
+                progressCacheFlags = mode.flag;
+                progressCacheWriteCounter = storage.writeCounter();
+                progressCacheNanos = now;
+            }
+        }
+
+        if (progressCacheCount < 0) {
+            // No scan has run yet (the cooldown starts at 0, so this only
+            // happens within the first 250 ms of the JVM).
+            return null;
+        }
+        return Component.translatable("world_preview.preview.progress", progressCacheCount).getString();
     }
 }
