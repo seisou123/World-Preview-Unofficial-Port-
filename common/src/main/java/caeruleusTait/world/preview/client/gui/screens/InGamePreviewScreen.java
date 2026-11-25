@@ -4,6 +4,7 @@ package caeruleusTait.world.preview.client.gui.screens;
 
 import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
+import caeruleusTait.world.preview.backend.storage.PreviewStorageCacheManager;
 import caeruleusTait.world.preview.client.WorldPreviewComponents;
 import caeruleusTait.world.preview.client.gui.PreviewContainerDataProvider;
 import caeruleusTait.world.preview.mixin.MinecraftServerAccessor;
@@ -152,15 +153,11 @@ public class InGamePreviewScreen extends Screen implements PreviewContainerDataP
         if (!worldPreview.cfg().cacheInGame) {
             return;
         }
-        previewContainer.setCacheLoading(true);
-        Screen previous = minecraft.gui.screen();
-        minecraft.gui.setScreen(new PreviewCacheLoadingScreen(SAVING_PREVIEW));
-        try {
-            writeCacheFile(storage, cacheDir().resolve(filename(seed)));
-        } finally {
-            minecraft.gui.setScreen(previous != null ? previous : this);
-            previewContainer.setCacheLoading(false);
-        }
+        // Resolve the level path now (it needs the live integrated server) but
+        // write the zip on the cache I/O thread.  The synchronous write used to
+        // swap in a "Saving preview" screen to cover the render-thread freeze;
+        // with the write queued, closing the preview returns immediately.
+        PreviewStorageCacheManager.writeCacheAsync(this, storage, cacheDir().resolve(filename(seed)));
     }
 
     @Override

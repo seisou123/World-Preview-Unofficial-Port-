@@ -39,7 +39,6 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
-import net.minecraft.locale.Language;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -206,6 +205,9 @@ public final class WorldAnalysisScreen extends Screen {
         this.session = session;
         this.previewContainer = previewContainer;
         this.region = initialRegion;
+        // Publish the opening region too: without it the "last analysed area"
+        // only exists after the player edits the fields or starts a run.
+        previewContainer.setLastAnalysisRegion(initialRegion);
         this.regionSelector = new RegionSelector(Minecraft.getInstance().font, 0, 0, 300, 45,
                 initialRegion, this::setRegion);
         this.overviewPanel = new AnalysisOverviewPanel(0, 0, 260, 140);
@@ -277,6 +279,9 @@ public final class WorldAnalysisScreen extends Screen {
 
     private void setRegion(Region region) {
         this.region = region;
+        // Keep the region on the container: the export screen and anything
+        // opened after this screen closes must still know the analyzed area.
+        previewContainer.setLastAnalysisRegion(region);
         // Live map feedback: glue the analysis-region rectangle to the pending
         // region immediately (box-select, viewport align, size presets and
         // manual coordinate edits), instead of only refreshing it when an
@@ -377,6 +382,9 @@ public final class WorldAnalysisScreen extends Screen {
         }
         // Show the analyzed region as a green rectangle on the map.
         previewContainer.previewDisplay().setAnalysisRegionOverlay(session.request().region());
+        // Overwrite whatever the field callback last stored: the session's
+        // region is the clamped one that actually runs.
+        previewContainer.setLastAnalysisRegion(session.request().region());
         // A fresh run invalidates the previously computed spawn/top-biome data.
         overviewPanel.setSpawn(null, null, List.of());
         topBiomes = List.of();
@@ -445,6 +453,7 @@ public final class WorldAnalysisScreen extends Screen {
         int radius = Math.max(target.maxX() - target.minX(), target.maxZ() - target.minZ()) / 2;
         int centerX = (target.minX() + target.maxX()) / 2;
         int centerZ = (target.minZ() + target.maxZ()) / 2;
+        previewContainer.setLastAnalysisRegion(target);
         minecraft.gui.setScreen(new TerrainExportScreen(this, previewContainer, centerX, centerZ, radius));
     }
 
@@ -632,13 +641,16 @@ public final class WorldAnalysisScreen extends Screen {
 
         // Nearest-structure distances in blocks (Manhattan, from the region center).
         LinkedHashMap<String, Long> structureTable = new LinkedHashMap<>();
+        LinkedHashMap<String, String> structureIds = new LinkedHashMap<>();
         if (nearestStructures != null) {
             Region r = session.request().region();
             int cx = (r.minX() + r.maxX()) / 2;
             int cz = (r.minZ() + r.maxZ()) / 2;
             for (Map.Entry<Identifier, BlockPos> e : nearestStructures.entrySet()) {
                 int distance = Math.abs(e.getValue().getX() - cx) + Math.abs(e.getValue().getZ() - cz);
-                structureTable.put(structureDisplayName(e.getKey()), (long) distance);
+                final String label = structureDisplayName(e.getKey());
+                structureTable.put(label, (long) distance);
+                structureIds.put(label, e.getKey().toString());
             }
         }
 
@@ -659,16 +671,13 @@ public final class WorldAnalysisScreen extends Screen {
                 metrics.medianHeight(), metrics.standardDeviation(), metrics.meanSlope(),
                 metrics.maxSlope(), metrics.flatRatio(), contextId,
                 metrics.waterShare(), insights.shannonDiversity(), insights.effectiveBiomeCount(),
-                terrainTable, structureTable,
+                terrainTable, structureTable, structureIds,
                 metrics.heightHistogram(), metrics.histogramMinY());
     }
 
-    /** Structure label: {@code world_preview.structure.<path>} when translated, else the raw path. */
+    /** Structure label; delegates so every screen agrees on the name. */
     private static String structureDisplayName(Identifier id) {
-        String key = "world_preview.structure." + id.getPath();
-        return Language.getInstance().has(key)
-                ? Component.translatable(key).getString()
-                : id.getPath();
+        return caeruleusTait.world.preview.client.gui.StructureNames.displayString(id, null);
     }
 
     /** Report file name with seed/dimension and the analyzed region's corner tokens. */

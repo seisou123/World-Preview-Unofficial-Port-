@@ -805,6 +805,23 @@ public class SampleUtils implements AutoCloseable {
             }
         }
 
+        // The dummy path creates its own level storage, which opens a
+        // session.lock file channel on construction. Leaving it open kept the
+        // lock (and therefore the temp world directory) alive for the rest of
+        // the process on Windows. The real-server path borrows the running
+        // server's storage and must never close it.
+        if (ownsResourceManager && levelStorageAccess != null) {
+            try {
+                levelStorageAccess.close();
+            } catch (Exception e) {
+                if (closeError == null) {
+                    closeError = e;
+                } else {
+                    closeError.addSuppressed(e);
+                }
+            }
+        }
+
         if (minecraftServer instanceof DummyMinecraftServer) {
             try {
                 WorldPreview.get().loaderSpecificTeardown(minecraftServer);

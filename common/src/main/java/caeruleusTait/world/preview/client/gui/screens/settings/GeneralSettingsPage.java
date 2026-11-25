@@ -6,12 +6,15 @@ import caeruleusTait.world.preview.client.gui.screens.PreviewContainer;
 import caeruleusTait.world.preview.domain.ui.ConfigBinding;
 import caeruleusTait.world.preview.domain.ui.PageCategory;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.StringWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.network.chat.Component;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
@@ -21,16 +24,40 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
 
     private final WorldPreviewConfig cfg;
     private final PreviewContainer previewContainer;
+    /**
+     * The settings screen, used as the return target for screens this page
+     * opens. Optional so the page keeps working standalone in tests.
+     */
+    @Nullable
+    private final net.minecraft.client.gui.screens.Screen returnTo;
+
+    // Controls that only do something while their master toggle is on.
+    // Synced from tick() so they follow build(), reset() and page rebuilds.
+    private Checkbox backgroundSampleWidget;
+    private AbstractSliderButton isolineBandsWidget;
+    private final java.util.List<AbstractSliderButton> hillshadeSliders = new java.util.ArrayList<>();
+    private AbstractSliderButton contourIntervalWidget;
+    private Checkbox contourMinorWidget;
 
     public GeneralSettingsPage(WorldPreviewConfig cfg, PreviewContainer previewContainer) {
+        this(cfg, previewContainer, null);
+    }
+
+    public GeneralSettingsPage(WorldPreviewConfig cfg, PreviewContainer previewContainer,
+                               @Nullable net.minecraft.client.gui.screens.Screen returnTo) {
         super("general", PageCategory.GENERAL);
         this.cfg = cfg;
         this.previewContainer = previewContainer;
+        this.returnTo = returnTo;
     }
 
     @Override
     public void build(ScreenRectangle area, PreviewContainer previewContainer) {
         widgets.clear();
+        // The slider list outlives the rebuild (it is what tick() syncs), but
+        // the widgets it points at do not: without this the list grows on
+        // every rebuild and the stale entries are driven forever.
+        hillshadeSliders.clear();
 
         int x = area.left() + SettingsTheme.CONTENT_PADDING;
         int y = area.top() + 4;
@@ -62,8 +89,9 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
                 SETTINGS_GENERAL_FC_TOOLTIP,
                 val -> cfg.buildFullVertChunk = val);
         y += rowH;
-        y = addCheckboxRow(x, y, SETTINGS_GENERAL_BG, cfg.backgroundSampleVertChunk,
-                SETTINGS_GENERAL_BG_TOOLTIP,
+        // A no-op while the per-chunk full-column mode is on; disabled below.
+        backgroundSampleWidget = addCheckboxRowWidget(x, y, SETTINGS_GENERAL_BG,
+                cfg.backgroundSampleVertChunk, SETTINGS_GENERAL_BG_TOOLTIP,
                 val -> cfg.backgroundSampleVertChunk = val);
         y += rowH;
         y = addCheckboxRow(x, y, SETTINGS_GENERAL_STRUCT, cfg.sampleStructures,
@@ -103,7 +131,7 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
                 val -> cfg.searchMinAreaPercent = val);
         y += rowH;
         y = addSliderRow(x, y, area, SETTINGS_GENERAL_SEARCH_MAX_DISTANCE,
-                cfg.searchMaxDistance, 0, 10000, SETTINGS_GENERAL_SEARCH_MAX_DISTANCE_TOOLTIP,
+                cfg.searchMaxDistance, 0, 4096, SETTINGS_GENERAL_SEARCH_MAX_DISTANCE_TOOLTIP,
                 val -> cfg.searchMaxDistance = val);
         y += rowH;
         y = addCheckboxRow(x, y, SETTINGS_GENERAL_CONTROLS, cfg.showControls,
@@ -190,7 +218,7 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
                 SETTINGS_NOISE_ISOLINES_TOOLTIP,
                 val -> cfg.noiseIsolines = val);
         y += rowH;
-        y = addSliderRow(x, y, area,
+        isolineBandsWidget = addSliderRowWidget(x, y, area,
                 Component.translatable("world_preview.settings.general.noise_isoline_bands", cfg.noiseIsolineBands),
                 cfg.noiseIsolineBands, 2, 16, SETTINGS_NOISE_ISOLINE_BANDS_TOOLTIP,
                 val -> cfg.noiseIsolineBands = val);
@@ -200,37 +228,37 @@ public class GeneralSettingsPage extends AbstractSettingsPage {
                 SETTINGS_HILLSHADE_TOOLTIP,
                 val -> cfg.enableHillshade = val);
         y += rowH;
-        y = addSliderRow(x, y, area,
+        hillshadeSliders.add(addSliderRowWidget(x, y, area,
                 Component.translatable("world_preview.settings.general.hillshade_azimuth", (int) cfg.hillshadeAzimuth),
                 (int) cfg.hillshadeAzimuth, 0, 360, null,
-                val -> cfg.hillshadeAzimuth = val);
+                val -> cfg.hillshadeAzimuth = val));
         y += rowH;
-        y = addSliderRow(x, y, area,
+        hillshadeSliders.add(addSliderRowWidget(x, y, area,
                 Component.translatable("world_preview.settings.general.hillshade_altitude", (int) cfg.hillshadeAltitude),
                 (int) cfg.hillshadeAltitude, 0, 90, null,
-                val -> cfg.hillshadeAltitude = val);
+                val -> cfg.hillshadeAltitude = val));
         y += rowH;
-        y = addSliderRow(x, y, area,
+        hillshadeSliders.add(addSliderRowWidget(x, y, area,
                 Component.translatable("world_preview.settings.general.hillshade_ambient", cfg.hillshadeAmbient),
                 (int) (cfg.hillshadeAmbient * 100), 0, 100, null,
-                val -> cfg.hillshadeAmbient = val / 100f);
+                val -> cfg.hillshadeAmbient = val / 100f));
         y += rowH;
-        y = addSliderRow(x, y, area,
+        hillshadeSliders.add(addSliderRowWidget(x, y, area,
                 Component.translatable("world_preview.settings.general.hillshade_exaggeration", cfg.hillshadeExaggeration),
                 (int) (cfg.hillshadeExaggeration * 10), 1, 50, null,
-                val -> cfg.hillshadeExaggeration = val / 10f);
+                val -> cfg.hillshadeExaggeration = val / 10f));
         y += rowH;
 
         y = addCheckboxRow(x, y, SETTINGS_CONTOURS, cfg.enableContours,
                 SETTINGS_CONTOURS_TOOLTIP,
                 val -> cfg.enableContours = val);
         y += rowH;
-        y = addSliderRow(x, y, area,
+        contourIntervalWidget = addSliderRowWidget(x, y, area,
                 Component.translatable("world_preview.settings.general.contour_interval", cfg.contourInterval),
                 cfg.contourInterval, 5, 64, SETTINGS_CONTOUR_INTERVAL_TOOLTIP,
                 val -> cfg.contourInterval = val);
         y += rowH;
-        y = addCheckboxRow(x, y, SETTINGS_CONTOUR_MINOR, cfg.contourMinorLines,
+        contourMinorWidget = addCheckboxRowWidget(x, y, SETTINGS_CONTOUR_MINOR, cfg.contourMinorLines,
                 SETTINGS_CONTOUR_MINOR_TOOLTIP,
                 val -> cfg.contourMinorLines = val);
         y += rowH;
@@ -264,7 +292,7 @@ Minecraft.getInstance().player.sendSystemMessage(resultMsg);
 
         y += 4;
         Button terrainExportBtn = Button.builder(TERRAIN_EXPORT_OPEN, b -> {
-            previewContainer.openTerrainExportScreen();
+            previewContainer.openTerrainExportScreen(returnTo != null ? returnTo : previewContainer.parentScreen());
         }).bounds(x, y, controlWidth(area, x), 20).build();
         terrainExportBtn.setTooltip(Tooltip.create(TERRAIN_EXPORT_OPEN_TOOLTIP));
         widgets.add(terrainExportBtn);
@@ -311,5 +339,28 @@ Minecraft.getInstance().player.sendSystemMessage(resultMsg);
         cfg.enableContours = defaults.enableContours;
         cfg.contourInterval = defaults.contourInterval;
         cfg.contourMinorLines = defaults.contourMinorLines;
+    }
+
+    @Override
+    public void tick() {
+        // Master/slave enablement, applied every tick rather than from change
+        // callbacks so it also holds after reset() and after the page is
+        // rebuilt when the settings screen resizes.
+        syncEnabled(backgroundSampleWidget, !cfg.buildFullVertChunk);
+        syncEnabled(isolineBandsWidget, cfg.noiseIsolines);
+        // Hillshade and contours only render in the heightmap view, and that
+        // view requires height samples to exist at all.
+        final boolean heightViewAvailable = cfg.sampleHeightmap || cfg.noiseTerrainOverlay;
+        for (AbstractSliderButton slider : hillshadeSliders) {
+            syncEnabled(slider, cfg.enableHillshade && heightViewAvailable);
+        }
+        syncEnabled(contourIntervalWidget, cfg.enableContours && heightViewAvailable);
+        syncEnabled(contourMinorWidget, cfg.enableContours && heightViewAvailable);
+    }
+
+    private static void syncEnabled(@Nullable AbstractWidget widget, boolean enabled) {
+        if (widget != null && widget.active != enabled) {
+            widget.active = enabled;
+        }
     }
 }
