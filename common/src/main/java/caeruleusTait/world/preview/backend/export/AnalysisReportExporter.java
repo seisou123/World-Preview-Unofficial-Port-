@@ -51,6 +51,8 @@ public final class AnalysisReportExporter {
             double effectiveBiomeCount,
             LinkedHashMap<String, Long> terrainTable,
             LinkedHashMap<String, Long> nearestStructures,
+            /** Display name -> registry id, so the report stays machine-readable. */
+            LinkedHashMap<String, String> nearestStructureIds,
             int[] heightHistogram,
             int histogramMinY) {
 
@@ -80,7 +82,28 @@ public final class AnalysisReportExporter {
                     biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
                     meanSlope, maxSlope, flatRatio, contextId,
                     0.0, 0.0, 0.0,
-                    new LinkedHashMap<>(), new LinkedHashMap<>(), new int[0], 0);
+                    new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new int[0], 0);
+        }
+
+        /**
+         * Constructor without the id table: keeps older callers (and tests)
+         * source-compatible; the JSON then simply omits the {@code id} field.
+         */
+        public ReportInput(
+                String seed, String dimension, String regionDescription,
+                long expectedSamples, long presentSamples, double coverage,
+                LinkedHashMap<String, long[]> biomeTable,
+                OptionalInt minHeight, OptionalInt maxHeight,
+                OptionalDouble meanHeight, OptionalDouble medianHeight, OptionalDouble standardDeviation,
+                OptionalDouble meanSlope, OptionalDouble maxSlope, double flatRatio,
+                String contextId, double waterShare, double shannonDiversity, double effectiveBiomeCount,
+                LinkedHashMap<String, Long> terrainTable, LinkedHashMap<String, Long> nearestStructures,
+                int[] heightHistogram, int histogramMinY) {
+            this(seed, dimension, regionDescription, expectedSamples, presentSamples, coverage,
+                    biomeTable, minHeight, maxHeight, meanHeight, medianHeight, standardDeviation,
+                    meanSlope, maxSlope, flatRatio, contextId, waterShare, shannonDiversity,
+                    effectiveBiomeCount, terrainTable, nearestStructures,
+                    new LinkedHashMap<>(), heightHistogram, histogramMinY);
         }
 
         public ReportInput {
@@ -103,7 +126,22 @@ public final class AnalysisReportExporter {
             effectiveBiomeCount = finiteOrZero(effectiveBiomeCount);
             terrainTable = copyStringLongTable(terrainTable);
             nearestStructures = copyStringLongTable(nearestStructures);
+            nearestStructureIds = copyStringStringTable(nearestStructureIds);
             heightHistogram = heightHistogram == null ? new int[0] : heightHistogram.clone();
+        }
+
+        private static LinkedHashMap<String, String> copyStringStringTable(
+                LinkedHashMap<String, String> source) {
+            LinkedHashMap<String, String> copy = new LinkedHashMap<>();
+            if (source != null) {
+                for (Map.Entry<String, String> e : source.entrySet()) {
+                    if (e.getKey() == null || e.getValue() == null) {
+                        continue;
+                    }
+                    copy.put(e.getKey(), e.getValue());
+                }
+            }
+            return copy;
         }
 
         private static double finiteOrZero(double value) {
@@ -220,7 +258,14 @@ public final class AnalysisReportExporter {
         JsonArray structures = new JsonArray();
         for (Map.Entry<String, Long> e : input.nearestStructures().entrySet()) {
             JsonObject s = new JsonObject();
+            // "structure" stays the human-readable label; "id" makes the
+            // entry consumable by scripts without guessing from a translated
+            // name (which also changed with the client language).
             s.addProperty("structure", e.getKey());
+            final String structureId = input.nearestStructureIds().get(e.getKey());
+            if (structureId != null) {
+                s.addProperty("id", structureId);
+            }
             s.addProperty("distanceBlocks", e.getValue());
             structures.add(s);
         }

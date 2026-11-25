@@ -23,7 +23,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collection;
-import java.util.Objects;
 
 import static caeruleusTait.world.preview.client.gui.screens.PreviewContainer.BUTTONS_TEXTURE;
 import static caeruleusTait.world.preview.client.gui.screens.PreviewContainer.BUTTONS_TEX_HEIGHT;
@@ -137,14 +136,12 @@ public class StructuresList extends BaseObjectSelectionList<StructuresList.Struc
             this.toggleVisible.selected = show;
 
             this.isPrimaryNamespace = Identifier.getNamespace().equals("minecraft");
-            if (Objects.equals(Identifier.toString(), name) || name == null) {
-                this.name = WorldPreviewClient.toTitleCase(Identifier.getPath().replace("_", " "));
-            } else {
-                this.name = name;
-            }
-
-            String tag = "§5§o" + Identifier.getNamespace() + "§r\n§9" + Identifier.getPath() + "§r";
-            this.tooltip = Tooltip.create(Component.literal(this.name + "\n\n" + tag));
+            // One naming rule for the sidebar, the hover panel and the
+            // analysis screen (see StructureNames).
+            this.name = caeruleusTait.world.preview.client.gui.StructureNames
+                    .displayString(Identifier, name);
+            this.tooltip = Tooltip.create(caeruleusTait.world.preview.client.gui.StructureNames
+                    .withId(Identifier, name));
         }
 
         /** Unregister and close the list-owned DynamicTexture (NativeImage is owned elsewhere). */

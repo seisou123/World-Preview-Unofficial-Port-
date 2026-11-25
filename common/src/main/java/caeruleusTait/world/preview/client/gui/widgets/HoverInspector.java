@@ -51,6 +51,13 @@ class HoverInspector {
     private final PreviewDisplay host;
 
     private StructHoverHelperCell[] hoverGrid;
+    /**
+     * Every structure icon registered during the last heavy render, in draw
+     * order. The hover grid serves hit-testing under the cursor; this list
+     * serves "locate the structure in view", which must not depend on where
+     * the mouse happens to be.
+     */
+    private final List<StructHoverHelperEntry> frameStructures = new ArrayList<>();
     private static final int HOVER_GRID_CELL_SIZE = 64;
     private int hoverGridWidth;
     private int hoverGridHeight;
@@ -100,9 +107,14 @@ class HoverInspector {
 
     /** Clears per-cell entries; called when the renderer rebuilds the frame. */
     void clearGridEntries() {
-        for (int i = 0; i < hoverGrid.length; i++) {
-            hoverGrid[i].entries.clear();
+        // Called from reloadData as well as the render loop, and the grid does
+        // not exist until the first texture resize.
+        if (hoverGrid != null) {
+            for (int i = 0; i < hoverGrid.length; i++) {
+                hoverGrid[i].entries.clear();
+            }
         }
+        frameStructures.clear();
     }
 
     /** Registers a rendered structure icon for hover hit tests (texture-pixel space). */
@@ -110,10 +122,24 @@ class HoverInspector {
                         PreviewSection.PreviewStruct structure) {
         int cellX = Math.max(0, Math.min(hoverGridWidth - 1, texX / HOVER_GRID_CELL_SIZE));
         int cellZ = Math.max(0, Math.min(hoverGridHeight - 1, texZ / HOVER_GRID_CELL_SIZE));
-        hoverGrid[(cellX * hoverGridHeight) + cellZ].entries.add(new StructHoverHelperEntry(
+        final StructHoverHelperEntry entry = new StructHoverHelperEntry(
                 new BoundingBox(texX, 0, texZ, texX + texWidthIcon, 0, texZ + texHeightIcon),
                 structure
-        ));
+        );
+        hoverGrid[(cellX * hoverGridHeight) + cellZ].entries.add(entry);
+        frameStructures.add(entry);
+    }
+
+    /**
+     * Registers an item-icon structure, which is drawn at a fixed 16 GUI pixels
+     * rather than at the icon's texture size. The hit box has to match what the
+     * player sees, so it arrives in GUI pixels and is converted into the
+     * texture-pixel space the hover query works in.
+     */
+    void putStructEntryGui(int guiX, int guiZ, int guiSize, PreviewSection.PreviewStruct structure) {
+        final int guiScale = Math.max(1, (int) host.minecraft().getWindow().getGuiScale());
+        putStructEntry((guiX - host.getX()) * guiScale, (guiZ - host.getY()) * guiScale,
+                guiSize * guiScale, guiSize * guiScale, structure);
     }
 
     /** Drops the Level-1 hover query cache so the next frame re-queries storage. */
@@ -141,14 +167,19 @@ class HoverInspector {
 
     /**
      * Nearest rendered structure of the given type to {@code from}, based on
-     * the structure icons drawn during the last render frame. Returns null
-     * when no matching structure was rendered (cache not built or nothing in
-     * view).
+     * every structure icon drawn during the last heavy render frame. Returns
+     * null when no matching structure was rendered (nothing in view, or the
+     * type is hidden).
+     *
+     * <p>Deliberately reads the per-frame draw list rather than
+     * {@link #cachedStructInfos}: that cache only holds the icons under the
+     * cursor, so "locate this structure" failed whenever the mouse was not
+     * already resting on one.
      */
     @Nullable
     BlockPos nearestStructureCenter(short structureId, BlockPos from) {
-        List<StructHoverHelperEntry> infos = cachedStructInfos;
-        if (infos == null || infos.isEmpty()) {
+        final List<StructHoverHelperEntry> infos = frameStructures;
+        if (infos.isEmpty()) {
             return null;
         }
         BlockPos best = null;
@@ -424,19 +455,35 @@ class HoverInspector {
         if (!structuresInfos.isEmpty()) {
             var structure = structuresInfos.get(0).structure();
             var structEntry = host.dataProvider().structure4Id(structure.structureId());
-            String structName = structEntry == null ? "<N/A>" : nameFormatter(structEntry.name());
+            String structName = structEntry == null
+                    ? "<N/A>"
+                    : caeruleusTait.world.preview.client.gui.StructureNames
+                            .displayString(structEntry.structureId(), structEntry.name());
+            final String centerText = blockPosTemplate.formatted(
+                    structure.center().getX(), structure.center().getY(), structure.center().getZ());
             if (config.showControls) {
                 tooltipComponent = Component.translatable(
                         "world_preview.preview-display.struct.tooltip.controls",
                         structName,
-                        blockPosTemplate.formatted(structure.center().getX(), structure.center().getY(), structure.center().getZ())
+                        centerText
                 );
             } else {
                 tooltipComponent = Component.translatable(
                         "world_preview.preview-display.struct.tooltip",
                         structName,
-                        blockPosTemplate.formatted(structure.center().getX(), structure.center().getY(), structure.center().getZ())
+                        centerText
                 );
+            }
+            // The real bounding box has been stored per structure all along
+            // (and is already in old cache files); show its footprint.
+            final BoundingBox bb = structure.boundingBox();
+            if (bb != null) {
+                tooltipComponent = tooltipComponent.copy().append(Component.translatable(
+                        "world_preview.preview-display.struct.size",
+                        bb.maxX() - bb.minX() + 1,
+                        bb.maxY() - bb.minY() + 1,
+                        bb.maxZ() - bb.minZ() + 1
+                ));
             }
         } else {
             // Hover panel: biome + coords + height; the seven noise values are
