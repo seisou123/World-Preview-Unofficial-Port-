@@ -282,7 +282,7 @@ public class SettingsScreen extends Screen {
     }
 
     private void initPages() {
-        pages[0] = new GeneralSettingsPage(pendingConfig, previewContainer);
+        pages[0] = new GeneralSettingsPage(pendingConfig, previewContainer, this);
         pages[1] = new CacheSettingsPage(pendingConfig, previewContainer);
         pages[2] = new ResolutionSettingsPage(pendingRender);
         pages[3] = new HeightmapSettingsPage(pendingConfig, previewContainer);

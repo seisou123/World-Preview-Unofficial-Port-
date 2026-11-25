@@ -1,5 +1,6 @@
 package caeruleusTait.world.preview.backend.sampler;
 
+import caeruleusTait.world.preview.backend.FillLevel;
 import caeruleusTait.world.preview.backend.worker.WorkResult;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.QuartPos;
@@ -36,5 +37,10 @@ public class FullQuartSampler implements ChunkSampler {
     @Override
     public int blockStride() {
         return QuartPos.SIZE;
+    }
+
+    @Override
+    public FillLevel level() {
+        return FillLevel.FULL;
     }
 }

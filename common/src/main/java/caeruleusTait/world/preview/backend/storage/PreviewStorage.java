@@ -2,6 +2,8 @@
 // See CHANGES.md for details.
 package caeruleusTait.world.preview.backend.storage;
 
+import caeruleusTait.world.preview.backend.FillLevel;
+
 import it.unimi.dsi.fastutil.Hash;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -211,7 +213,13 @@ public class PreviewStorage {
         if (block == null) {
             return Short.MIN_VALUE;
         }
-        final PreviewSection section = block.get(quartX, quartZ);
+        // getIfExists: hover runs this for several channels every time the
+        // cursor moves, and creating a section just to read MIN_VALUE out of
+        // it both allocates and inflates the sampled-area statistics.
+        final PreviewSection section = block.getIfExists(quartX, quartZ);
+        if (section == null) {
+            return Short.MIN_VALUE;
+        }
         return section.get(quartX - section.quartX(), quartZ - section.quartZ());
     }
 
@@ -246,6 +254,38 @@ public class PreviewStorage {
                 quartX >> PreviewSection.QUART_TO_SECTION_SHIFT,
                 quartZ >> PreviewSection.QUART_TO_SECTION_SHIFT
         ));
+    }
+
+    /**
+     * Level-aware variant of {@link #isChunkSampled}: {@code true} only when
+     * the chunk reached at least the given lattice density.  The staged
+     * initial fill uses it to re-issue exactly the chunks whose previous
+     * refinement stage completed, so a chunk that is already at or above the
+     * requested level is skipped by the pass.
+     *
+     * <p>{@link FillLevel#FULL} means "finished" (the completion bit), which
+     * matches the target sampler of the current world at the current zoom.
+     */
+    public boolean isChunkSampledAtLeast(int quartX, int quartY, int quartZ, long flags, FillLevel level) {
+        final int indexY = indexYOrNegative(QuartPos.toBlock(quartY));
+        if (indexY < 0) {
+            return false;
+        }
+        final PreviewBlock block;
+        synchronized (blocks[indexY]) {
+            block = blocks[indexY].get(quartPosToSectionLong(quartX, quartZ, flags));
+        }
+        if (block == null) {
+            return false;
+        }
+        final PreviewSection section = block.getIfExists(quartX, quartZ);
+        if (section == null) {
+            return false;
+        }
+        return section.isCompletedAtLeast(new ChunkPos(
+                quartX >> PreviewSection.QUART_TO_SECTION_SHIFT,
+                quartZ >> PreviewSection.QUART_TO_SECTION_SHIFT
+        ), level);
     }
 
     /**
@@ -363,8 +403,10 @@ public class PreviewStorage {
             synchronized (blocks[blockIndexY]) {
                 final PreviewBlock biomeBlock = blocks[blockIndexY].get(quartPosToSectionLong(quartX, quartZ, FLAG_BIOME));
                 if (biomeBlock != null) {
-                    final PreviewSection section = biomeBlock.get(quartX, quartZ);
-                    result[0] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
+                    final PreviewSection section = biomeBlock.getIfExists(quartX, quartZ);
+                    if (section != null) {
+                        result[0] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
+                    }
                 }
             }
         }
@@ -374,8 +416,10 @@ public class PreviewStorage {
             synchronized (blocks[heightIndexY]) {
                 final PreviewBlock heightBlock = blocks[heightIndexY].get(quartPosToSectionLong(quartX, quartZ, FLAG_HEIGHT));
                 if (heightBlock != null) {
-                    final PreviewSection section = heightBlock.get(quartX, quartZ);
-                    result[1] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
+                    final PreviewSection section = heightBlock.getIfExists(quartX, quartZ);
+                    if (section != null) {
+                        result[1] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
+                    }
                 }
             }
         }
@@ -386,8 +430,10 @@ public class PreviewStorage {
                 for (int i = 0; i < NOISE_CHANNEL_FLAGS.length; i++) {
                     final PreviewBlock noiseBlock = blocks[blockIndexY].get(quartPosToSectionLong(quartX, quartZ, NOISE_CHANNEL_FLAGS[i]));
                     if (noiseBlock != null) {
-                        final PreviewSection section = noiseBlock.get(quartX, quartZ);
-                        result[2 + i] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
+                        final PreviewSection section = noiseBlock.getIfExists(quartX, quartZ);
+                        if (section != null) {
+                            result[2 + i] = section.get(quartX - section.quartX(), quartZ - section.quartZ());
+                        }
                     }
                 }
             }
@@ -460,7 +506,24 @@ public class PreviewStorage {
      * failed write leaves the storage dirty and the next close retries.
      */
     public void markSaved() {
-        savedWriteCounter = writeCounter.get();
+        markSaved(writeCounter.get());
+    }
+
+    /**
+     * Records the write count observed <em>before</em> serialization started.
+     *
+     * <p>{@link #writeBinary(DataOutputStream)} snapshots each layer under its
+     * own lock and then walks the blocks outside it, so writes that land while
+     * the zip is being built are not part of the file. Marking the counter read
+     * after the write would report those as saved and lose them on close; the
+     * caller therefore passes the counter it took before the first byte.
+     */
+    public void markSaved(long snapshotWriteCounter) {
+        // Never move the snapshot backwards: a stale caller must not make
+        // already-persisted data look dirty again.
+        if (snapshotWriteCounter > savedWriteCounter) {
+            savedWriteCounter = snapshotWriteCounter;
+        }
     }
 
     /** Magic for the safe binary cache payload ('WPv2'). */
@@ -657,6 +720,37 @@ public class PreviewStorage {
     }
 
     /**
+     * Returns the number of chunk columns that actually completed sampling for
+     * the given y-layer and channel.
+     *
+     * <p>Unlike {@link #sampledCount(int, long)} this does not count sections
+     * that merely exist: the render path pre-allocates every viewport section
+     * through {@link #section4(int, int, int, long)}, so the section count
+     * jumps to the viewport area as soon as the map is first drawn.  Completion
+     * bits are only granted to work units that ran to the end, so this value
+     * keeps moving while the map fills in.
+     */
+    public int completedChunkCount(int y, long flags) {
+        final int indexY = (y - yMin) >> Y_BLOCK_SHIFT;
+        if (indexY < 0 || indexY >= blocks.length) {
+            return 0;
+        }
+        int count = 0;
+        synchronized (blocks[indexY]) {
+            for (var entry : blocks[indexY].long2ObjectEntrySet()) {
+                final long key = entry.getLongKey();
+                if (((key >> FLAG_SHIFT) & FLAG_MASK) != flags) continue;
+                for (PreviewSection section : entry.getValue().sectionsRaw()) {
+                    if (section != null) {
+                        count += section.completedChunkCount();
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
      * Drops every drag-tier coarse completion mark across all layers and
      * blocks.  Called synchronously by the drag release (WorkManager.exitDragTier)
      * under the completion lock, so the coarse-touched chunks are re-issued
@@ -664,12 +758,43 @@ public class PreviewStorage {
      * without coarse marks are cheap no-ops (BitSet.clear on an empty set).
      */
     public void clearCoarseCompletions() {
+        forEachSection(PreviewSection::clearCoarseCompletions);
+    }
+
+    /**
+     * Drops every quarter-level fill mark across all layers and blocks.  Same
+     * contract as {@link #clearCoarseCompletions}, for the middle stage of the
+     * staged initial fill.
+     */
+    public void clearQuarterCompletions() {
+        forEachSection(PreviewSection::clearQuarterCompletions);
+    }
+
+    /**
+     * Drops every staged fill mark without touching fine completions.  Used
+     * when a staged fill finished normally: the chunks are at target
+     * resolution by then, so the marks are only bookkeeping.
+     */
+    public void clearStagedMarks() {
+        forEachSection(PreviewSection::clearStagedMarks);
+    }
+
+    /**
+     * Drops every staged fill mark and the fine completion of the touched
+     * chunks.  Used when a staged fill is abandoned mid-way, so its chunks are
+     * re-sampled at full resolution on the next pass.
+     */
+    public void clearStagedCompletions() {
+        forEachSection(PreviewSection::clearStagedCompletions);
+    }
+
+    private void forEachSection(java.util.function.Consumer<PreviewSection> action) {
         for (Long2ObjectMap<PreviewBlock> layer : blocks) {
             synchronized (layer) {
                 for (PreviewBlock block : layer.values()) {
                     for (PreviewSection section : block.sectionsRaw()) {
                         if (section != null) {
-                            section.clearCoarseCompletions();
+                            action.accept(section);
                         }
                     }
                 }

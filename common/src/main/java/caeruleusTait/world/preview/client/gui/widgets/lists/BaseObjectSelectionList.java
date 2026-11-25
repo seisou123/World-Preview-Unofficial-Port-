@@ -61,6 +61,31 @@ public abstract class BaseObjectSelectionList<E extends BaseObjectSelectionList.
     public void renderWidget(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         tickScroll(mouseY);
         super.renderWidget(guiGraphics, mouseX, mouseY, partialTick);
+        showHoveredTooltip(guiGraphics, mouseX, mouseY);
+    }
+
+    /**
+     * Renders the hovered entry's tooltip.
+     *
+     * <p>Entries have always declared tooltips — biome source, structure
+     * namespace, the right-click actions — but a selection list has no tooltip
+     * channel of its own, so none of them ever reached the screen. Scheduling
+     * here, after the list has drawn, keeps the tooltip above the rows and
+     * outside the list's scissor region. Called every frame because the
+     * deferred tooltip is single-frame.
+     */
+    private void showHoveredTooltip(GuiGraphics guiGraphics, int mouseX, int mouseY) {
+        final E hovered = getHovered();
+        if (hovered == null) {
+            return;
+        }
+        final Tooltip tooltip = hovered.tooltip();
+        if (tooltip == null) {
+            return;
+        }
+        // 1.21.11 moved the tooltip channel onto the graphics object.
+        guiGraphics.setTooltipForNextFrame(minecraft.font,
+                tooltip.toCharSequence(minecraft), mouseX, mouseY);
     }
 
     /**
