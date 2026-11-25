@@ -19,6 +19,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -50,6 +52,32 @@ public interface PreviewStorageCacheManager {
 
     /** Zip entry name for the binary payload. */
     String CACHE_ZIP_ENTRY = "bin";
+
+    /**
+     * Single daemon thread for cache writes.  Serializing the storage is a
+     * full zip pass over every sampled section and used to run on the caller's
+     * (render) thread, with a screen flash to cover the freeze.  Writes are
+     * FIFO here instead, while {@link #writeCacheFile}'s temp-file + atomic
+     * move keeps a half-written file unreadable-but-ignorable if the process
+     * exits early.  A daemon thread is enough: losing the final write on an
+     * immediate game exit costs one cache rebuild, never corruption.
+     */
+    ExecutorService CACHE_IO = Executors.newSingleThreadExecutor(r -> {
+        final Thread t = new Thread(r, "world-preview-cache-io");
+        t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
+        return t;
+    });
+
+    /**
+     * Queues {@link #writeCacheFile} on the shared cache I/O thread.
+     *
+     * <p>The caller must resolve {@code outFile} before calling this, while the
+     * path's context (config dir / level storage) is still valid.
+     */
+    static void writeCacheAsync(PreviewStorageCacheManager manager, PreviewStorage storage, Path outFile) {
+        CACHE_IO.execute(() -> manager.writeCacheFile(storage, outFile));
+    }
 
     PreviewStorage loadPreviewStorage(long seed, int yMin, int yMax);
 
@@ -158,6 +186,10 @@ public interface PreviewStorageCacheManager {
         }
 
         Path tmp = outFile.resolveSibling(outFile.getFileName().toString() + ".tmp");
+        // Snapshot before the first byte: writeBinary copies each layer under
+        // its own lock and then walks the blocks outside it, so writes that
+        // land mid-serialization are not in the file and must stay dirty.
+        final long writeSnapshot = storage.writeCounter();
         try {
             try (OutputStream fos = Files.newOutputStream(tmp);
                  BufferedOutputStream bos = new BufferedOutputStream(fos);
@@ -172,7 +204,7 @@ public interface PreviewStorageCacheManager {
             // Only a successful store advances the dirty snapshot: a failed
             // write (or a skipped one) must leave the storage dirty so the
             // next close retries instead of silently losing the data.
-            storage.markSaved();
+            storage.markSaved(writeSnapshot);
             WorldPreview.LOGGER.debug("Wrote preview disk cache {}", outFile);
         } catch (IOException e) {
             WorldPreview.LOGGER.error("Failed to write preview disk cache {}", outFile, e);
