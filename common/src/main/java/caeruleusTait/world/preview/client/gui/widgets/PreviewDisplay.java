@@ -6,6 +6,7 @@ import caeruleusTait.world.preview.RenderSettings;
 import caeruleusTait.world.preview.client.gui.input.KeyEvent;
 import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.WorldPreviewConfig;
+import caeruleusTait.world.preview.backend.FillLevel;
 import caeruleusTait.world.preview.backend.WorkManager;
 import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
@@ -28,7 +29,6 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import org.jetbrains.annotations.Nullable;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -171,8 +171,6 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
         super.playDownSound(minecraft.getSoundManager());
     }
 
-    private Instant generationStart = null;
-
     private final MapInteractionController interaction = new MapInteractionController(this);
 
     final PreviewRenderThrottle throttle = new PreviewRenderThrottle();
@@ -302,6 +300,25 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     /** Latches the drag fast-mode across a whole physical drag (see queueGeneration). */
     private boolean dragLatchActive = false;
 
+    // --- Staged initial fill (coarse-first, then progressive refinement) ---
+    // On a fresh world the first viewport pass used to run at full resolution,
+    // so the map showed nothing until the first full-res chunks landed.  The
+    // fill now walks a nested lattice chain — single -> quarter -> target —
+    // where each stage samples only the points the previous one left out, so
+    // the whole chain costs exactly one full-resolution pass while producing
+    // intermediate images on the way.  The start level is chosen from the
+    // viewport size against a sample budget: a small (zoomed-in) viewport
+    // starts at quarter, a huge one at single.
+    private static final long INITIAL_FILL_MIN_NANOS = 150_000_000L;
+    private static final long INITIAL_FILL_MAX_NANOS = 5_000_000_000L;
+    /** Samples the first fill stage may spend; decides the adaptive start level. */
+    private static final long INITIAL_FILL_SAMPLE_BUDGET = 48_000L;
+    private boolean initialFillRequested = false;
+    private boolean initialFillActive = false;
+    private long initialFillStageStartNanos = 0;
+    /** Set once the widget has been laid out with its real size. */
+    private boolean sized = false;
+
     // --- Viewport force-load safety net ---
     // When sampling is fully idle but the visible viewport still contains
     // chunks without completed biome sampling (lost pending handoff in
@@ -364,6 +381,8 @@ public class PreviewDisplay extends AbstractWidget implements AutoCloseable {
     }
 
 public void setSize(int width, int height) {
+// The widget now has its real viewport size: the staged fill may start.
+sized = true;
 // Only rebuild texture if dimensions actually changed
 int guiScale = (int) minecraft.getWindow().getGuiScale();
 int newTexWidth = width * guiScale;
@@ -410,6 +429,12 @@ resizeImage();
         // message lines for the new world configuration.
         blackStateUploaded = false;
         setupFailLines = null;
+        // The structure grid describes the frame that was just discarded, and
+        // the resolved tooltip may quote a structure from the old data: both
+        // have to go with it, or hovering before the first new frame reports a
+        // structure that no longer exists.
+        hoverInspector.clearGridEntries();
+        hoverInspector.invalidateAll();
         // Force a fresh queue + render cycle for the new world data.
         throttle.invalidateAll();
 
@@ -529,7 +554,9 @@ resizeImage();
                     blackStateUploaded = false;
 
                     final long heavyStartNanos = throttle.beginHeavyRender();
-                    engine.beginFrameCounts();
+                    // Decides full vs incremental repaint and resets the
+                    // visible-count aggregates only for full passes.
+                    engine.beginRaster();
                     hoverInspector.clearGridEntries();
                     // Structure hover grid was rebuilt; force tooltip re-query.
                     // (C4) The grid feeds the tooltip content itself, so drop
@@ -564,6 +591,17 @@ resizeImage();
                     engine.renderSpawnPin(guiGraphics);
                     renderOverlays(guiGraphics);
                     guiGraphics.disableScissor();
+
+                    // Commit the raster pass (records the viewport signature).
+                    engine.finishRaster();
+                    // A partial pass deliberately leaves the visible-count
+                    // aggregates untouched; once sampling drains, run exactly
+                    // one full pass so the sidebar counts catch up and any
+                    // section skipped while a worker wrote it is normalized.
+                    if (engine.partialRasterUsed() && !isDragging() && workManager.isIdle()) {
+                        engine.requestFullRaster();
+                        cachedRenderData = null;
+                    }
 
                     // Sidebar biome list updates are noisy while dragging; defer.
                     if (!isDragging()) {
@@ -753,7 +791,14 @@ resizeImage();
         // === Generation statistics ===
         // Shows sampling progress, biome/structure counts, thread info.
         if (config.showStatistics) {
-            dataVisualizer.renderStatistics(guiGraphics, xMin, yMin, xMax, yMax, engine.visibleBiomes(), engine.visibleStructures());
+            // Block Y, not quart Y: PreviewStorage.sampledCount indexes its
+            // layers with (y - yMin) >> Y_BLOCK_SHIFT. Height data is
+            // anchored at y=0 (see viewportHasUnsampledArea); every other
+            // mode samples per layer at the current Y.
+            final int layerBlockY = renderSettings.mode.useY ? centerPos.getY() : 0;
+            dataVisualizer.renderStatistics(guiGraphics, xMin, yMin, xMax, yMax,
+                    engine.visibleBiomes(), engine.visibleStructures(),
+                    renderSettings.mode, layerBlockY);
         }
     }
 
@@ -908,6 +953,109 @@ resizeImage();
     private record QueueGenerationKey(BlockPos center, int texWidth, int texHeight,
                                       int quartExpand, int quartStride, int preload) {}
 
+    /**
+     * Requests the staged initial fill.  The actual start level is chosen on
+     * the first frame with a real viewport size (see
+     * {@link #maybeStartInitialFill()}), because queueEarlyPreviewRange() may
+     * run before the tab is laid out.
+     */
+    public void beginInitialCoarseFill() {
+        if (!config.dragDownsamples || !workManager.isSetup()) {
+            return;
+        }
+        // Cache hit: the centre is already at target density, so nothing would
+        // be refined.  Skip and let the regular pass fill a missing border.
+        final PreviewStorage storage = workManager.previewStorage();
+        if (storage != null) {
+            final BlockPos c = center();
+            if (storage.isChunkSampledAtLeast(
+                    QuartPos.fromBlock(c.getX()),
+                    QuartPos.fromBlock(c.getY()),
+                    QuartPos.fromBlock(c.getZ()),
+                    PreviewStorage.FLAG_BIOME,
+                    FillLevel.FULL)) {
+                return;
+            }
+        }
+        initialFillRequested = true;
+        lastQueueKey = null;
+        lastQueuedRange = null;
+        maybeStartInitialFill();
+    }
+
+    /**
+     * Starts the staged fill once the viewport size is known and the chosen
+     * start level is below the configured sampler's density.  A viewport whose
+     * whole target pass already fits the sample budget is sampled directly —
+     * no fill, no extra latency.
+     */
+    private void maybeStartInitialFill() {
+        if (!initialFillRequested || initialFillActive) {
+            return;
+        }
+        if (!config.dragDownsamples || !workManager.isSetup() || !sized) {
+            return;
+        }
+        initialFillRequested = false;
+        final FillLevel target = workManager.targetFillLevel();
+        final FillLevel start = chooseInitialFillLevel(target);
+        if (start == null || start == target) {
+            return;
+        }
+        if (!workManager.enterInitialFill(start)) {
+            return;
+        }
+        initialFillActive = true;
+        initialFillStageStartNanos = System.nanoTime();
+        dragDeferredLayersState = true;
+        lastQueueKey = null;
+        lastQueuedRange = null;
+    }
+
+    /**
+     * Finest start level whose first pass stays inside
+     * {@link #INITIAL_FILL_SAMPLE_BUDGET}.  Returns the target (or {@code null}
+     * for a single-sample target) when nothing needs staging.
+     */
+    private FillLevel chooseInitialFillLevel(FillLevel target) {
+        if (target == FillLevel.SINGLE) {
+            return null;
+        }
+        final double scale = Math.max(1.0e-6, scaleBlockPos);
+        final long chunksX = Math.max(1L, (long) (texWidth * scale) >> 4);
+        final long chunksZ = Math.max(1L, (long) (texHeight * scale) >> 4);
+        final long chunks = Math.max(1L, chunksX * chunksZ);
+        FillLevel level = target;
+        while (level != FillLevel.SINGLE
+                && (double) chunks * level.samplesPerChunk() > INITIAL_FILL_SAMPLE_BUDGET) {
+            level = level.previous();
+        }
+        return level;
+    }
+
+    /**
+     * Advances the staged fill when the current stage drains (or hits its hard
+     * cap).  The next stage re-issues the same viewport; when the chain is
+     * done the fill ends and the deferred detail layers are re-queued.
+     */
+    private void updateInitialFill(long now) {
+        if (!initialFillActive) {
+            return;
+        }
+        final long elapsed = now - initialFillStageStartNanos;
+        if ((elapsed >= INITIAL_FILL_MIN_NANOS && workManager.isIdle())
+                || elapsed >= INITIAL_FILL_MAX_NANOS) {
+            if (workManager.advanceInitialFill()) {
+                initialFillStageStartNanos = now;
+            } else {
+                initialFillActive = false;
+                workManager.finishInitialFill();
+            }
+            lastQueueKey = null;
+            lastQueuedRange = null;
+        }
+    }
+
     void queueGeneration() {
         // === Deferred detail layers while dragging ===
         // During a drag only the biome layer is queued (see
@@ -929,18 +1077,24 @@ resizeImage();
             dragLatchActive = false;
         }
         final boolean dragging = dragLatchActive && interaction.isClicked();
-        if (dragging != dragDeferredLayersState) {
-            dragDeferredLayersState = dragging;
-            workManager.setDeferredLayersWhileDragging(dragging);
-            if (!dragging) {
-                // Leaving the drag fast-mode consumed both dedup guards while
-                // dragging (the biome-only passes recorded the viewport and
-                // its key); the release must re-issue the unchanged viewport
+        maybeStartInitialFill();
+        updateInitialFill(System.nanoTime());
+        // Both fast modes feed the same deferred-detail state: while either
+        // one is active the queue pass samples the biome layer only.
+        final boolean wantDeferred = dragging || initialFillActive;
+        if (wantDeferred != dragDeferredLayersState) {
+            dragDeferredLayersState = wantDeferred;
+            workManager.setDeferredLayersWhileDragging(wantDeferred);
+            if (!wantDeferred) {
+                // Leaving the fast-mode consumed both dedup guards while it
+                // was active (the biome-only passes recorded the viewport and
+                // its key); the exit must re-issue the unchanged viewport
                 // so the deferred detail layers and the full-resolution
                 // re-sampling of the coarse fill are guaranteed to be queued —
-                // including releases that arrive through paths which never
+                // including exits that arrive through paths which never
                 // reset the guards themselves (a cancelled drag below the
-                // click threshold, or an interrupted press).
+                // click threshold, an interrupted press, or the coarse pass
+                // draining).
                 lastQueueKey = null;
                 lastQueuedRange = null;
             }
@@ -1237,12 +1391,16 @@ resizeImage();
         selectedBiomeId = biomeId;
         // Invalidate render cache so the next frame re-renders with the new highlight
         throttle.invalidateRenderedContent();
+        // The highlight changes every biome pixel's color: no painted section
+        // can be reused.
+        engine.invalidateRasterCache();
     }
 
     public void setHighlightCaves(boolean highlightCaves) {
         this.highlightCaves = highlightCaves;
         // Invalidate render cache so the next frame re-renders with the new highlight
         throttle.invalidateRenderedContent();
+        engine.invalidateRasterCache();
     }
 
     /**
@@ -1257,7 +1415,8 @@ resizeImage();
      * Resets the generation start timer.  Called when the world/seed changes.
      */
     public void resetGenerationTimer() {
-        generationStart = null;
+        // Kept as a no-op hook: the sampling duration is timed inside
+        // PreviewDataVisualizer, which owns the statistics HUD line.
     }
 
     /**
@@ -1268,6 +1427,14 @@ resizeImage();
     public void invalidateRenderCache() {
         cachedRenderData = null;
         throttle.invalidateAll();
+        // Pixels from unchanged sections can no longer be reused: the display
+        // is about to re-render under a new mode/scale/color mapping.
+        engine.invalidateRasterCache();
+        // An explicit invalidation also abandons an in-flight staged fill; the
+        // next queueGeneration() recomposes the deferred state and re-issues
+        // the viewport normally.
+        initialFillActive = false;
+        initialFillRequested = false;
         // Drop the queued-range dedup guard so the next frame re-evaluates the
         // range instead of short-circuiting against a stale pre-change range.
         lastQueuedRange = null;

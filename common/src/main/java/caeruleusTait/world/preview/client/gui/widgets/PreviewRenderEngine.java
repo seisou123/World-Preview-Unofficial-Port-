@@ -42,6 +42,9 @@ import java.util.List;
  */
 class PreviewRenderEngine {
 
+    /** Item-icon structures are drawn 16x16 GUI pixels; see renderStructures. */
+    private static final int ITEM_ICON_GUI_SIZE = 16;
+
     record TextureCoordinate(int x, int z) {}
 
     record RenderHelper(
@@ -122,6 +125,26 @@ class PreviewRenderEngine {
     // on frames where nothing changed.
     private boolean biomeCountsDirty = false;
 
+    // --- Incremental raster cache ---
+    // Loading batches complete several times per second; repainting every
+    // visible texel for each of them (0.35-1.6M texels depending on GUI scale)
+    // was the dominant frame-time spike while the map filled in.  A section is
+    // repainted only when its value version moved.  The cache is keyed by
+    // section identity and dropped whenever the viewport, the render mode, the
+    // textures or the color mapping changes.
+    private final java.util.IdentityHashMap<PreviewSection, Long> rasterVersions = new java.util.IdentityHashMap<>();
+    private RasterSignature lastRasterSignature = null;
+    private boolean fullRasterDue = true;
+    private boolean forceFullRaster = true;
+    private boolean partialRasterUsed = false;
+
+    private record RasterSignature(
+            int centerX, int centerY, int centerZ,
+            int texWidth, int texHeight,
+            int quartExpand, int quartStride,
+            RenderSettings.RenderMode mode
+    ) {}
+
     PreviewRenderEngine(PreviewDisplay host) {
         this.host = host;
         this.visibleBiomes = new Short2LongOpenHashMap();
@@ -155,6 +178,79 @@ class PreviewRenderEngine {
         minimapTexture = new DynamicTexture(minimapImg);
         minimapImg.fillRect(0, 0, 80, 80, 0xFF000000);
         minimapTexture.upload();
+    }
+
+    /**
+     * Drops the incremental raster cache and forces the next heavy pass to
+     * repaint the whole viewport.  Called whenever the pixels of unchanged
+     * sections can no longer be reused: texture recreation, color/data reload,
+     * a render-mode switch, or a highlight/filter change.
+     */
+    void invalidateRasterCache() {
+        rasterVersions.clear();
+        lastRasterSignature = null;
+        forceFullRaster = true;
+        partialRasterUsed = false;
+    }
+
+    /**
+     * Starts a heavy raster pass and decides whether the whole viewport must be
+     * repainted or only the sections whose sampled values changed since the
+     * last pass.
+     *
+     * <p>A full pass resets the visible-count aggregates ({@link #beginFrameCounts()});
+     * a partial pass leaves them untouched, because repainted sections would
+     * otherwise be counted twice.  The display forces one full pass once
+     * sampling settles, which refreshes the aggregates.
+     *
+     * @return true when the pass must repaint everything
+     */
+    boolean beginRaster() {
+        final RenderSettings settings = host.renderSettings();
+        final BlockPos center = host.center();
+        final RasterSignature signature = new RasterSignature(
+                center.getX(), center.getY(), center.getZ(),
+                host.getTexWidth(), host.getTexHeight(),
+                settings.quartExpand(), settings.quartStride(), settings.mode
+        );
+        // Hillshade and contour post-processing read the whole height field,
+        // including cells of unchanged sections, so partial passes cannot
+        // produce a correct image for them.
+        final boolean full = forceFullRaster
+                || lastRasterSignature == null
+                || !signature.equals(lastRasterSignature)
+                || (settings.mode == RenderSettings.RenderMode.HEIGHTMAP
+                        && (host.config().enableHillshade || host.config().enableContours));
+        fullRasterDue = full;
+        if (full) {
+            rasterVersions.clear();
+            beginFrameCounts();
+        }
+        return full;
+    }
+
+    /** Commits a heavy raster pass: records the viewport signature and clears the force flag. */
+    void finishRaster() {
+        final RenderSettings settings = host.renderSettings();
+        final BlockPos center = host.center();
+        lastRasterSignature = new RasterSignature(
+                center.getX(), center.getY(), center.getZ(),
+                host.getTexWidth(), host.getTexHeight(),
+                settings.quartExpand(), settings.quartStride(), settings.mode
+        );
+        partialRasterUsed = !fullRasterDue;
+        fullRasterDue = false;
+        forceFullRaster = false;
+    }
+
+    /** True when the last heavy pass was incremental (some sections skipped). */
+    boolean partialRasterUsed() {
+        return partialRasterUsed;
+    }
+
+    /** Forces the next heavy raster pass to repaint the whole viewport. */
+    void requestFullRaster() {
+        forceFullRaster = true;
     }
 
     /** Fills the main texture with opaque black and uploads it (error/loading states). */
@@ -201,6 +297,9 @@ class PreviewRenderEngine {
         // clears the biome list in the GUI.
         visibleBiomes = new Short2LongOpenHashMap();
         visibleStructures = new Short2LongOpenHashMap();
+        // The color tables and the storage are about to be replaced: no
+        // previously painted texture pixel can be reused.
+        invalidateRasterCache();
 
         PreviewDisplayDataProvider provider = host.dataProvider();
         structureRenderInfoMap = provider.renderStructureMap();
@@ -558,8 +657,24 @@ class PreviewRenderEngine {
         // of consecutive same-color pixels along the Z axis and merge them into
         // a single fillRect call.  This reduces JNI calls by 3-10x on typical
         // biome maps where large regions share the same biome.
+        final boolean fullRaster = fullRasterDue;
         for (RenderHelper r : renderData) {
+            final PreviewSection dataSection = r.dataSection();
+            final Long paintedVersion = rasterVersions.get(dataSection);
+            if (!fullRaster && paintedVersion != null
+                    && paintedVersion.longValue() == dataSection.writeVersion()) {
+                // No value changed in this section since it was painted:
+                // keep its pixels (the viewport mapping is stable, otherwise
+                // beginRaster() forced a full pass).
+                continue;
+            }
             texX = r.sectionStartTexX();
+            // Capture BEFORE painting: a worker that writes during this pass
+            // bumps the version after its stores, so the stored value stays
+            // behind and the next pass repaints the section.  (A volatile
+            // read of the version also publishes every store that preceded
+            // the bump, so the pixels painted here are self-consistent.)
+            final long versionAtPaintStart = dataSection.writeVersion();
 
             for (int x = r.accessData().minX(); x < r.accessData().maxX(); x += quartStride) {
                 int texZ = r.sectionStartTexZ();
@@ -582,8 +697,10 @@ class PreviewRenderEngine {
                                 if (selectedBiomeId == rawData || (highlightCaves && cavesMap[rawData])) {
                                     color = colorMap[rawData];
                                 }
-                                workingVisibleBiomes[rawData] += 1;
-                                biomeCountsDirty = true;
+                                if (fullRaster) {
+                                    workingVisibleBiomes[rawData] += 1;
+                                    biomeCountsDirty = true;
+                                }
                             }
                         }
                         case HEIGHTMAP -> {
@@ -684,6 +801,10 @@ class PreviewRenderEngine {
 
                 texX += quartExpand;
             }
+            // Mark the section as painted at the version read before the
+            // pass.  A worker that wrote during the pass bumps it again and
+            // the next pass repaints this section.
+            rasterVersions.put(dataSection, versionAtPaintStart);
         }
         if (heightFieldBuffer != null && heightFieldWidth > 0 && heightFieldHeight > 0) {
             applyHeightmapPostProcessing(quartExpand, texWidth, texHeight);
@@ -932,7 +1053,10 @@ class PreviewRenderEngine {
                     continue;
                 }
 
-                if (id >= 0 && id < workingVisibleStructures.length) {
+                // Count only on full passes: partial raster passes keep the
+                // previous aggregates (repainting a section would double-count
+                // it), and skip frames must not accumulate at all.
+                if (fullRasterDue && id >= 0 && id < workingVisibleStructures.length) {
                     workingVisibleStructures[id] += 1;
                 }
 
@@ -952,23 +1076,35 @@ class PreviewRenderEngine {
                 final int rXMax = map.textureToScreenXCeil(texStartX + icon.getWidth(), host.getX());
                 final int rZMax = map.textureToScreenZCeil(texStartZ + icon.getHeight(), host.getY());
 
+                final int itemX;
+                final int itemZ;
                 if (item != null) {
                     // Items are always 16 GUI pixels; center on texCenter in GUI space
-                    final int itemX = map.textureToScreenXRound(texCenter.x(), host.getX()) - 8;
-                    final int itemZ = map.textureToScreenZRound(texCenter.z(), host.getY()) - 8;
+                    itemX = map.textureToScreenXRound(texCenter.x(), host.getX()) - 8;
+                    itemZ = map.textureToScreenZRound(texCenter.z(), host.getY()) - 8;
                     guiGraphics.renderItem(item, itemX, itemZ);
-                } else if (iconTexture != null) {
-                    WorldPreviewClient.renderTexture(guiGraphics, iconTexture, rXMin, rZMin, rXMax, rZMax);
+                } else {
+                    itemX = rXMin;
+                    itemZ = rZMin;
+                    if (iconTexture != null) {
+                        WorldPreviewClient.renderTexture(guiGraphics, iconTexture, rXMin, rZMin, rXMax, rZMax);
+                    }
                 }
 
                 if (updateHoverGrid) {
-                    host.hoverInspector.putStructEntry(
-                            texCenter.x(),
-                            texCenter.z(),
-                            icon.getWidth(),
-                            icon.getHeight(),
-                            structure
-                    );
+                    if (item != null) {
+                        // Drawn at a fixed 16 GUI pixels, not at the icon
+                        // texture size: register the box the player sees.
+                        host.hoverInspector.putStructEntryGui(itemX, itemZ, ITEM_ICON_GUI_SIZE, structure);
+                    } else {
+                        host.hoverInspector.putStructEntry(
+                                texCenter.x(),
+                                texCenter.z(),
+                                icon.getWidth(),
+                                icon.getHeight(),
+                                structure
+                        );
+                    }
                 }
             }
         }

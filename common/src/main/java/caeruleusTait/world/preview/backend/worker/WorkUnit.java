@@ -2,6 +2,7 @@
 // See CHANGES.md for details.
 package caeruleusTait.world.preview.backend.worker;
 
+import caeruleusTait.world.preview.backend.FillLevel;
 import caeruleusTait.world.preview.backend.WorkManager;
 import caeruleusTait.world.preview.backend.color.BiomeIdLookup;
 import caeruleusTait.world.preview.backend.color.PreviewData;
@@ -46,27 +47,36 @@ public abstract class WorkUnit implements Task {
     // idempotent partial writes and are re-sampled in full on a later pass.
     private volatile boolean wasInterrupted;
 
-    // Drag-tier marking: set right after construction for units bound to
-    // the drag-time coarse sampler.  Coarse units complete on a separate
-    // section bitset and freeze the drag session's tier epoch, so their
-    // batches are invalidated together with that session.  Written before
-    // the unit is published to the worker pool (executor submit
-    // happens-before), so no volatile is needed.
-    private boolean coarseSampling;
+    // Staged-fill marking: set right after construction for units bound to a
+    // non-target sampling stage (the drag tier or an intermediate refinement
+    // stage of the initial fill).  Such units complete on a separate section
+    // bitset and freeze the tier epoch, so their batches are invalidated
+    // together with that stage.  Written before the unit is published to the
+    // worker pool (executor submit happens-before), so no volatile is needed.
+    private FillLevel fillLevel = FillLevel.FULL;
+    private boolean fillFinal = true;
     private long tierEpoch = Long.MIN_VALUE;
 
-    /** Marks this unit as drag-tier coarse and freezes the drag session's tier epoch. */
-    public void setCoarseSampling(boolean coarse, long tierEpoch) {
-        this.coarseSampling = coarse;
+    /**
+     * Marks this unit as belonging to a staged fill pass.
+     *
+     * @param level      lattice density the unit samples
+     * @param finalStage true when this stage reaches the configured (target)
+     *                   sampler, so its completion is a real one
+     * @param tierEpoch  the stage epoch, frozen for the stale-batch guard
+     */
+    public void setFillStage(FillLevel level, boolean finalStage, long tierEpoch) {
+        this.fillLevel = level;
+        this.fillFinal = finalStage;
         this.tierEpoch = tierEpoch;
     }
 
-    /** True when this unit was sampled with the drag-tier coarse sampler. */
-    public boolean isCoarseSampling() {
-        return coarseSampling;
+    /** True when this unit was sampled by a non-target (staged) sampler. */
+    public boolean isStagedSampling() {
+        return !fillFinal;
     }
 
-    /** The drag-tier epoch frozen at construction ({@link Long#MIN_VALUE} for fine units). */
+    /** The staged fill epoch frozen at construction ({@link Long#MIN_VALUE} for target units). */
     public long tierEpoch() {
         return tierEpoch;
     }
@@ -125,14 +135,16 @@ public abstract class WorkUnit implements Task {
     }
 
     public boolean isCompleted() {
-        return primarySection.isCompleted(chunkPos);
+        return primarySection.isCompletedAtLeast(chunkPos, fillFinal ? FillLevel.FULL : fillLevel);
     }
 
     public void markCompleted() {
-        if (coarseSampling) {
-            primarySection.markCompletedCoarse(chunkPos);
-        } else {
+        if (fillFinal) {
             primarySection.markCompleted(chunkPos);
+        } else if (fillLevel == FillLevel.QUARTER) {
+            primarySection.markCompletedQuarter(chunkPos);
+        } else {
+            primarySection.markCompletedCoarse(chunkPos);
         }
     }
 
@@ -164,7 +176,8 @@ public abstract class WorkUnit implements Task {
             taskResult.set(TaskResult.success(result));
             return result;
         } catch (Throwable e) {
-            LOGGER.error("Work unit at {} failed", chunkPos, e);
+            // No logging here: WorkBatch is the single record point and knows
+            // whether the failure is the first one in its batch.
             taskState.set(TaskState.FAILED);
             taskResult.set(TaskResult.error(e));
             throw e;

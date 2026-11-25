@@ -12,6 +12,11 @@ import caeruleusTait.world.preview.backend.analysis.WorldgenContext;
 import caeruleusTait.world.preview.domain.task.TaskScheduler;
 import caeruleusTait.world.preview.backend.color.PreviewData;
 import caeruleusTait.world.preview.backend.sampler.ChunkSampler;
+import caeruleusTait.world.preview.backend.sampler.FullQuartSampler;
+import caeruleusTait.world.preview.backend.sampler.QuarterQuartSampler;
+import caeruleusTait.world.preview.backend.sampler.RefineFullSampler;
+import caeruleusTait.world.preview.backend.sampler.RefineQuarterSampler;
+import caeruleusTait.world.preview.backend.sampler.SingleQuartSampler;
 import caeruleusTait.world.preview.backend.storage.PreviewSection;
 import caeruleusTait.world.preview.backend.storage.PreviewStorage;
 import caeruleusTait.world.preview.backend.storage.PreviewStorageCacheManager;
@@ -93,11 +98,52 @@ public class WorkManager {
 
     /**
      * Immutable sampling-tier snapshot: the sampler a new work unit must use,
-     * whether that sampler is the drag-tier coarse sampler, and the tier epoch
-     * the unit freezes so its batch is discarded if the tier moves before the
-     * results are applied.
+     * the fallback sampler for chunks that lack the refinement's prerequisite,
+     * the lattice density of the tier, whether this tier reaches the
+     * configured (target) sampler, and the tier epoch the unit freezes so its
+     * batch is discarded if the tier moves before the results are applied.
      */
-    private record SamplingTier(ChunkSampler sampler, boolean coarse, long epoch) {}
+    private record SamplingTier(
+            ChunkSampler sampler,
+            ChunkSampler fallbackSampler,
+            FillLevel prerequisite,
+            FillLevel level,
+            boolean finalStage,
+            long epoch
+    ) {
+        /** True when this tier refines a coarser lattice and thus needs a fallback. */
+        boolean isRefinement() {
+            return fallbackSampler != null;
+        }
+    }
+
+    /** Sampler the current world at the current zoom uses when no fill is running. */
+    private ChunkSampler configuredSampler() {
+        return renderSettings.samplerType.create(renderSettings.quartStride());
+    }
+
+    /** Lattice density of the configured sampler: the target of every staged fill. */
+    public FillLevel targetFillLevel() {
+        return configuredSampler().level();
+    }
+
+    /**
+     * Sampler for a fill stage.  {@code refinement} samples only the lattice
+     * points the previous (coarser) stage left out; the plain variant samples
+     * the whole lattice of that density.
+     */
+    private static ChunkSampler samplerFor(FillLevel level, boolean refinement) {
+        return switch (level) {
+            case SINGLE -> new SingleQuartSampler();
+            case QUARTER -> refinement ? new RefineQuarterSampler() : new QuarterQuartSampler();
+            case FULL -> refinement ? new RefineFullSampler() : new FullQuartSampler();
+        };
+    }
+
+    /** Completion a queue pass at this tier must demand before skipping a chunk. */
+    private static FillLevel requiredLevel(SamplingTier tier) {
+        return tier.finalStage() ? FillLevel.FULL : tier.level();
+    }
     // Volatile: nulled by cancel() on the render thread while the queue thread
     // (queueForLevel's storage probe) and worker threads may still read it.
     private volatile SampleUtils sampleUtils;
@@ -129,6 +175,12 @@ public class WorkManager {
     // read can submit into an executor that was already shut down.
     private volatile ExecutorService executorService;
     private volatile ExecutorService queueChunksService;
+
+    // Pools left draining by a suspend().  suspend() returns without waiting
+    // for them (it runs on the render thread when the settings screen opens),
+    // so the teardown that actually closes the worldgen context — cancel() —
+    // takes over the wait.  Empty whenever no suspended pool is still alive.
+    private volatile List<ExecutorService> suspendedPools = List.of();
 
     // Guards the queueIsRunning / pending-range handshake between the render
     // thread (queueRange) and the queue thread (queueRangeWrapper finish path).
@@ -168,10 +220,10 @@ public class WorkManager {
     /** Monotonic drag-tier sequence: snapshot epochs are drawn from it, coarse batches are discarded when it moves. */
     private final AtomicLong dragTierEpoch = new AtomicLong(0);
 
-    /** True while the current sampling tier is the drag-tier coarse tier. */
-    private boolean isDragTierActive() {
+    /** True while a staged fill (drag tier or an intermediate refinement stage) is active. */
+    private boolean isFillModeActive() {
         final SamplingTier tier = samplingTier;
-        return tier != null && tier.coarse();
+        return tier != null && !tier.finalStage();
     }
 
     /**
@@ -230,7 +282,7 @@ public class WorkManager {
         biomeSource = chunkGenerator.getBiomeSource();
         previewStorageCacheManager = _previewStorageCacheManager;
         samplingTier = new SamplingTier(
-                renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
+                configuredSampler(), null, null, configuredSampler().level(), true, dragTierEpoch.get());
         previewData = _previewData;
         biomeHolderIdCache = new ConcurrentHashMap<>();
 
@@ -424,7 +476,7 @@ public class WorkManager {
         // full-resolution.
         dragTierEpoch.incrementAndGet();
         samplingTier = new SamplingTier(
-                renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
+                configuredSampler(), null, null, configuredSampler().level(), true, dragTierEpoch.get());
 
         previewStorage = previewStorageCacheManager.loadPreviewStorage(worldOptions.seed(), yMin(), yMax());
         return true;
@@ -461,11 +513,22 @@ public class WorkManager {
 
         boolean interrupted = false;
         try {
-            if (!executorService.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                LOGGER.warn("executorService did not terminate within {}s", SHUTDOWN_TIMEOUT_SECONDS);
-            }
-            if (!queueChunksService.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                LOGGER.warn("queueChunksService did not terminate within {}s", SHUTDOWN_TIMEOUT_SECONDS);
+            // One shared deadline instead of two serial 10s waits: this runs on
+            // the render thread, so the worst case used to be a 20s freeze.
+            final long deadline = System.nanoTime()
+                    + TimeUnit.SECONDS.toNanos(SHUTDOWN_TIMEOUT_SECONDS);
+            boolean terminated = awaitBoth(deadline);
+            if (!terminated) {
+                // Cancellation is cooperative and StructStartWorkUnit has no
+                // checkpoint inside the vanilla structure pipeline, so a slow
+                // worker can outlive the soft shutdown. Interrupt it before the
+                // caller closes the resource manager / level it is reading.
+                executorService.shutdownNow();
+                queueChunksService.shutdownNow();
+                terminated = awaitBoth(System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
+                if (!terminated) {
+                    LOGGER.warn("Worker threads still alive after a hard stop; continuing teardown");
+                }
             }
         } catch (InterruptedException e) {
             interrupted = true;
@@ -473,6 +536,71 @@ public class WorkManager {
         } finally {
             if (interrupted) {
                 Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /** Waits for both pools until the given {@link System#nanoTime()} deadline. */
+    private boolean awaitBoth(long deadlineNanos) throws InterruptedException {
+        final boolean executorDone = awaitUntil(executorService, deadlineNanos);
+        final boolean queueDone = awaitUntil(queueChunksService, deadlineNanos);
+        return executorDone && queueDone;
+    }
+
+    private static boolean awaitUntil(ExecutorService executor, long deadlineNanos)
+            throws InterruptedException {
+        final long remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) {
+            return executor.isTerminated();
+        }
+        return executor.awaitTermination(remaining, TimeUnit.NANOSECONDS);
+    }
+
+    /**
+     * Waits for the pools a previous {@link #suspend()} left draining.
+     *
+     * <p>{@code suspend()} deliberately returns without waiting (it runs on
+     * the render thread when the settings screen opens, and a structure unit
+     * has no cancellation checkpoint), so the wait moves to the point that
+     * actually closes the shared worldgen resources.  By then the user has
+     * usually spent long enough in the settings screen that termination has
+     * already happened; a unit that still ignores cancellation is interrupted
+     * before the caller proceeds to close the context.
+     */
+    private void awaitSuspendedPools() {
+        final List<ExecutorService> pools = suspendedPools;
+        if (pools.isEmpty()) {
+            return;
+        }
+        suspendedPools = List.of();
+        final long deadline = System.nanoTime()
+                + TimeUnit.SECONDS.toNanos(SHUTDOWN_TIMEOUT_SECONDS);
+        boolean terminated = true;
+        for (ExecutorService pool : pools) {
+            try {
+                terminated &= awaitUntil(pool, deadline);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                terminated = false;
+                break;
+            }
+        }
+        if (terminated) {
+            return;
+        }
+        LOGGER.warn("Suspended worker pools still draining during teardown; interrupting them");
+        for (ExecutorService pool : pools) {
+            pool.shutdownNow();
+        }
+        final long interruptDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        for (ExecutorService pool : pools) {
+            try {
+                if (!awaitUntil(pool, interruptDeadline)) {
+                    LOGGER.warn("Worker thread still alive after interrupting a suspended pool; continuing teardown");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             }
         }
     }
@@ -487,6 +615,10 @@ public class WorkManager {
         // next session, and the coarse-touched chunks re-sample on first sight.
         exitDragTier();
         shutdownExecutors();
+        // Pools left draining by an earlier suspend() must be gone before the
+        // worldgen context below is closed; normally this is a no-op because
+        // the user spent time in the settings screen before closing.
+        awaitSuspendedPools();
 
         RuntimeException closeError = null;
         try {
@@ -522,7 +654,7 @@ public class WorkManager {
             // is advanced by writeCacheFile() only after a successful store,
             // so a skipped/failed write simply retries on the next close.
             if (previewStorageCacheManager != null && worldOptions != null
-                    && !isDragTierActive()
+                    && !isFillModeActive()
                     && previewStorage != null && previewStorage.isDirtySinceSaved()) {
                 previewStorageCacheManager.storePreviewStorage(worldOptions.seed(), previewStorage);
             }
@@ -564,7 +696,7 @@ public class WorkManager {
             // install a fresh full-resolution snapshot.
             dragTierEpoch.incrementAndGet();
             samplingTier = new SamplingTier(
-                    renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
+                    configuredSampler(), null, null, configuredSampler().level(), true, dragTierEpoch.get());
             queueIsRunning = false;
             pendingTopLeft = null;
             pendingBottomRight = null;
@@ -630,22 +762,20 @@ public class WorkManager {
         executorService.shutdown();
         queueChunksService.shutdown();
 
-        boolean interrupted = false;
-        try {
-            if (!executorService.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                LOGGER.warn("suspend: executorService did not terminate within {}s", SHUTDOWN_TIMEOUT_SECONDS);
-            }
-            if (!queueChunksService.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                LOGGER.warn("suspend: queueChunksService did not terminate within {}s", SHUTDOWN_TIMEOUT_SECONDS);
-            }
-        } catch (InterruptedException e) {
-            interrupted = true;
-            LOGGER.warn("Interrupted while awaiting executor termination during suspend");
-        } finally {
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
+        // Do NOT await termination here: suspend() runs on the render thread
+        // when the settings screen opens or a tab is switched, and a vanilla
+        // structure-generation unit has no cooperative checkpoint, so the old
+        // code could block the UI for up to 10 s.  The pools are recorded and
+        // awaited by the next cancel() — the teardown that actually closes the
+        // worldgen context/resources and therefore must not race live workers.
+        // Resuming in the meantime is safe: the retained storage and worldgen
+        // context are reused, cancelled batches drop their results under the
+        // epoch/completion guards, and sampling writes are idempotent.
+        final List<ExecutorService> draining = new ArrayList<>(suspendedPools.size() + 2);
+        draining.addAll(suspendedPools);
+        draining.add(executorService);
+        draining.add(queueChunksService);
+        suspendedPools = draining;
 
         // The queue thread is dead: reset the queueIsRunning handshake so the
         // render thread never waits on a pass that can never finish.
@@ -813,58 +943,186 @@ public class WorkManager {
     }
 
     /**
-     * Enters the drag-tier coarse sampling mode: one immutable snapshot swaps
-     * in a single-quart sampler (one biome sample per chunk instead of
-     * sixteen) marked coarse with a fresh tier epoch, so every unit the queue
-     * thread binds from this snapshot is classified coarse off the SAME read
-     * that handed it the coarse sampler.  In-flight batches are cancelled so
-     * they cannot mix fine results into the coarse pass (chunks they already
-     * completed keep their fine marks and are skipped by the queue probe).
+     * Enters the staged initial fill at {@code startLevel}.
+     *
+     * <p>{@code PreviewDisplay} picks the start level from the viewport size
+     * (an adaptive sample budget) and advances through the chain with
+     * {@link #advanceInitialFill()} until the configured sampler is reached.
+     * Detail layers are deferred meanwhile, exactly like during a drag.
+     *
+     * @return true when a staged fill was installed; false when nothing has to
+     *         be refined (already at target density, manager not set up, or
+     *         another staged mode is active)
      */
-    private void enterDragTier() {
-        final SamplingTier current = samplingTier;
-        if (!config.dragDownsamples || !isSetup() || (current != null && current.coarse())) {
-            return;
+    public synchronized boolean enterInitialFill(FillLevel startLevel) {
+        if (!isSetup() || !config.dragDownsamples) {
+            return false;
         }
+        final SamplingTier current = samplingTier;
+        if (current != null && !current.finalStage()) {
+            return false;
+        }
+        final FillLevel target = targetFillLevel();
+        if (startLevel.atLeast(target)) {
+            return false;
+        }
+        deferLayersWhileDragging = true;
         dragTierEpoch.incrementAndGet();
         synchronized (currentBatches) {
             currentBatches.forEach(WorkBatch::cancel);
         }
         samplingTier = new SamplingTier(
-                RenderSettings.SamplerType.SINGLE.create(4), true, dragTierEpoch.get());
-        // Stop an in-flight pass at its next layer boundary; the display's
-        // next throttled drag frame re-issues the viewport with the new flags.
+                samplerFor(startLevel, false), null, null, startLevel, false, dragTierEpoch.get());
         shouldEarlyAbortQueuing = true;
+        resetQueuedRange();
+        return true;
     }
 
     /**
-     * Leaves the drag-tier coarse sampling mode: one immutable snapshot swaps
-     * the full-resolution sampler back in, every batch of the drag session is
-     * invalidated (cancel + tier-epoch bump), and the coarse completion marks
-     * are dropped SYNCHRONOUSLY under {@link #completedSynchro} — the same
-     * lock every completion grant takes — so the sweep cannot miss a mark and
-     * the queue probe re-issues the coarse-touched area for full-resolution
-     * sampling on the very next pass.  A batch whose results were computed
-     * for the old tier re-checks the epoch under that lock and discards
-     * itself instead.  Idempotent no-op when the tier was never entered
-     * (dragDownsamples disabled, or sampling not set up).
+     * Advances the staged initial fill to the next lattice level.
+     *
+     * <p>The new stage samples only the lattice points the previous stage left
+     * out (3 for single→quarter, 12 for quarter→full), so the whole chain
+     * costs exactly one full-resolution pass while producing intermediate
+     * images on the way.  Chunks that lack the previous stage's completion —
+     * because they entered the viewport after it finished — fall back to that
+     * level's plain sampler instead of the refinement, which would leave their
+     * remaining cells untouched.
+     *
+     * <p>Staged marks are intentionally kept (not swept): they are the
+     * evidence the next stage checks for its prerequisite, and
+     * {@link #finishInitialFill()} drops them once the chain is done.
+     *
+     * @return true when a new stage was installed, false when the chain is
+     *         already at the target level
      */
-    private void exitDragTier() {
+    public synchronized boolean advanceInitialFill() {
         final SamplingTier current = samplingTier;
-        if (current == null || !current.coarse()) {
-            return;
+        if (current == null || current.finalStage()) {
+            return false;
         }
-        samplingTier = new SamplingTier(
-                renderSettings.samplerType.create(renderSettings.quartStride()), false, dragTierEpoch.get());
+        final FillLevel nextLevel = current.level().next();
+        if (nextLevel == current.level()) {
+            return false;
+        }
+        final FillLevel target = targetFillLevel();
+        final boolean finalStage = nextLevel.atLeast(target);
+        final FillLevel level = finalStage ? target : nextLevel;
         dragTierEpoch.incrementAndGet();
         synchronized (currentBatches) {
             currentBatches.forEach(WorkBatch::cancel);
         }
+        samplingTier = new SamplingTier(
+                samplerFor(level, true),
+                samplerFor(level, false),
+                current.level(),
+                level,
+                finalStage,
+                dragTierEpoch.get()
+        );
         shouldEarlyAbortQueuing = true;
+        resetQueuedRange();
+        return true;
+    }
+
+    /**
+     * Ends the staged initial fill and restores the configured sampler.
+     *
+     * <p>A completed chain keeps its fine completion bits and only drops the
+     * staged marks — its data is at target resolution by then.  An abandoned
+     * chain additionally drops the fine bits of the staged chunks so they are
+     * re-sampled at full resolution on the next pass.
+     */
+    public synchronized void finishInitialFill() {
+        final SamplingTier current = samplingTier;
+        if (current == null || (current.finalStage() && !current.isRefinement())) {
+            return;
+        }
+        final boolean abandoned = !current.finalStage();
+        if (abandoned) {
+            dragTierEpoch.incrementAndGet();
+            synchronized (currentBatches) {
+                currentBatches.forEach(WorkBatch::cancel);
+            }
+            shouldEarlyAbortQueuing = true;
+        }
+        samplingTier = new SamplingTier(
+                configuredSampler(), null, null, configuredSampler().level(), true, dragTierEpoch.get());
         final PreviewStorage storage = previewStorage;
         if (storage != null) {
             synchronized (completedSynchro) {
-                storage.clearCoarseCompletions();
+                if (abandoned) {
+                    storage.clearStagedCompletions();
+                } else {
+                    storage.clearStagedMarks();
+                }
+            }
+        }
+        resetQueuedRange();
+    }
+
+    /**
+     * Enters the drag-tier coarse sampling mode: one immutable snapshot swaps
+     * in a single-quart sampler (one biome sample per chunk instead of
+     * sixteen) marked as the first fill stage with a fresh tier epoch, so
+     * every unit the queue thread binds from this snapshot is classified
+     * coarse off the SAME read that handed it the coarse sampler.  In-flight
+     * batches are cancelled so they cannot mix fine results into the coarse
+     * pass (chunks they already completed keep their fine marks and are
+     * skipped by the queue probe).
+     */
+    private void enterDragTier() {
+        final SamplingTier current = samplingTier;
+        if (!config.dragDownsamples || !isSetup() || (current != null && !current.finalStage())) {
+            return;
+        }
+        dragTierEpoch.incrementAndGet();
+        synchronized (currentBatches) {
+            currentBatches.forEach(WorkBatch::cancel);
+        }
+        samplingTier = new SamplingTier(
+                new SingleQuartSampler(), null, null, FillLevel.SINGLE, false, dragTierEpoch.get());
+        // Stop an in-flight pass at its next layer boundary; the display's
+        // next throttled drag frame re-issues the viewport with the new flags.
+        shouldEarlyAbortQueuing = true;
+        resetQueuedRange();
+    }
+
+    /**
+     * Leaves a staged sampling mode: one immutable snapshot swaps the
+     * configured sampler back in, every batch of the stage is invalidated
+     * (cancel + tier-epoch bump only when the stage is abandoned), and the
+     * stage's completion marks are swept SYNCHRONOUSLY under
+     * {@link #completedSynchro} — the same lock every completion grant takes —
+     * so the sweep cannot miss a mark and the queue probe re-issues the
+     * touched area for full-resolution sampling on the very next pass.  A
+     * batch whose results were computed for the old tier re-checks the epoch
+     * under that lock and discards itself instead.  Idempotent no-op when no
+     * staged mode is active.
+     */
+    private void exitDragTier() {
+        final SamplingTier current = samplingTier;
+        if (current == null || (current.finalStage() && !current.isRefinement())) {
+            return;
+        }
+        final boolean staged = !current.finalStage();
+        samplingTier = new SamplingTier(
+                configuredSampler(), null, null, configuredSampler().level(), true, dragTierEpoch.get());
+        if (staged) {
+            dragTierEpoch.incrementAndGet();
+            synchronized (currentBatches) {
+                currentBatches.forEach(WorkBatch::cancel);
+            }
+            shouldEarlyAbortQueuing = true;
+        }
+        final PreviewStorage storage = previewStorage;
+        if (storage != null) {
+            synchronized (completedSynchro) {
+                if (staged) {
+                    storage.clearStagedCompletions();
+                } else {
+                    storage.clearStagedMarks();
+                }
             }
         }
     }
@@ -1213,7 +1471,7 @@ public class WorkManager {
 
     private WorkUnit workUnitFactory(ChunkPos pos, int y) {
         final SamplingTier tier = samplingTier;
-        final ChunkSampler sampler = tier.sampler();
+        final ChunkSampler sampler = chooseSamplerForChunk(tier, pos, y);
         if (config.buildFullVertChunk) {
             return bindTier(new FullChunkWorkUnit(this, sampler, pos, sampleUtils, previewData, yMin(), yMax(), Y_BLOCK_STRIDE), tier);
         } else {
@@ -1222,18 +1480,49 @@ public class WorkManager {
     }
 
     /**
+     * Refinement stages only sample the lattice points the previous stage left
+     * out.  A chunk that entered the viewport after that stage finished has no
+     * prerequisite completion, so it falls back to the plain sampler of the
+     * same density — the refinement would leave its remaining cells untouched.
+     */
+    private ChunkSampler chooseSamplerForChunk(SamplingTier tier, ChunkPos pos, int y) {
+        if (!tier.isRefinement() || hasFillPrerequisite(tier, pos, y)) {
+            return tier.sampler();
+        }
+        return tier.fallbackSampler();
+    }
+
+    private boolean hasFillPrerequisite(SamplingTier tier, ChunkPos pos, int y) {
+        final PreviewStorage storage = previewStorage;
+        if (storage == null || tier.prerequisite() == null) {
+            return true;
+        }
+        return storage.isChunkSampledAtLeast(
+                QuartPos.fromSection(pos.x),
+                QuartPos.fromBlock(y),
+                QuartPos.fromSection(pos.z),
+                PreviewStorage.FLAG_BIOME,
+                tier.prerequisite()
+        );
+    }
+
+    /** Completion a biome pass at the current tier must demand before skipping a chunk. */
+    private FillLevel biomeRequiredLevel() {
+        final SamplingTier tier = samplingTier;
+        return tier == null ? FillLevel.FULL : requiredLevel(tier);
+    }
+
+    /**
      * Binds a freshly constructed unit to the sampling tier it was built
-     * from: the unit's sampler and its coarse classification come from the
-     * SAME immutable snapshot read, and a coarse unit freezes the snapshot's
-     * epoch so its batch is discarded if the drag tier moves before the
-     * results are applied.  Nothing is re-read here, so a concurrent drag
-     * edge can never produce a unit that sampled through the coarse sampler
-     * but is classified as fine.
+     * from: the unit's sampler and its staged classification come from the
+     * SAME immutable snapshot read, and a staged unit freezes the snapshot's
+     * epoch so its batch is discarded if the tier moves before the results
+     * are applied.  Nothing is re-read here, so a concurrent stage edge can
+     * never produce a unit that sampled through a staged sampler but is
+     * classified as final.
      */
     private WorkUnit bindTier(WorkUnit unit, SamplingTier tier) {
-        if (tier.coarse()) {
-            unit.setCoarseSampling(true, tier.epoch());
-        }
+        unit.setFillStage(tier.level(), tier.finalStage(), tier.epoch());
         return unit;
     }
 
@@ -1425,15 +1714,15 @@ public class WorkManager {
         // the worker thread.
         for (WorkBatch batch : batches) {
             batch.attachEpochGuard(sessionEpoch::get, epochAtQueue);
-            // A batch carrying any drag-tier unit is invalidated together
-            // with that drag session: the guard captures the tier epoch
-            // frozen in the unit itself, so a batch whose units were bound
-            // before the release bump is stale no matter when it is
-            // submitted or finishes relative to the drag edge.  The final
-            // gate is WorkBatch.process, which re-checks this guard (and the
-            // worldgen epoch) under completedSynchro before applying results.
+            // A batch carrying any staged unit is invalidated together with
+            // its stage: the guard captures the tier epoch frozen in the unit
+            // itself, so a batch whose units were bound before the stage
+            // moved is stale no matter when it is submitted or finishes
+            // relative to the stage edge.  The final gate is
+            // WorkBatch.process, which re-checks this guard (and the worldgen
+            // epoch) under completedSynchro before applying results.
             for (WorkUnit unit : batch.workUnits) {
-                if (unit.isCoarseSampling()) {
+                if (unit.isStagedSampling()) {
                     batch.attachTierGuard(dragTierEpoch::get, unit.tierEpoch());
                     break;
                 }

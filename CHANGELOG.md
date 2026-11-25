@@ -1,3 +1,44 @@
+## 1.5.7
+
+### Fixes
+
+- Fixed the noise-view terrain overlay not triggering a rebuild when switched on from the settings screen: the setting writes a taller height column per chunk, but it was not part of the setup-input check, so an already-built height layer was reused and the deep columns the overlay tints stayed empty
+- Fixed sampling-settings changes leaving permanent holes in an existing preview: widening the height range, enabling noise storage, switching the visual-range limit or changing the colour map now forces a rebuild, because the storage probe skips every chunk that already carries a completion bit and would never back-fill it
+- Fixed the hover panel reporting a structure from the previous world after a reload: the per-frame structure grid and the resolved tooltip now go with the discarded frame
+- Fixed "locate this structure" failing whenever the cursor was not already resting on a structure icon: the lookup now searches every structure drawn in the last heavy render instead of only the icons under the cursor
+- Fixed a failed work unit being logged twice, once inside the unit and again by its batch
+- Fixed the suspend path on closing the settings screen or switching tabs blocking the render thread while a running work unit drained: the worker pools are now shut down without waiting, and the wait moved to the teardown that actually closes the worldgen context (where it is normally already zero)
+- Fixed hover reads allocating a storage section just to read "not sampled" out of it, which also inflated the sampled-area statistics
+- Fixed the preview level's storage access never being closed when it owned a level storage access
+- Fixed the on-disk preview cache being effectively unusable across sessions: the world identity embedded the datapack configuration through its default `Object.toString()`, so the identity changed on every game start and the cache was never matched
+- Fixed the write count recorded at save time being read after serialization started, so writes that landed during a save could be marked as already saved and lost on close
+
+### Improvements
+
+- The statistics overlay's second line now reports how many chunk columns of the active layer have completed sampling, instead of counting sections the renderer pre-allocated; the number keeps moving while the map fills in and is re-scanned at most four times a second
+- The first viewport is filled in nested stages — one biome point per chunk, then four, then the configured density — where each stage only samples the lattice points the previous one left out, so the whole chain costs one full-resolution pass while producing intermediate images on the way; the start level adapts to the viewport size (a zoomed-in view starts at the sharper level) and cached openings skip the fill entirely
+- Loading only repaints the map sections whose sampled values changed since the last pass, instead of re-rasterizing every visible texel for every completed batch
+- Closing the preview no longer serializes the disk cache on the render thread behind a "Saving preview" screen; the zip is written by a background thread
+- The structure hover panel reports the structure's bounding-box size in blocks next to its name and centre
+- Structures are named through one shared helper across the sidebar, the hover panel and the analysis screen, so the same structure can no longer appear under three different labels
+- The analysis screen's region is remembered after it closes, so a terrain export opened later — from the settings page as well as from the analysis screen — starts from the area that was last analysed
+- A background seed search that finishes while the preview is open now announces the found seed on the map instead of only inside the search screen, which is closed by then
+- The seed search screen's status line is built from translated components, so a language switch applies without reopening the screen, and a failed search reports its attempt count
+- List rows and structure icons now show the tooltips they always declared (biome source, structure namespace), and an item-icon structure's hit box matches the 16×16 pixels it is drawn at
+- The sampling-settings page keeps its controls in sync with the config after a rebuild or a reset, and the structure button in the collapsed rail is disabled when structure sampling is off; the heightmap view also unlocks when the noise-view terrain overlay is on, since the overlay samples height on its own
+- The search-distance slider is capped at the same value the search itself clamps to, instead of offering a range the search would reject
+- The analysis report lists each nearest structure's registry id alongside its display name, so reports stay machine-readable after a language change
+
+### Internal
+
+- The work-unit failure record now lives only in the batch, which knows whether a failure is the first in its batch; the unit itself no longer logs
+- Added a shared statistics-overlay coverage cache with the same cooldown as the minimap rescan, and reset it whenever the render context changes
+- Removed the unused `ConfigSlider` widget and two leftover export-image component constants
+- Dropped the client-start timestamp that was never read, along with the statistics toggle's claim to show elapsed time
+- Extended the analysis-report exporter tests to cover the structure id table and its omission when absent
+- Sampled sections carry a write version that the renderer uses to skip unchanged sections, and cache writes run on a single low-priority daemon thread
+- Section completion tracks three nested lattice levels (single, quarter, full) with separate sweep semantics for a finished versus an abandoned staged fill; refinement units fall back to the plain sampler when a chunk missed the previous stage
+
 ## 1.5.6
 
 ### Fixes

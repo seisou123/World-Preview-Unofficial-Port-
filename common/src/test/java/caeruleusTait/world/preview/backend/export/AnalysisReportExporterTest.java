@@ -51,9 +51,19 @@ class AnalysisReportExporterTest {
                 OptionalDouble.empty(), 0.0);
     }
 
-    /** The 22-arg fully-extended input shape; only the terrain/structure maps vary. */
+    /** The fully-extended input shape; only the terrain/structure tables vary. */
     private static ReportInput extendedInput(LinkedHashMap<String, Long> terrain,
                                              LinkedHashMap<String, Long> structs) {
+        return extendedInput(terrain, structs, new LinkedHashMap<>());
+    }
+
+    /**
+     * The extended input shape with the display-name to registry-id table, so
+     * the JSON {@code id} field is exercised through the canonical constructor.
+     */
+    private static ReportInput extendedInput(LinkedHashMap<String, Long> terrain,
+                                             LinkedHashMap<String, Long> structs,
+                                             LinkedHashMap<String, String> structIds) {
         LinkedHashMap<String, long[]> biomes = new LinkedHashMap<>();
         biomes.put("plains", new long[]{10});
         return new ReportInput("123", "minecraft:overworld", "-1000,-1000 -> 1000,1000",
@@ -61,7 +71,8 @@ class AnalysisReportExporterTest {
                 OptionalInt.of(60), OptionalInt.of(90),
                 OptionalDouble.of(70), OptionalDouble.of(70),
                 OptionalDouble.of(5), OptionalDouble.of(0.5), OptionalDouble.of(9),
-                0.4, "ctx", 0.25, 0.56, 1.75, terrain, structs, new int[]{1, 2, 3}, 60);
+                0.4, "ctx", 0.25, 0.56, 1.75, terrain, structs, structIds,
+                new int[]{1, 2, 3}, 60);
     }
 
     @Test
@@ -229,6 +240,41 @@ class AnalysisReportExporterTest {
 
         String csv = exporter.buildCsv(input);
         assertTrue(csv.contains("water_share"));
+    }
+
+    @Test
+    void jsonCarriesStructureIdNextToDisplayName() {
+        LinkedHashMap<String, Long> structs = new LinkedHashMap<>();
+        structs.put("Village", 350L);
+        LinkedHashMap<String, String> ids = new LinkedHashMap<>();
+        ids.put("Village", "minecraft:village_plains");
+        ReportInput input = extendedInput(new LinkedHashMap<>(), structs, ids);
+
+        JsonObject entry = JsonParser.parseString(exporter.buildJson(input, GSON))
+                .getAsJsonObject()
+                .getAsJsonArray("nearestStructures")
+                .get(0).getAsJsonObject();
+        // "structure" stays the human-readable label the analysis screen shows;
+        // "id" is the language-independent registry name.
+        assertEquals("Village", entry.get("structure").getAsString());
+        assertEquals("minecraft:village_plains", entry.get("id").getAsString());
+        assertEquals(350L, entry.get("distanceBlocks").getAsLong());
+    }
+
+    @Test
+    void jsonOmitsStructureIdWhenTheTableHasNoEntry() {
+        LinkedHashMap<String, Long> structs = new LinkedHashMap<>();
+        structs.put("Village", 350L);
+        // An older caller only knows the display name: the id table stays empty
+        // and the field is left out rather than written as null or guessed.
+        ReportInput input = extendedInput(new LinkedHashMap<>(), structs, new LinkedHashMap<>());
+
+        JsonObject entry = JsonParser.parseString(exporter.buildJson(input, GSON))
+                .getAsJsonObject()
+                .getAsJsonArray("nearestStructures")
+                .get(0).getAsJsonObject();
+        assertEquals("Village", entry.get("structure").getAsString());
+        assertFalse(entry.has("id"));
     }
 
     @Test

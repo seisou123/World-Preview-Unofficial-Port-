@@ -168,10 +168,29 @@ public final class WorldgenContext implements AutoCloseable {
                 seed(),
                 dimension(),
                 levelStem.generator().getClass().getName(),
-                String.valueOf(worldDataConfiguration.dataPacks()),
+                describeDataPacks(),
                 registryDigest,
                 compatProfile
         );
+    }
+
+    /**
+     * Stable description of the enabled/disabled datapack lists.
+     *
+     * <p>{@code DataPackConfig} does not override {@code toString()} on any
+     * supported version, so {@code String.valueOf(...)} yielded the record's
+     * identity hash: the world identity differed on every JVM start and the
+     * on-disk preview cache was effectively never reused across sessions. The
+     * enabled order is kept verbatim because pack priority affects generation.
+     */
+    private String describeDataPacks() {
+        try {
+            final var packs = worldDataConfiguration.dataPacks();
+            return String.join(",", packs.getEnabled())
+                    + "|" + String.join(",", packs.getDisabled());
+        } catch (Exception e) {
+            return "unknown";
+        }
     }
 
     /**

@@ -116,12 +116,38 @@ public class WorkBatch {
             // Units interrupted mid-sampling are excluded from markCompleted:
             // their partial writes are idempotent, but only fully-run units may
             // receive the completed bit ("completed => all quarts sampled").
+            // A unit that throws is isolated instead of failing the whole
+            // batch: one bad chunk used to discard every result collected
+            // before it and skip every unit after it. The failed unit is not
+            // added to doneUnits, so it keeps no completion bit and is
+            // re-sampled by a later pass; the finally block still marks the
+            // batch finished, so this cannot become an unbounded retry.
             List<WorkResult> res = new ArrayList<>();
             List<WorkUnit> doneUnits = new ArrayList<>();
+            int failures = 0;
             for (WorkUnit unit : workUnits) {
-                res.addAll(unit.work());
-                if (!unit.wasInterrupted()) {
-                    doneUnits.add(unit);
+                try {
+                    res.addAll(unit.work());
+                    if (!unit.wasInterrupted()) {
+                        doneUnits.add(unit);
+                    }
+                } catch (Throwable e) {
+                    // WorkUnit.work() does not log: this is the single record
+                    // point for a failed unit. The first failure in a batch is
+                    // logged at ERROR, later ones at DEBUG so a systematically
+                    // broken unit cannot flood the log.
+                    // Nothing is added to doneUnits, so the unit is retried on a
+                    // later pass instead of being silently dropped. An Error, by
+                    // contrast, must not be swallowed by per-unit isolation.
+                    if (failures++ == 0) {
+                        LOGGER.error("Work unit {} failed; isolating it from the rest of the batch",
+                                unit.chunk(), e);
+                    } else {
+                        LOGGER.debug("Another work unit failed; isolating it", e);
+                    }
+                    if (e instanceof Error) {
+                        throw e;
+                    }
                 }
                 if (isCanceled()) {
                     break;
@@ -243,6 +269,11 @@ public class WorkBatch {
                         bb
                 ));
             }
+
+            // One bump per applied work result: the renderer's incremental
+            // raster cache repaints exactly the sections whose values changed
+            // instead of re-rasterizing the whole viewport for every batch.
+            section.bumpWriteVersion();
         }
     }
 

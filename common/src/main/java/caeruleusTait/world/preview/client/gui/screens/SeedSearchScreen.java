@@ -98,7 +98,8 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
     private final List<SearchResultsList.Row> hitRows = new ArrayList<>();
     /** The latest finished result with its lineage, kept for chained actions. */
     @Nullable private SeedSearchResult currentResult;
-    private String statusText = "";
+    /** Status-bar text kept as a Component so a language switch applies live. */
+    private Component statusText = Component.empty();
     private boolean searching = false;
     /**
      * Set when a search is started from {@link #init()} (setScreen is unsafe
@@ -139,12 +140,12 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         // across re-inits so a structure picked in StructureSelectScreen
         // survives returning to this screen.
         hitRows.clear();
-        statusText = "";
+        statusText = Component.empty();
 
         // Biome criteria picker (multi-select, any-of group)
         biomePicker = new BiomePickerList(minecraft, container.allBiomes());
         biomePicker.setMaxSelections(MAX_BIOMES_PER_SEARCH);
-        biomePicker.setOnSelectionRejected(id -> statusText = WorldPreviewComponents.SEARCH_BIOME_MAX.getString());
+        biomePicker.setOnSelectionRejected(id -> statusText = WorldPreviewComponents.SEARCH_BIOME_MAX);
         biomePicker.setShowCaves(showCaves);
         if (initialBiome != null) {
             biomePicker.selectOnly(initialBiome.entry().key().location());
@@ -265,7 +266,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         // the most recent completed result.
         if (container.isSeedSearchRunning()) {
             container.reattachSeedSearchListener(this::onComplete, this::onProgress);
-            statusText = WorldPreviewComponents.SEARCH_RUNNING.getString();
+            statusText = WorldPreviewComponents.SEARCH_RUNNING;
         } else {
             SeedSearchResult last = container.lastSeedSearchResult();
             if (last != null) {
@@ -393,7 +394,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void startSearch() {
         if (container.isSeedSearchRunning()) {
-            statusText = WorldPreviewComponents.SEARCH_RUNNING.getString();
+            statusText = WorldPreviewComponents.SEARCH_RUNNING;
             return;
         }
         var options = container.seedSearchOptions();
@@ -415,7 +416,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                     structureId, options.structureDistance));
         }
         if (criteria.isEmpty()) {
-            statusText = WorldPreviewComponents.SEARCH_NO_CRITERIA.getString();
+            statusText = WorldPreviewComponents.SEARCH_NO_CRITERIA;
             return;
         }
 
@@ -435,7 +436,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         if (started) {
             searching = true;
             statusText = Component.translatable(
-                    "world_preview.search.progress", 0, request.maxAttempts()).getString();
+                    "world_preview.search.progress", 0, request.maxAttempts());
             updateControlState();
             // The search keeps running in the background: return to the
             // preview map immediately after a manual start, and on the next
@@ -446,7 +447,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 returnToPreview();
             }
         } else {
-            statusText = WorldPreviewComponents.SEARCH_ERROR.getString();
+            statusText = WorldPreviewComponents.SEARCH_ERROR;
         }
     }
 
@@ -561,7 +562,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
 
     private void onProgress(int attempts) {
         statusText = Component.translatable(
-                "world_preview.search.progress", attempts, container.seedSearchOptions().attempts).getString();
+                "world_preview.search.progress", attempts, container.seedSearchOptions().attempts);
     }
 
     private void onComplete(SeedSearchResult result) {
@@ -582,7 +583,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
             case SeedSearchResult.Hit hit -> {
                 hitRows.add(resultsList.createRow(
                         String.valueOf(hit.seed()), criteria, hit.score(), false, false, hit.structurePos()));
-                statusText = WorldPreviewComponents.SEARCH_FOUND.getString() + hit.seed();
+                statusText = Component.translatable("world_preview.search.found", hit.seed());
             }
             case SeedSearchResult.Multiple multiple -> {
                 for (SeedSearchResult.Ranked ranked : multiple.hits()) {
@@ -590,15 +591,18 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                             String.valueOf(ranked.seed()), criteria, ranked.score(), false, false, ranked.structurePos()));
                 }
                 if (multiple.isEmpty()) {
-                    statusText = WorldPreviewComponents.SEARCH_NOT_FOUND.getString();
+                    statusText = Component.translatable("world_preview.search.not_found",
+                            container.seedSearchOptions().attempts);
                 } else {
-                    statusText = WorldPreviewComponents.SEARCH_FOUND.getString() + multiple.hits().get(0).seed();
+                    statusText = Component.translatable("world_preview.search.found",
+                            multiple.hits().get(0).seed());
                 }
             }
             case SeedSearchResult.Miss ignored -> {
-                statusText = WorldPreviewComponents.SEARCH_NOT_FOUND.getString();
+                statusText = Component.translatable("world_preview.search.not_found",
+                        container.seedSearchOptions().attempts);
             }
-            default -> statusText = WorldPreviewComponents.SEARCH_STOPPED.getString();
+            default -> statusText = WorldPreviewComponents.SEARCH_STOPPED;
         }
 
         // Apply the best hit automatically when the screen was opened via a
@@ -741,7 +745,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         if (source != null) {
             String currentFingerprint = container.currentContextFingerprint();
             if (currentFingerprint == null || !currentFingerprint.equals(source.contextFingerprint())) {
-                statusText = WorldPreviewComponents.SEARCH_STALE.getString();
+                statusText = WorldPreviewComponents.SEARCH_STALE;
                 return;
             }
         }
@@ -784,7 +788,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
                 dimension, color, seedLong);
         container.worldPreview().waypointStore().add(waypoint);
         statusText = Component.translatable("world_preview.search.waypoint_created",
-                name, structurePos.getX(), structurePos.getZ()).getString();
+                name, structurePos.getX(), structurePos.getZ());
     }
 
     /** Numeric seeds parse directly; text seeds hash like vanilla's own seed parsing. */
@@ -816,12 +820,14 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         if (currentView == View.SAVED) {
             refreshList();
         }
-        statusText = WorldPreviewComponents.SEARCH_SAVED_TO_LIBRARY.getString() + seed;
+        statusText = Component.empty().append(WorldPreviewComponents.SEARCH_SAVED_TO_LIBRARY)
+                .append(Component.literal(seed));
     }
 
     private void clearHistory() {
         int removed = container.worldPreview().seedSearchHistory().clearNonFavorite();
-        statusText = WorldPreviewComponents.SEARCH_HISTORY_CLEARED.getString() + removed;
+        statusText = Component.empty().append(WorldPreviewComponents.SEARCH_HISTORY_CLEARED)
+                .append(Component.literal(String.valueOf(removed)));
         refreshList();
     }
 
@@ -838,13 +844,15 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         if (container.seedIsEditable()) {
             container.setSeed(seed);
             seedEdit.setValue(seed);
-            statusText = WorldPreviewComponents.SEARCH_APPLIED.getString() + seed;
+            statusText = Component.empty().append(WorldPreviewComponents.SEARCH_APPLIED)
+                    .append(Component.literal(seed));
             refreshList();
         } else {
             if (minecraft != null && minecraft.keyboardHandler != null) {
                 minecraft.keyboardHandler.setClipboard(seed);
             }
-            statusText = WorldPreviewComponents.SEARCH_APPLIED_CLIPBOARD.getString() + seed;
+            statusText = Component.empty().append(WorldPreviewComponents.SEARCH_APPLIED_CLIPBOARD)
+                    .append(Component.literal(seed));
         }
     }
 
@@ -889,7 +897,7 @@ public final class SeedSearchScreen extends Screen implements SearchResultsList.
         PanelRenderer.tabSelectionLine(graphics, viewTabs.get(currentView));
         renderEmptyState(graphics);
         PanelRenderer.statusBar(graphics, font, width, actionRowY,
-                statusText.isEmpty() ? null : Component.literal(statusText));
+                statusText.getString().isEmpty() ? null : statusText);
     }
 
     /** Draws both panel backgrounds plus the criteria panel's header line. */

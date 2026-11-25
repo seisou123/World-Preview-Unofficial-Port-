@@ -7,6 +7,7 @@ import caeruleusTait.world.preview.WorldPreview;
 import caeruleusTait.world.preview.WorldPreviewConfig;
 import caeruleusTait.world.preview.backend.WorkManager;
 import caeruleusTait.world.preview.backend.analysis.AnalysisSession;
+import caeruleusTait.world.preview.backend.analysis.Region;
 import caeruleusTait.world.preview.backend.analysis.AnalysisRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchRequest;
 import caeruleusTait.world.preview.backend.analysis.SeedSearchResult;
@@ -250,6 +251,19 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
     private RenderSettings.SamplerType structuralSamplerSnapshot;
     private ResourceLocation structuralDimensionSnapshot;
 
+    // Sampling inputs that change what gets written per chunk. They are part
+    // of the setup-input identity (computeSetupInputs) and are snapshotted here
+    // as well: a suspend/resume only takes the cheap path when they are
+    // unchanged, and a changed value must rebuild - a completed chunk is
+    // skipped by the storage probe, so enabling noise storage or widening the
+    // height range after the fact would leave permanent holes.
+    private int structuralHeightmapMinSnapshot = Integer.MIN_VALUE;
+    private int structuralHeightmapMaxSnapshot = Integer.MIN_VALUE;
+    private boolean structuralStoreNoiseSnapshot;
+    private boolean structuralOnlyVisualSnapshot;
+    private boolean structuralNoiseOverlaySnapshot;
+    private String structuralColorMapSnapshot;
+
     // Seed edits trigger a full world reload; debounce them so typing (or a
     // randomize+edit burst) starts exactly one reload after the input pauses.
     private static final long SEED_EDIT_DEBOUNCE_MS = 300;
@@ -419,6 +433,13 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 type.component(),
                 x -> {
                     if (sidebarCollapsed) {
+                        // Guarded here as well as via active=false: the
+                        // collapsed rail bypasses the tab manager, so nothing
+                        // else would stop an always-empty structures panel.
+                        if (type == PreviewContainerTabManager.DisplayType.STRUCTURES
+                                && !cfg.sampleStructures) {
+                            return;
+                        }
                         floatingPanel = (floatingPanel == panelIndex) ? -1 : panelIndex;
                         doLayout(lastScreenRectangle);
                     } else {
@@ -807,6 +828,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
      * and the post-setup store call this, so values the setup normalizes
      * (colorMap fallback, height-range validation, dimension auto-select) are
      * captured as stored.
+     *
+     * <p>{@code noiseTerrainOverlay} is listed here even though it reads like a
+     * render option: it forces the height layer on and makes the heightmap work
+     * unit sample the full column, so the data written per chunk changes.
      */
     private Object computeSetupInputs(@Nullable WorldCreationContext wcContext) {
         return java.util.Arrays.asList(
@@ -821,7 +846,8 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 cfg.numThreads(),
                 cfg.buildFullVertChunk,
                 cfg.storeNoiseSamples,
-                cfg.onlySampleInVisualRange
+                cfg.onlySampleInVisualRange,
+                cfg.noiseTerrainOverlay
         );
     }
 
@@ -998,6 +1024,23 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         structureProbes.invalidate();
         seedSearch.cancel();
         closeActiveAnalysisSession();
+        lastAnalysisRegion = null;
+    }
+
+    /**
+     * Region selected on the analysis screen, kept after that screen closes so
+     * the terrain export it hands off (and any later export) still knows where
+     * the user was working. Derived from the worldgen, so cleared on switches.
+     */
+    @Nullable
+    private Region lastAnalysisRegion;
+
+    public @Nullable Region lastAnalysisRegion() {
+        return lastAnalysisRegion;
+    }
+
+    public void setLastAnalysisRegion(@Nullable Region region) {
+        this.lastAnalysisRegion = region;
     }
 
     /**
@@ -1222,7 +1265,33 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             java.util.function.Consumer<SeedSearchResult> onComplete,
             java.util.function.Consumer<Integer> onProgress
     ) {
-        return seedSearch.start(request, criteriaLabel, onComplete, onProgress);
+        return seedSearch.start(request, criteriaLabel,
+                result -> {
+                    onComplete.accept(result);
+                    announceSeedSearchResult(result);
+                },
+                onProgress);
+    }
+
+    /**
+     * Mirrors a finished background seed search onto the map.
+     *
+     * <p>A manual search returns to the preview immediately, so the screen that
+     * registered the callback is closed by the time the result arrives: without
+     * this the player never learns that a result landed until they reopen the
+     * screen. Failures stay silent because the search screen reports them.
+     */
+    private void announceSeedSearchResult(SeedSearchResult result) {
+        final PreviewDisplay display = previewDisplay();
+        if (display == null) {
+            return;
+        }
+        if (result instanceof SeedSearchResult.Hit hit) {
+            display.showHud(Component.translatable("world_preview.search.found", hit.seed()));
+        } else if (result instanceof SeedSearchResult.Multiple multiple && !multiple.isEmpty()) {
+            display.showHud(Component.translatable("world_preview.search.found",
+                    multiple.hits().get(0).seed()));
+        }
     }
 
     /** Makes the given listener the target of the running search's progress/completion callbacks. */
@@ -1275,6 +1344,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         // Without this, lastQueuedRange still holds the previous drag range,
         // causing queueGeneration() to return early and the preview stays black.
         previewDisplay.invalidateRenderCache();
+        // Fill the first viewport through the coarse tier (one biome sample per
+        // chunk) so the map appears at ~1/16 of the full-resolution cost; the
+        // display switches back to full resolution as soon as that pass drains.
+        previewDisplay.beginInitialCoarseFill();
         if (lastScreenRectangle == null) {
             // Display not laid out yet (tab never opened): texWidth/texHeight
             // are still the 100x100 constructor defaults, so a range computed
@@ -1330,7 +1403,10 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
             toggleShowStructures.setTooltip(Tooltip.create(BTN_TOGGLE_STRUCTURES_DISABLED));
         }
 
-        if (cfg.sampleHeightmap) {
+        // noiseTerrainOverlay forces height sampling on its own (the overlay
+        // needs a terrain reference), so the heightmap view must follow it --
+        // otherwise the paid-for height data is sampled but unreachable.
+        if (cfg.sampleHeightmap || cfg.noiseTerrainOverlay) {
             toggleHeightmap.active = true;
             toggleHeightmap.setTooltip(Tooltip.create(BTN_TOGGLE_HEIGHTMAP));
         } else {
@@ -1532,6 +1608,17 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         structuralStrideSnapshot = renderSettings.quartStride();
         structuralSamplerSnapshot = renderSettings.samplerType;
         structuralDimensionSnapshot = renderSettings.dimension;
+        captureSamplingSnapshot();
+    }
+
+    /** Records the sampling inputs that force a rebuild when they change. */
+    private void captureSamplingSnapshot() {
+        structuralHeightmapMinSnapshot = cfg.heightmapMinY;
+        structuralHeightmapMaxSnapshot = cfg.heightmapMaxY;
+        structuralStoreNoiseSnapshot = cfg.storeNoiseSamples;
+        structuralOnlyVisualSnapshot = cfg.onlySampleInVisualRange;
+        structuralNoiseOverlaySnapshot = cfg.noiseTerrainOverlay;
+        structuralColorMapSnapshot = cfg.colorMap;
     }
 
     /** True when the live structural settings differ from the snapshot taken at suspend time. */
@@ -1540,7 +1627,16 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
                 || structuralFullVertSnapshot != cfg.buildFullVertChunk
                 || structuralStrideSnapshot != renderSettings.quartStride()
                 || structuralSamplerSnapshot != renderSettings.samplerType
-                || !Objects.equals(structuralDimensionSnapshot, renderSettings.dimension);
+                || !Objects.equals(structuralDimensionSnapshot, renderSettings.dimension)
+                // Sampling inputs: the storage probe skips chunks that already
+                // hold a completion bit, so changes here would never be
+                // back-filled without a full rebuild.
+                || structuralHeightmapMinSnapshot != cfg.heightmapMinY
+                || structuralHeightmapMaxSnapshot != cfg.heightmapMaxY
+                || structuralStoreNoiseSnapshot != cfg.storeNoiseSamples
+                || structuralOnlyVisualSnapshot != cfg.onlySampleInVisualRange
+                || structuralNoiseOverlaySnapshot != cfg.noiseTerrainOverlay
+                || !Objects.equals(structuralColorMapSnapshot, cfg.colorMap);
     }
 
     /**
@@ -1567,6 +1663,7 @@ public class PreviewContainer implements AutoCloseable, PreviewDisplayDataProvid
         structuralStrideSnapshot = renderSettings.quartStride();
         structuralSamplerSnapshot = renderSettings.samplerType;
         structuralDimensionSnapshot = renderSettings.dimension;
+        captureSamplingSnapshot();
         workManager.suspend();
     }
 
@@ -1891,7 +1988,12 @@ public void onScreenReentry() {
         switchBiomes.active = true;
         railY += switchHeight + 4;
         switchStructures.setPosition(railLeft, railY);
-        switchStructures.active = true;
+        // Structures require the structure layer: with sampling off the list is
+        // permanently empty, so the rail button must not open it.
+        switchStructures.active = cfg.sampleStructures;
+        switchStructures.setTooltip(cfg.sampleStructures
+                ? null
+                : Tooltip.create(BTN_TOGGLE_STRUCTURES_DISABLED));
         railY += switchHeight + 4;
         // Seed search button directly below the two rail buttons.
         seedSearchButton.setPosition(railLeft, railY);
@@ -2334,8 +2436,33 @@ public void onScreenReentry() {
     }
 
     public void openTerrainExportScreen() {
+        openTerrainExportScreen(parentScreen);
+    }
+
+    /**
+     * Opens the terrain export screen, returning to {@code returnTo} when it is
+     * closed. Callers that open it from another screen (the settings screen)
+     * must pass themselves: the default path returns to the map host, which
+     * silently dropped the settings session's pending edits.
+     */
+    public void openTerrainExportScreen(Screen returnTo) {
         if (!terrainExport.isReady()) return;
-        minecraft.setScreen(new TerrainExportScreen(parentScreen, this));
+        final Region region = lastAnalysisRegion;
+        if (region == null) {
+            minecraft.setScreen(new TerrainExportScreen(returnTo, this));
+        } else {
+            // Reuse the region the analysis screen left behind so an export
+            // started from the settings screen still covers the analyzed area.
+            final int radius = Math.max(region.maxX() - region.minX(), region.maxZ() - region.minZ()) / 2;
+            final int centerX = (region.minX() + region.maxX()) / 2;
+            final int centerZ = (region.minZ() + region.maxZ()) / 2;
+            minecraft.setScreen(new TerrainExportScreen(returnTo, this, centerX, centerZ, radius));
+        }
+    }
+
+    /** The screen that hosted this container (map parent), for sibling screens. */
+    public Screen parentScreen() {
+        return parentScreen;
     }
 
     /** @return false when the export was not started (busy, no sampler, or stale worldgen context). */
